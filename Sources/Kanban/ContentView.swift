@@ -20,10 +20,16 @@ struct ContentView: View {
     init() {
         let discovery = ClaudeCodeSessionDiscovery()
         let coordination = CoordinationStore()
-        let state = BoardState(discovery: discovery, coordinationStore: coordination)
+        let activityDetector = ClaudeCodeActivityDetector()
+        let state = BoardState(
+            discovery: discovery,
+            coordinationStore: coordination,
+            activityDetector: activityDetector
+        )
         let orch = BackgroundOrchestrator(
             discovery: discovery,
             coordinationStore: coordination,
+            activityDetector: activityDetector,
             tmux: TmuxAdapter()
         )
 
@@ -34,32 +40,6 @@ struct ContentView: View {
 
     var body: some View {
         BoardView(state: boardState)
-            .overlay(alignment: .topTrailing) {
-                // Search hint — floats over board content, shifts left when inspector opens
-                Button(action: { showSearch = true }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(.primary.opacity(0.6))
-                        Text("Search")
-                            .foregroundStyle(.primary.opacity(0.6))
-                        Text("⌘K")
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.primary.opacity(0.7))
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.15)))
-                    }
-                    .font(.caption)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(.bar, in: RoundedRectangle(cornerRadius: 8))
-                }
-                .buttonStyle(.borderless)
-                .help("Search sessions (⌘K)")
-                .padding(.top, 6)
-                .padding(.trailing, 12)
-            }
             // Hook onboarding banner
             .overlay(alignment: .top) {
                 if !hooksInstalled {
@@ -81,47 +61,6 @@ struct ContentView: View {
                         onDismiss: { boardState.selectedCardId = nil }
                     )
                     .inspectorColumnWidth(min: 600, ideal: 800, max: 1000)
-                }
-            }
-            .toolbar(id: "main") {
-                // Group 1: Action buttons (own pill near traffic lights)
-                ToolbarItem(id: "actions", placement: .navigation) {
-                    HStack(spacing: 4) {
-                        Button(action: { showNewTask = true }) {
-                            Image(systemName: "square.and.pencil")
-                        }
-                        .help("New task (⌘N)")
-
-                        Button(action: { Task { await boardState.refresh() } }) {
-                            if boardState.isLoading {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                Image(systemName: "arrow.clockwise")
-                            }
-                        }
-                        .help("Refresh sessions")
-                    }
-                }
-
-                // Group 2: App title (separate pill)
-                ToolbarItem(id: "title", placement: .navigation) {
-                    Text("Kanban")
-                        .font(.headline)
-                }
-
-                // Far right: Sidebar toggle (rightmost, over the inspector)
-                ToolbarItem(id: "sidebar-toggle", placement: .primaryAction) {
-                    Button(action: {
-                        if boardState.selectedCardId != nil {
-                            boardState.selectedCardId = nil
-                        }
-                    }) {
-                        Image(systemName: "sidebar.right")
-                    }
-                    .help("Toggle session details")
-                    .opacity(boardState.selectedCardId != nil ? 1 : 0.3)
-                    .disabled(boardState.selectedCardId == nil)
                 }
             }
             .overlay {
@@ -166,6 +105,7 @@ struct ContentView: View {
                 showNewTask = true
             }
             .background {
+                WindowToolbarInstaller(boardState: boardState)
                 Button("") { showSearch.toggle() }
                     .keyboardShortcut("k", modifiers: .command)
                     .hidden()

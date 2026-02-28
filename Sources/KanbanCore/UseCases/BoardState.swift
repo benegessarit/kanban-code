@@ -58,10 +58,16 @@ public final class BoardState: @unchecked Sendable {
 
     private let discovery: SessionDiscovery
     private let coordinationStore: CoordinationStore
+    private let activityDetector: ClaudeCodeActivityDetector?
 
-    public init(discovery: SessionDiscovery, coordinationStore: CoordinationStore) {
+    public init(
+        discovery: SessionDiscovery,
+        coordinationStore: CoordinationStore,
+        activityDetector: ClaudeCodeActivityDetector? = nil
+    ) {
         self.discovery = discovery
         self.coordinationStore = coordinationStore
+        self.activityDetector = activityDetector
     }
 
     /// Cards for a specific column, sorted by last activity (newest first).
@@ -167,7 +173,8 @@ public final class BoardState: @unchecked Sendable {
                     link.sessionPath = session.jsonlPath
                     link.lastActivity = session.modifiedTime
                     if !link.manualOverrides.column {
-                        link.column = AssignColumn.assign(link: link)
+                        let activity = await activityDetector?.activityState(for: session.id)
+                        link.column = AssignColumn.assign(link: link, activityState: activity)
                     }
                     linksById[session.id] = link
                 }
