@@ -34,23 +34,21 @@
   <!-- Off-white background -->
   <rect x="0" y="0" width="1024" height="1024" fill="#eae7e2"/>
 
-  <!-- Left column (taller, moved down) -->
+  <!-- Left column (taller) -->
   <g filter="url(#colShadow)">
-    <rect x="230" y="260" width="240" height="520" rx="36" ry="36" fill="url(#glass)"/>
-    <rect x="230" y="260" width="240" height="520" rx="36" ry="36" fill="url(#innerGlow)"/>
-    <rect x="230" y="260" width="240" height="520" rx="36" ry="36" fill="url(#shine)"/>
-    <!-- Glass border -->
-    <rect x="230" y="260" width="240" height="520" rx="36" ry="36"
-          fill="none" stroke="white" stroke-opacity="0.45" stroke-width="4"/>
+    <rect x="250" y="260" width="240" height="520" rx="68" ry="68" fill="url(#glass)"/>
+    <rect x="250" y="260" width="240" height="520" rx="68" ry="68" fill="url(#innerGlow)"/>
+    <rect x="250" y="260" width="240" height="520" rx="68" ry="68" fill="url(#shine)"/>
+    <rect x="250" y="260" width="240" height="520" rx="68" ry="68"
+          fill="none" stroke="white" stroke-opacity="0.5" stroke-width="6"/>
   </g>
 
-  <!-- Right column (shorter, moved down) -->
+  <!-- Right column (shorter) -->
   <g filter="url(#colShadow)">
-    <rect x="520" y="260" width="240" height="380" rx="36" ry="36" fill="url(#glass)"/>
-    <rect x="520" y="260" width="240" height="380" rx="36" ry="36" fill="url(#innerGlow)"/>
-    <rect x="520" y="260" width="240" height="380" rx="36" ry="36" fill="url(#shine)"/>
-    <!-- Glass border -->
-    <rect x="520" y="260" width="240" height="380" rx="36" ry="36"
-          fill="none" stroke="white" stroke-opacity="0.45" stroke-width="4"/>
+    <rect x="538" y="260" width="240" height="380" rx="68" ry="68" fill="url(#glass)"/>
+    <rect x="538" y="260" width="240" height="380" rx="68" ry="68" fill="url(#innerGlow)"/>
+    <rect x="538" y="260" width="240" height="380" rx="68" ry="68" fill="url(#shine)"/>
+    <rect x="538" y="260" width="240" height="380" rx="68" ry="68"
+          fill="none" stroke="white" stroke-opacity="0.5" stroke-width="6"/>
   </g>
 </svg>
