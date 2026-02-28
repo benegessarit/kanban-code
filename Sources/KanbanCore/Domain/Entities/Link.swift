@@ -91,19 +91,39 @@ public enum LinkSource: String, Codable, Sendable {
     case manual // User-created task
 }
 
-/// A conversation turn for checkpoint display.
+/// A single content block within a conversation turn.
+public struct ContentBlock: Sendable {
+    public enum Kind: Sendable, Equatable {
+        case text
+        case toolUse(name: String, input: [String: String])
+        case toolResult(toolName: String?)
+        case thinking
+    }
+
+    public let kind: Kind
+    public let text: String // rendered text for display
+
+    public init(kind: Kind, text: String) {
+        self.kind = kind
+        self.text = text
+    }
+}
+
+/// A conversation turn for history display and checkpoint operations.
 public struct ConversationTurn: Sendable {
     public let index: Int
     public let lineNumber: Int
     public let role: String // "user" or "assistant"
     public let textPreview: String
     public let timestamp: String?
+    public let contentBlocks: [ContentBlock]
 
-    public init(index: Int, lineNumber: Int, role: String, textPreview: String, timestamp: String? = nil) {
+    public init(index: Int, lineNumber: Int, role: String, textPreview: String, timestamp: String? = nil, contentBlocks: [ContentBlock] = []) {
         self.index = index
         self.lineNumber = lineNumber
         self.role = role
         self.textPreview = textPreview
         self.timestamp = timestamp
+        self.contentBlocks = contentBlocks
     }
 }

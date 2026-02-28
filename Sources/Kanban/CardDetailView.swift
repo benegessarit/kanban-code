@@ -11,6 +11,24 @@ struct CardDetailView: View {
     @State private var turns: [ConversationTurn] = []
     @State private var isLoadingHistory = false
     @State private var selectedTab: Int
+    @State private var showRenameSheet = false
+    @State private var renameText = ""
+
+    // Checkpoint mode
+    @State private var checkpointMode = false
+    @State private var checkpointTurn: ConversationTurn?
+    @State private var showCheckpointConfirm = false
+
+    // Fork
+    @State private var showForkConfirm = false
+    @State private var forkResult: String?
+
+    // File watcher for real-time history
+    @State private var historyWatcherFD: Int32 = -1
+    @State private var historyWatcherSource: DispatchSourceFileSystemObject?
+    @State private var lastReloadTime: Date = .distantPast
+
+    private let sessionStore = ClaudeCodeSessionStore()
 
     init(card: KanbanCard, onResume: @escaping () -> Void = {}, onRename: @escaping (String) -> Void = { _ in }, onFork: @escaping () -> Void = {}, onDismiss: @escaping () -> Void = {}) {
         self.card = card
@@ -18,11 +36,8 @@ struct CardDetailView: View {
         self.onRename = onRename
         self.onFork = onFork
         self.onDismiss = onDismiss
-        // Default to history tab when no terminal session
         _selectedTab = State(initialValue: card.link.tmuxSession == nil ? 1 : 0)
     }
-    @State private var showRenameSheet = false
-    @State private var renameText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -72,7 +87,15 @@ struct CardDetailView: View {
             case 0:
                 terminalView
             case 1:
-                SessionHistoryView(turns: turns, isLoading: isLoadingHistory)
+                SessionHistoryView(
+                    turns: turns,
+                    isLoading: isLoadingHistory,
+                    checkpointMode: checkpointMode,
+                    onSelectTurn: { turn in
+                        checkpointTurn = turn
+                        showCheckpointConfirm = true
+                    }
+                )
             case 2:
                 actionsView
             default:
@@ -83,7 +106,26 @@ struct CardDetailView: View {
         .task(id: card.id) {
             turns = []
             isLoadingHistory = false
+            checkpointMode = false
             await loadHistory()
+        }
+        .onChange(of: selectedTab) {
+            if selectedTab == 1 {
+                startHistoryWatcher()
+            } else {
+                stopHistoryWatcher()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kanbanHistoryChanged)) { _ in
+            guard selectedTab == 1 else { return }
+            // Debounce: only reload if >0.5s since last reload
+            let now = Date()
+            guard now.timeIntervalSince(lastReloadTime) > 0.5 else { return }
+            lastReloadTime = now
+            Task { await loadHistory() }
+        }
+        .onDisappear {
+            stopHistoryWatcher()
         }
         .sheet(isPresented: $showRenameSheet) {
             RenameSessionDialog(
@@ -91,6 +133,20 @@ struct CardDetailView: View {
                 isPresented: $showRenameSheet,
                 onRename: onRename
             )
+        }
+        .alert("Fork Session?", isPresented: $showForkConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Fork") { performFork() }
+        } message: {
+            Text("This creates a duplicate session you can resume independently.")
+        }
+        .alert("Restore to Turn \(checkpointTurn.map { String($0.index + 1) } ?? "")?", isPresented: $showCheckpointConfirm) {
+            Button("Cancel", role: .cancel) {
+                checkpointTurn = nil
+            }
+            Button("Restore", role: .destructive) { performCheckpoint() }
+        } message: {
+            Text("Everything after this point will be removed. A .bkp backup will be created.")
         }
     }
 
@@ -128,10 +184,22 @@ struct CardDetailView: View {
             }
             .buttonStyle(.bordered)
 
-            Button(action: onFork) {
+            Button(action: { showForkConfirm = true }) {
                 Label("Fork Session", systemImage: "arrow.branch")
             }
             .buttonStyle(.bordered)
+            .disabled(card.link.sessionPath == nil)
+
+            Button {
+                checkpointMode = true
+                selectedTab = 1
+            } label: {
+                Label("Checkpoint / Restore", systemImage: "clock.arrow.circlepath")
+            }
+            .buttonStyle(.bordered)
+            .disabled(card.link.sessionPath == nil || turns.isEmpty)
+
+            Divider()
 
             Button(action: copyResumeCommand) {
                 Label("Copy Resume Command", systemImage: "doc.on.doc")
@@ -155,6 +223,16 @@ struct CardDetailView: View {
 
             Spacer()
 
+            if let forkResult {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("Forked: \(forkResult.prefix(8))...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             if let jsonlPath = card.link.sessionPath {
                 Text(jsonlPath)
                     .font(.caption2)
@@ -165,15 +243,80 @@ struct CardDetailView: View {
         .padding(16)
     }
 
+    // MARK: - History loading
+
     private func loadHistory() async {
         guard let path = card.link.sessionPath ?? card.session?.jsonlPath else { return }
-        isLoadingHistory = true
+        if turns.isEmpty { isLoadingHistory = true }
         do {
             turns = try await TranscriptReader.readTurns(from: path)
         } catch {
             // Silently fail — empty history is fine
         }
         isLoadingHistory = false
+    }
+
+    // MARK: - File watcher
+
+    private func startHistoryWatcher() {
+        stopHistoryWatcher()
+        guard let path = card.link.sessionPath ?? card.session?.jsonlPath else { return }
+
+        let fd = open(path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        historyWatcherFD = fd
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .extend],
+            queue: .global(qos: .userInitiated)
+        )
+        source.setEventHandler {
+            NotificationCenter.default.post(name: .kanbanHistoryChanged, object: nil)
+        }
+        source.setCancelHandler {
+            close(fd)
+        }
+        source.resume()
+        historyWatcherSource = source
+    }
+
+    private func stopHistoryWatcher() {
+        historyWatcherSource?.cancel()
+        historyWatcherSource = nil
+        historyWatcherFD = -1
+    }
+
+    // MARK: - Fork
+
+    private func performFork() {
+        guard let path = card.link.sessionPath else { return }
+        Task {
+            do {
+                let newId = try await sessionStore.forkSession(sessionPath: path)
+                forkResult = newId
+                onFork()
+            } catch {
+                // Could show error toast
+            }
+        }
+    }
+
+    // MARK: - Checkpoint
+
+    private func performCheckpoint() {
+        guard let path = card.link.sessionPath,
+              let turn = checkpointTurn else { return }
+        Task {
+            do {
+                try await sessionStore.truncateSession(sessionPath: path, afterTurn: turn)
+                checkpointMode = false
+                checkpointTurn = nil
+                await loadHistory()
+            } catch {
+                // Could show error toast
+            }
+        }
     }
 
     private func copyResumeCommand() {

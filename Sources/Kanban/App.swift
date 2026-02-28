@@ -45,4 +45,5 @@ extension Notification.Name {
     static let kanbanNewTask = Notification.Name("kanbanNewTask")
     static let kanbanToggleSearch = Notification.Name("kanbanToggleSearch")
     static let kanbanHookEvent = Notification.Name("kanbanHookEvent")
+    static let kanbanHistoryChanged = Notification.Name("kanbanHistoryChanged")
 }
