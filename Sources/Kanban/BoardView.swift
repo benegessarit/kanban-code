@@ -78,10 +78,13 @@ struct BoardView: View {
         ScrollView(.horizontal, showsIndicators: true) {
             HStack(alignment: .top, spacing: 12) {
                 ForEach(state.visibleColumns, id: \.self) { column in
-                    ColumnView(
+                    DroppableColumnView(
                         column: column,
                         cards: state.cards(in: column),
-                        selectedCardId: $state.selectedCardId
+                        selectedCardId: $state.selectedCardId,
+                        onMoveCard: { cardId, targetColumn in
+                            state.moveCard(cardId: cardId, to: targetColumn)
+                        }
                     )
                 }
             }

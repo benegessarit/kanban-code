@@ -86,6 +86,25 @@ public final class BoardState: @unchecked Sendable {
         return result
     }
 
+    /// Move a card to a different column (manual override).
+    public func moveCard(cardId: String, to column: KanbanColumn) {
+        guard let index = cards.firstIndex(where: { $0.id == cardId }) else { return }
+        var link = cards[index].link
+        link.column = column
+        link.manualOverrides.column = true
+        link.updatedAt = .now
+        let session = cards[index].session
+        cards[index] = KanbanCard(link: link, session: session)
+
+        // Persist the override
+        Task {
+            try? await coordinationStore.updateLink(sessionId: link.sessionId) { l in
+                l.column = column
+                l.manualOverrides.column = true
+            }
+        }
+    }
+
     /// Full refresh: discover sessions, load links, merge, assign columns.
     public func refresh() async {
         isLoading = true
