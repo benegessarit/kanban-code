@@ -10,6 +10,7 @@ public struct Settings: Codable, Sendable {
     public var sessionTimeout: SessionTimeoutSettings
     public var skill: String
     public var columnOrder: [KanbanColumn]
+    public var hasCompletedOnboarding: Bool
 
     public init(
         projects: [Project] = [],
@@ -19,7 +20,8 @@ public struct Settings: Codable, Sendable {
         remote: RemoteSettings? = nil,
         sessionTimeout: SessionTimeoutSettings = SessionTimeoutSettings(),
         skill: String = "",
-        columnOrder: [KanbanColumn] = KanbanColumn.allCases
+        columnOrder: [KanbanColumn] = KanbanColumn.allCases,
+        hasCompletedOnboarding: Bool = false
     ) {
         self.projects = projects
         self.globalView = globalView
@@ -29,6 +31,21 @@ public struct Settings: Codable, Sendable {
         self.sessionTimeout = sessionTimeout
         self.skill = skill
         self.columnOrder = columnOrder
+        self.hasCompletedOnboarding = hasCompletedOnboarding
+    }
+
+    // Backward-compatible decoding — new fields default gracefully
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        projects = try container.decodeIfPresent([Project].self, forKey: .projects) ?? []
+        globalView = try container.decodeIfPresent(GlobalViewSettings.self, forKey: .globalView) ?? GlobalViewSettings()
+        github = try container.decodeIfPresent(GitHubSettings.self, forKey: .github) ?? GitHubSettings()
+        notifications = try container.decodeIfPresent(NotificationSettings.self, forKey: .notifications) ?? NotificationSettings()
+        remote = try container.decodeIfPresent(RemoteSettings.self, forKey: .remote)
+        sessionTimeout = try container.decodeIfPresent(SessionTimeoutSettings.self, forKey: .sessionTimeout) ?? SessionTimeoutSettings()
+        skill = try container.decodeIfPresent(String.self, forKey: .skill) ?? ""
+        columnOrder = try container.decodeIfPresent([KanbanColumn].self, forKey: .columnOrder) ?? KanbanColumn.allCases
+        hasCompletedOnboarding = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? false
     }
 }
 
@@ -125,4 +142,48 @@ public actor SettingsStore {
 
     /// The file path for external access.
     public var path: String { filePath }
+
+    // MARK: - Project convenience methods
+
+    /// Add a project to settings. Throws if path already exists.
+    public func addProject(_ project: Project) throws {
+        var settings = try read()
+        guard !settings.projects.contains(where: { $0.path == project.path }) else {
+            throw SettingsError.duplicateProject(project.path)
+        }
+        settings.projects.append(project)
+        try write(settings)
+    }
+
+    /// Update an existing project (matched by path).
+    public func updateProject(_ project: Project) throws {
+        var settings = try read()
+        guard let index = settings.projects.firstIndex(where: { $0.path == project.path }) else {
+            throw SettingsError.projectNotFound(project.path)
+        }
+        settings.projects[index] = project
+        try write(settings)
+    }
+
+    /// Remove a project by path.
+    public func removeProject(path: String) throws {
+        var settings = try read()
+        guard settings.projects.contains(where: { $0.path == path }) else {
+            throw SettingsError.projectNotFound(path)
+        }
+        settings.projects.removeAll { $0.path == path }
+        try write(settings)
+    }
+}
+
+public enum SettingsError: LocalizedError {
+    case duplicateProject(String)
+    case projectNotFound(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .duplicateProject(let path): "Project already configured: \(path)"
+        case .projectNotFound(let path): "Project not found: \(path)"
+        }
+    }
 }

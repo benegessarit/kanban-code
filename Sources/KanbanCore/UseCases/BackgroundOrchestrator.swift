@@ -13,7 +13,7 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
     private let tmux: TmuxManagerPort?
     private let prTracker: PRTrackerPort?
     private let notificationDedup: NotificationDeduplicator
-    private let notifier: NotifierPort?
+    private var notifier: NotifierPort?
 
     private var pollingTask: Task<Void, Never>?
 
@@ -48,6 +48,11 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 try? await Task.sleep(for: .seconds(5))
             }
         }
+    }
+
+    /// Update the notifier (e.g. when settings change).
+    public func updateNotifier(_ newNotifier: NotifierPort?) {
+        self.notifier = newNotifier
     }
 
     /// Stop the background polling loop.
@@ -105,12 +110,31 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
         // Get session info for notification
         let link = try? await coordinationStore.linkForSession(sessionId)
         let sessionNum = await notificationDedup.sessionNumber(for: sessionId)
-        let title = link?.name ?? "Session #\(sessionNum)"
+        let sessionName = link?.name ?? "Session #\(sessionNum)"
+        let title = "Claude #\(sessionNum): \(sessionName)"
+
+        // Try to get last assistant response for rich notification
+        var message = "Waiting for input"
+        var imageData: Data?
+
+        if let transcriptPath = link?.sessionPath {
+            if let lastText = await TranscriptNotificationReader.lastAssistantText(transcriptPath: transcriptPath) {
+                let lineCount = lastText.components(separatedBy: "\n").count
+                if lineCount > 1 {
+                    // Multi-line: render as image
+                    imageData = await MarkdownImageRenderer.renderToImage(markdown: lastText)
+                    message = imageData != nil ? "Task completed" : String(lastText.prefix(500))
+                } else {
+                    // Single-line: send as plain text
+                    message = String(lastText.prefix(500))
+                }
+            }
+        }
 
         try? await notifier.sendNotification(
-            title: "Requires Attention",
-            message: "\(title) has stopped and needs your input.",
-            imageData: nil
+            title: title,
+            message: message,
+            imageData: imageData
         )
     }
 
@@ -119,8 +143,9 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
             let links = try await coordinationStore.readLinks()
             let sessionPaths = Dictionary(
                 links.compactMap { link -> (String, String)? in
-                    guard let path = link.sessionPath else { return nil }
-                    return (link.sessionId, path)
+                    guard let sessionId = link.sessionId,
+                          let path = link.sessionPath else { return nil }
+                    return (sessionId, path)
                 },
                 uniquingKeysWith: { a, _ in a }
             )
@@ -154,11 +179,24 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
             let tmuxNames = Set(tmuxSessions.map(\.name))
 
             for i in links.indices {
-                let sessionId = links[i].sessionId
+                guard let sessionId = links[i].sessionId else { continue }
                 let activityState = await activityDetector.activityState(for: sessionId)
                 let pr = links[i].worktreeBranch.flatMap { allPRs[$0] }
                 let hasWorktree = links[i].worktreeBranch != nil
                 let hasTmux = links[i].tmuxSession.map { tmuxNames.contains($0) } ?? false
+
+                // Clear manual column override when we have definitive activity data
+                // (hooks fired, or tmux session gone). Manual override is only for user drags.
+                if links[i].manualOverrides.column {
+                    if activityState != .stale {
+                        // Hooks provided real data — let auto-assignment take over
+                        links[i].manualOverrides.column = false
+                    } else if links[i].tmuxSession != nil && !hasTmux {
+                        // Had a tmux session but it's gone now
+                        links[i].tmuxSession = nil
+                        links[i].manualOverrides.column = false
+                    }
+                }
 
                 let oldColumn = links[i].column
 

@@ -13,7 +13,7 @@ public enum KanbanColumn: String, Codable, CaseIterable, Sendable {
         switch self {
         case .backlog: "Backlog"
         case .inProgress: "In Progress"
-        case .requiresAttention: "Requires Attention"
+        case .requiresAttention: "Waiting"
         case .inReview: "In Review"
         case .done: "Done"
         case .allSessions: "All Sessions"

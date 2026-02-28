@@ -21,22 +21,92 @@ struct DroppableColumnView: View {
     let column: KanbanColumn
     let cards: [KanbanCard]
     @Binding var selectedCardId: String?
+    var isRefreshingBacklog: Bool = false
     var onMoveCard: (String, KanbanColumn) -> Void = { _, _ in }
     var onRenameCard: (String, String) -> Void = { _, _ in }
     var onArchiveCard: (String) -> Void = { _ in }
+    var onStartCard: (String) -> Void = { _ in }
+    var onResumeCard: (String) -> Void = { _ in }
+    var onRefreshBacklog: (() -> Void)?
 
     @State private var isTargeted = false
     @State private var renamingCardId: String?
 
     var body: some View {
-        VStack(spacing: 6) {
-            // Header pill
+        ScrollView {
+            LazyVStack(spacing: 8) {
+                ForEach(cards) { card in
+                    CardView(
+                        card: card,
+                        isSelected: card.id == selectedCardId,
+                        onSelect: {
+                            selectedCardId = selectedCardId == card.id ? nil : card.id
+                        },
+                        onStart: { onStartCard(card.id) },
+                        onResume: { onResumeCard(card.id) },
+                        onRename: {
+                            renamingCardId = card.id
+                        },
+                        onArchive: {
+                            onArchiveCard(card.id)
+                        }
+                    )
+                    .draggable(CardDragData(cardId: card.id, sourceColumn: column.rawValue))
+                    .sheet(isPresented: Binding(
+                        get: { renamingCardId == card.id },
+                        set: { if !$0 { renamingCardId = nil } }
+                    )) {
+                        RenameSessionDialog(
+                            currentName: card.link.name ?? card.displayTitle,
+                            isPresented: Binding(
+                                get: { renamingCardId == card.id },
+                                set: { if !$0 { renamingCardId = nil } }
+                            ),
+                            onRename: { name in
+                                onRenameCard(card.id, name)
+                            }
+                        )
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 56) // space for the floating header
+            .padding(.bottom, 8)
+        }
+        .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
+        .glassColumn()
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(
+                    isTargeted ? Color.accentColor.opacity(0.5) : Color.clear,
+                    lineWidth: isTargeted ? 2 : 0
+                )
+        )
+        // Header pill floating on top of the column
+        .overlay(alignment: .top) {
             HStack {
                 Text(column.displayName)
                     .font(.headline)
                     .foregroundStyle(.primary)
 
                 Spacer()
+
+                if let onRefreshBacklog {
+                    Button {
+                        onRefreshBacklog()
+                    } label: {
+                        if isRefreshingBacklog {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.caption)
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Refresh GitHub issues")
+                    .disabled(isRefreshingBacklog)
+                }
 
                 Text("\(cards.count)")
                     .font(.caption)
@@ -50,54 +120,8 @@ struct DroppableColumnView: View {
             .padding(.vertical, 12)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
             .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
-
-            // Floating cards
-            ScrollView {
-                LazyVStack(spacing: 8) {
-                    ForEach(cards) { card in
-                        CardView(
-                            card: card,
-                            isSelected: card.id == selectedCardId,
-                            onSelect: {
-                                selectedCardId = selectedCardId == card.id ? nil : card.id
-                            },
-                            onRename: {
-                                renamingCardId = card.id
-                            },
-                            onArchive: {
-                                onArchiveCard(card.id)
-                            }
-                        )
-                        .draggable(CardDragData(cardId: card.id, sourceColumn: column.rawValue))
-                        .sheet(isPresented: Binding(
-                            get: { renamingCardId == card.id },
-                            set: { if !$0 { renamingCardId = nil } }
-                        )) {
-                            RenameSessionDialog(
-                                currentName: card.link.name ?? card.displayTitle,
-                                isPresented: Binding(
-                                    get: { renamingCardId == card.id },
-                                    set: { if !$0 { renamingCardId = nil } }
-                                ),
-                                onRename: { name in
-                                    onRenameCard(card.id, name)
-                                }
-                            )
-                        }
-                    }
-                }
-                .padding(.horizontal, 4)
-                .padding(.bottom, 8)
-            }
+            .padding(4)
         }
-        .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(
-                    isTargeted ? Color.accentColor.opacity(0.5) : Color.clear,
-                    lineWidth: isTargeted ? 2 : 0
-                )
-        )
         .dropDestination(for: CardDragData.self) { items, _ in
             guard let item = items.first else { return false }
             if item.sourceColumn != column.rawValue {

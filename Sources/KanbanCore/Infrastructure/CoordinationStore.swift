@@ -60,15 +60,20 @@ public actor CoordinationStore {
         try fileManager.moveItem(atPath: tmpPath, toPath: filePath)
     }
 
+    /// Get a single link by its id.
+    public func linkById(_ id: String) throws -> Link? {
+        try readLinks().first { $0.id == id }
+    }
+
     /// Get a single link by session ID.
     public func linkForSession(_ sessionId: String) throws -> Link? {
         try readLinks().first { $0.sessionId == sessionId }
     }
 
-    /// Upsert a link: update if exists (by sessionId), insert if new.
+    /// Upsert a link: update if exists (by link.id), insert if new.
     public func upsertLink(_ link: Link) throws {
         var links = try readLinks()
-        if let index = links.firstIndex(where: { $0.sessionId == link.sessionId }) {
+        if let index = links.firstIndex(where: { $0.id == link.id }) {
             links[index] = link
         } else {
             links.append(link)
@@ -76,12 +81,28 @@ public actor CoordinationStore {
         try writeLinks(links)
     }
 
-    /// Update specific fields of a link, respecting manual overrides.
+    /// Update specific fields of a link by link.id.
+    public func updateLink(id: String, update: (inout Link) -> Void) throws {
+        var links = try readLinks()
+        guard let index = links.firstIndex(where: { $0.id == id }) else { return }
+        update(&links[index])
+        links[index].updatedAt = .now
+        try writeLinks(links)
+    }
+
+    /// Update specific fields of a link by session ID.
     public func updateLink(sessionId: String, update: (inout Link) -> Void) throws {
         var links = try readLinks()
         guard let index = links.firstIndex(where: { $0.sessionId == sessionId }) else { return }
         update(&links[index])
         links[index].updatedAt = .now
+        try writeLinks(links)
+    }
+
+    /// Remove a link by its id.
+    public func removeLink(id: String) throws {
+        var links = try readLinks()
+        links.removeAll { $0.id == id }
         try writeLinks(links)
     }
 

@@ -3,6 +3,9 @@ import KanbanCore
 
 struct BoardView: View {
     @Bindable var state: BoardState
+    var onStartCard: (String) -> Void = { _ in }
+    var onResumeCard: (String) -> Void = { _ in }
+    var onRefreshBacklog: () -> Void = {}
 
     var body: some View {
         Group {
@@ -22,6 +25,7 @@ struct BoardView: View {
                         column: column,
                         cards: state.cards(in: column),
                         selectedCardId: $state.selectedCardId,
+                        isRefreshingBacklog: state.isRefreshingBacklog,
                         onMoveCard: { cardId, targetColumn in
                             state.moveCard(cardId: cardId, to: targetColumn)
                         },
@@ -30,7 +34,10 @@ struct BoardView: View {
                         },
                         onArchiveCard: { cardId in
                             state.archiveCard(cardId: cardId)
-                        }
+                        },
+                        onStartCard: onStartCard,
+                        onResumeCard: onResumeCard,
+                        onRefreshBacklog: column == .backlog ? onRefreshBacklog : nil
                     )
                 }
             }

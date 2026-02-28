@@ -4,7 +4,7 @@ import Foundation
 /// Stored in ~/.kanban/links.json.
 public struct Link: Identifiable, Codable, Sendable {
     public let id: String
-    public var sessionId: String
+    public var sessionId: String? // Real Claude session UUID, nil until discovered
     public var sessionPath: String? // Full path to .jsonl file
     public var worktreePath: String?
     public var worktreeBranch: String?
@@ -21,10 +21,11 @@ public struct Link: Identifiable, Codable, Sendable {
     public var manuallyArchived: Bool
     public var source: LinkSource
     public var sessionNumber: Int?
+    public var issueBody: String?
 
     public init(
         id: String = UUID().uuidString,
-        sessionId: String,
+        sessionId: String? = nil,
         sessionPath: String? = nil,
         worktreePath: String? = nil,
         worktreeBranch: String? = nil,
@@ -40,7 +41,8 @@ public struct Link: Identifiable, Codable, Sendable {
         manualOverrides: ManualOverrides = ManualOverrides(),
         manuallyArchived: Bool = false,
         source: LinkSource = .discovered,
-        sessionNumber: Int? = nil
+        sessionNumber: Int? = nil,
+        issueBody: String? = nil
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -60,6 +62,7 @@ public struct Link: Identifiable, Codable, Sendable {
         self.manuallyArchived = manuallyArchived
         self.source = source
         self.sessionNumber = sessionNumber
+        self.issueBody = issueBody
     }
 }
 

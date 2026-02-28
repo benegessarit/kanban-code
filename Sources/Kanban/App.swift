@@ -49,9 +49,9 @@ enum AppearanceMode: String, CaseIterable {
 
     var next: AppearanceMode {
         switch self {
-        case .auto: .light
-        case .light: .dark
-        case .dark: .auto
+        case .auto: .dark
+        case .dark: .light
+        case .light: .auto
         }
     }
 
@@ -65,9 +65,9 @@ enum AppearanceMode: String, CaseIterable {
 
     var helpText: String {
         switch self {
-        case .auto: "Appearance: Auto (click for Light)"
-        case .light: "Appearance: Light (click for Dark)"
-        case .dark: "Appearance: Dark (click for Auto)"
+        case .auto: "Appearance: Auto (click for Dark)"
+        case .dark: "Appearance: Dark (click for Light)"
+        case .light: "Appearance: Light (click for Auto)"
         }
     }
 }

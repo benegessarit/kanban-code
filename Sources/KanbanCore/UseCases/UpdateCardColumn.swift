@@ -36,7 +36,7 @@ public enum UpdateCardColumn {
         worktreeBranches: Set<String>
     ) {
         for i in links.indices {
-            let sessionId = links[i].sessionId
+            guard let sessionId = links[i].sessionId else { continue }
             let activityState = activityStates[sessionId]
             let pr = links[i].worktreeBranch.flatMap { prs[$0] }
             let hasWorktree = links[i].worktreeBranch != nil && worktreeBranches.contains(links[i].worktreeBranch!)

@@ -9,6 +9,7 @@ struct SearchOverlay: View {
     @State private var query = ""
     @State private var searchResults: [SearchResultItem] = []
     @State private var isDeepSearching = false
+    @State private var selectedIndex = 0
     @FocusState private var isSearchFocused: Bool
 
     var body: some View {
@@ -52,10 +53,10 @@ struct SearchOverlay: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
                     if query.isEmpty {
-                        recentSessions
+                        recentSessionsIndexed
                     } else if !searchResults.isEmpty {
-                        ForEach(searchResults) { result in
-                            SearchResultRow(result: result, queryTerms: queryTerms)
+                        ForEach(Array(searchResults.enumerated()), id: \.element.id) { index, result in
+                            SearchResultRow(result: result, queryTerms: queryTerms, isHighlighted: index == selectedIndex)
                                 .onTapGesture {
                                     if let card = result.card {
                                         onSelectCard(card)
@@ -64,7 +65,7 @@ struct SearchOverlay: View {
                                 }
                         }
                     } else if !isDeepSearching {
-                        filteredCards
+                        filteredCardsIndexed
                     }
                 }
                 .padding(8)
@@ -78,7 +79,20 @@ struct SearchOverlay: View {
         .onExitCommand {
             isPresented = false
         }
+        .onKeyPress(.downArrow) {
+            selectedIndex = min(selectedIndex + 1, visibleItemCount - 1)
+            return .handled
+        }
+        .onKeyPress(.upArrow) {
+            selectedIndex = max(selectedIndex - 1, 0)
+            return .handled
+        }
+        .onKeyPress(.return) {
+            selectCurrentItem()
+            return .handled
+        }
         .onChange(of: query) { _, newValue in
+            selectedIndex = 0
             updateFilter(newValue)
         }
     }
@@ -87,7 +101,40 @@ struct SearchOverlay: View {
         query.lowercased().components(separatedBy: .whitespaces).filter { !$0.isEmpty }
     }
 
-    private var recentSessions: some View {
+    private var visibleItemCount: Int {
+        if query.isEmpty {
+            return min(cards.count, 10)
+        } else if !searchResults.isEmpty {
+            return searchResults.count
+        } else {
+            return filterCards(query: query).count
+        }
+    }
+
+    private func selectCurrentItem() {
+        if query.isEmpty {
+            let recent = Array(cards.prefix(10))
+            guard selectedIndex < recent.count else { return }
+            onSelectCard(recent[selectedIndex])
+            isPresented = false
+        } else if !searchResults.isEmpty {
+            guard selectedIndex < searchResults.count,
+                  let card = searchResults[selectedIndex].card else { return }
+            onSelectCard(card)
+            isPresented = false
+        } else {
+            let filtered = filterCards(query: query)
+            guard selectedIndex < filtered.count else {
+                // No filtered results — trigger deep search
+                Task { await deepSearch() }
+                return
+            }
+            onSelectCard(filtered[selectedIndex])
+            isPresented = false
+        }
+    }
+
+    private var recentSessionsIndexed: some View {
         Group {
             Text("Recent Sessions")
                 .font(.caption)
@@ -95,8 +142,8 @@ struct SearchOverlay: View {
                 .padding(.horizontal, 8)
                 .padding(.top, 4)
 
-            ForEach(cards.prefix(10)) { card in
-                SearchCardRow(card: card, queryTerms: [])
+            ForEach(Array(cards.prefix(10).enumerated()), id: \.element.id) { index, card in
+                SearchCardRow(card: card, queryTerms: [], isHighlighted: index == selectedIndex)
                     .onTapGesture {
                         onSelectCard(card)
                         isPresented = false
@@ -105,7 +152,7 @@ struct SearchOverlay: View {
         }
     }
 
-    private var filteredCards: some View {
+    private var filteredCardsIndexed: some View {
         Group {
             let filtered = filterCards(query: query)
             if filtered.isEmpty {
@@ -119,8 +166,8 @@ struct SearchOverlay: View {
                 .frame(maxWidth: .infinity)
                 .padding(.top, 20)
             } else {
-                ForEach(filtered) { card in
-                    SearchCardRow(card: card, queryTerms: queryTerms)
+                ForEach(Array(filtered.enumerated()), id: \.element.id) { index, card in
+                    SearchCardRow(card: card, queryTerms: queryTerms, isHighlighted: index == selectedIndex)
                         .onTapGesture {
                             onSelectCard(card)
                             isPresented = false
@@ -178,6 +225,7 @@ struct SearchResultItem: Identifiable {
 struct SearchCardRow: View {
     let card: KanbanCard
     let queryTerms: [String]
+    var isHighlighted: Bool = false
 
     var body: some View {
         HStack {
@@ -208,43 +256,53 @@ struct SearchCardRow: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.clear))
+        .background(
+            isHighlighted ? Color.accentColor.opacity(0.1) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 6)
+        )
     }
 }
 
 struct SearchResultRow: View {
     let result: SearchResultItem
     let queryTerms: [String]
+    var isHighlighted: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let card = result.card {
-                HighlightedText(text: card.displayTitle, terms: queryTerms)
-                    .font(.body)
-                    .lineLimit(1)
-            } else {
-                Text((result.id as NSString).lastPathComponent)
-                    .font(.body)
-                    .lineLimit(1)
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                if let card = result.card {
+                    HighlightedText(text: card.displayTitle, terms: queryTerms)
+                        .font(.body)
+                        .lineLimit(1)
+                } else {
+                    Text((result.id as NSString).lastPathComponent)
+                        .font(.body)
+                        .lineLimit(1)
+                }
+
+                HighlightedText(text: result.snippet, terms: queryTerms)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
             }
 
-            HighlightedText(text: result.snippet, terms: queryTerms)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(3)
+            Spacer()
 
-            // Score bar
-            GeometryReader { geo in
-                let normalizedScore = min(result.score / 10.0, 1.0)
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.accentColor.opacity(0.3))
-                    .frame(width: geo.size.width * normalizedScore, height: 3)
-            }
-            .frame(height: 3)
+            // Relevance bar (vertical on the right)
+            let normalizedScore = min(result.score / 10.0, 1.0)
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color.accentColor.opacity(0.4))
+                .frame(width: 4, height: 28 * normalizedScore)
+                .frame(height: 28, alignment: .bottom)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
+        .background(
+            isHighlighted ? Color.accentColor.opacity(0.1) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 6)
+        )
     }
 }
 

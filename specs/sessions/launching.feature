@@ -66,6 +66,31 @@ Feature: Session Launching
     And the SHELL environment variable should point to the fake shell
     And Mutagen sync should be started for the project
 
+  # ── Start Button on Cards ──
+
+  Scenario: Backlog cards show a Start button
+    Given a card is in the Backlog column
+    Then a play button should be visible on the card
+    And clicking it should launch Claude for that task
+
+  Scenario: Start button on GitHub issue cards
+    Given a GitHub issue card "#123: Fix login bug" is in Backlog
+    When I click the Start button on the card
+    Then Claude should be launched with worktree "issue-123"
+    And the prompt should include the issue title and body
+    And the card should move to In Progress
+
+  Scenario: Start button on manual task cards
+    Given a manual task card is in Backlog
+    When I click the Start button
+    Then Claude should be launched with `claude --worktree` (auto name)
+    And the task title and description should be sent as the prompt
+
+  Scenario: Context menu Start option
+    Given any card in the Backlog column
+    When I right-click the card
+    Then a "Start" option should appear in the context menu
+
   # ── Resuming ──
 
   Scenario: Resume an existing session from any column
@@ -81,6 +106,13 @@ Feature: Session Launching
     Then a new tmux session should be created
     And `claude --resume abc-123` should be run inside it
     And the coordination file should record the new tmux link
+
+  Scenario: Resume from card detail Actions tab
+    Given a session card is selected in the inspector
+    When I click "Resume Session" in the Actions tab
+    Then a tmux session should be created/attached
+    And the terminal tab should show the live session
+    And the card should move to In Progress
 
   Scenario: Copy resume command
     Given a session "abc-123" exists

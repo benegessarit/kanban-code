@@ -7,12 +7,23 @@ public struct Project: Identifiable, Codable, Sendable {
     public var name: String // Display name
     public var repoRoot: String? // Git repo root if different from path
     public var visible: Bool
+    public var githubFilter: String? // Per-project gh filter, nil = inherit global default
+    public var remoteConfig: RemoteSettings? // Per-project remote execution config
 
-    public init(path: String, name: String? = nil, repoRoot: String? = nil, visible: Bool = true) {
+    public init(
+        path: String,
+        name: String? = nil,
+        repoRoot: String? = nil,
+        visible: Bool = true,
+        githubFilter: String? = nil,
+        remoteConfig: RemoteSettings? = nil
+    ) {
         self.path = path
         self.name = name ?? (path as NSString).lastPathComponent
         self.repoRoot = repoRoot
         self.visible = visible
+        self.githubFilter = githubFilter
+        self.remoteConfig = remoteConfig
     }
 
     /// The effective git repository root (repoRoot if set, otherwise path).

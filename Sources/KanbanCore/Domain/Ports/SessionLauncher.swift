@@ -13,6 +13,7 @@ public protocol SessionLauncher: Sendable {
     /// Resume an existing session by its ID.
     func resume(
         sessionId: String,
+        projectPath: String,
         shellOverride: String?
     ) async throws -> String // returns tmux session name
 }

@@ -37,36 +37,59 @@ struct CardDetailView: View {
         self.onFork = onFork
         self.onDismiss = onDismiss
         _selectedTab = State(initialValue: card.link.tmuxSession == nil ? 1 : 0)
+        // Tab 0 = Terminal, Tab 1 = History (Actions tab removed — buttons in header now)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .top) {
                     Text(card.displayTitle)
-                        .font(.title3)
-                        .fontWeight(.semibold)
+                        .font(.headline)
+                        .textCase(nil)
                         .lineLimit(2)
 
+                    Spacer()
+
+                    // Action pills
                     HStack(spacing: 8) {
-                        if let projectName = card.projectName {
-                            Label(projectName, systemImage: "folder")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        Button(action: onResume) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 13))
+                                .frame(width: 36, height: 36)
                         }
-                        if let branch = card.link.worktreeBranch {
-                            Label(branch, systemImage: "arrow.triangle.branch")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Text(card.relativeTime)
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
+                        .buttonStyle(.plain)
+                        .glassEffect(.regular, in: .capsule)
+                        .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+                        .help("Resume session")
+
+                        actionsMenu
+                            .frame(width: 36, height: 36)
+                            .glassEffect(.regular, in: .capsule)
+                            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+                            .help("More actions")
                     }
                 }
 
-                Spacer()
+                HStack(spacing: 8) {
+                    if let branch = card.link.worktreeBranch {
+                        Label(branch, systemImage: "arrow.triangle.branch")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(card.relativeTime)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+
+                if let projectPath = card.link.projectPath {
+                    copyableRow(icon: "folder", text: projectPath)
+                }
+
+                if let sessionId = card.link.sessionId {
+                    copyableRow(icon: "number", text: sessionId)
+                }
             }
             .padding(16)
 
@@ -76,7 +99,6 @@ struct CardDetailView: View {
             Picker("Tab", selection: $selectedTab) {
                 Text("Terminal").tag(0)
                 Text("History").tag(1)
-                Text("Actions").tag(2)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 16)
@@ -91,13 +113,12 @@ struct CardDetailView: View {
                     turns: turns,
                     isLoading: isLoadingHistory,
                     checkpointMode: checkpointMode,
+                    onCancelCheckpoint: { checkpointMode = false },
                     onSelectTurn: { turn in
                         checkpointTurn = turn
                         showCheckpointConfirm = true
                     }
                 )
-            case 2:
-                actionsView
             default:
                 EmptyView()
             }
@@ -144,7 +165,7 @@ struct CardDetailView: View {
             Button("Cancel", role: .cancel) {
                 checkpointTurn = nil
             }
-            Button("Restore", role: .destructive) { performCheckpoint() }
+            Button("Restore") { performCheckpoint() }
         } message: {
             Text("Everything after this point will be removed. A .bkp backup will be created.")
         }
@@ -172,22 +193,15 @@ struct CardDetailView: View {
         }
     }
 
-    private var actionsView: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Button(action: onResume) {
-                Label("Resume Session", systemImage: "play.fill")
-            }
-            .buttonStyle(.borderedProminent)
-
+    private var actionsMenu: some View {
+        Menu {
             Button(action: { showRenameSheet = true }) {
                 Label("Rename", systemImage: "pencil")
             }
-            .buttonStyle(.bordered)
 
             Button(action: { showForkConfirm = true }) {
                 Label("Fork Session", systemImage: "arrow.branch")
             }
-            .buttonStyle(.bordered)
             .disabled(card.link.sessionPath == nil)
 
             Button {
@@ -196,7 +210,6 @@ struct CardDetailView: View {
             } label: {
                 Label("Checkpoint / Restore", systemImage: "clock.arrow.circlepath")
             }
-            .buttonStyle(.bordered)
             .disabled(card.link.sessionPath == nil || turns.isEmpty)
 
             Divider()
@@ -204,13 +217,11 @@ struct CardDetailView: View {
             Button(action: copyResumeCommand) {
                 Label("Copy Resume Command", systemImage: "doc.on.doc")
             }
-            .buttonStyle(.bordered)
 
-            if card.link.sessionPath != nil {
-                Button(action: { copyToClipboard("claude --resume \(card.link.sessionId)") }) {
+            if let sessionId = card.link.sessionId {
+                Button(action: { copyToClipboard(sessionId) }) {
                     Label("Copy Session ID", systemImage: "number")
                 }
-                .buttonStyle(.bordered)
             }
 
             if let pr = card.link.githubPR {
@@ -218,29 +229,13 @@ struct CardDetailView: View {
                 Button(action: {}) {
                     Label("Open PR #\(pr)", systemImage: "arrow.up.right.square")
                 }
-                .buttonStyle(.bordered)
             }
-
-            Spacer()
-
-            if let forkResult {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("Forked: \(forkResult.prefix(8))...")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if let jsonlPath = card.link.sessionPath {
-                Text(jsonlPath)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .textSelection(.enabled)
-            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.caption)
         }
-        .padding(16)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
     }
 
     // MARK: - History loading
@@ -326,12 +321,58 @@ struct CardDetailView: View {
     }
 
     private func copyResumeCommand() {
-        copyToClipboard("claude --resume \(card.link.sessionId)")
+        var cmd = ""
+        if let projectPath = card.link.projectPath {
+            cmd += "cd \(projectPath) && "
+        }
+        if let sessionId = card.link.sessionId {
+            cmd += "claude --resume \(sessionId)"
+        } else {
+            cmd += "# no session yet"
+        }
+        copyToClipboard(cmd)
     }
 
     private func copyToClipboard(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func copyableRow(icon: String, text: String) -> some View {
+        CopyableRow(icon: icon, text: text)
+    }
+}
+
+private struct CopyableRow: View {
+    let icon: String
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Label(text, systemImage: icon)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                copied = true
+                Task {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    copied = false
+                }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12, height: 12)
+            }
+            .buttonStyle(.borderless)
+            .help("Copy to clipboard")
+        }
     }
 }
 

@@ -7,18 +7,49 @@ Feature: Manual Task Creation
     Given the Kanban application is running
 
   Scenario: Creating a manual task
-    When I click the "+" button in the Backlog column
+    When I click the "+" button or press ⌘N
     Then a task creation form should appear
     And I should be able to enter:
-      | Field       | Required | Description                          |
-      | Title       | yes      | Short description of the task        |
-      | Description | no       | Detailed requirements for Claude     |
-      | Project     | yes      | Which project folder to work in      |
+      | Field       | Required | Description                              |
+      | Title       | yes      | Short description of the task            |
+      | Description | no       | Detailed requirements for Claude         |
+      | Project     | yes      | Dropdown from configured projects        |
+    And the Project field should be a dropdown picker, not free text
+
+  Scenario: Project defaults to current selection
+    Given I'm viewing the "LangWatch" project
+    When I create a new task
+    Then the project dropdown should default to "LangWatch"
 
   Scenario: Quick-create with just a title
     When I type a title and press Enter
     Then the task should be created in the Backlog
     And the project should default to the currently selected project
+
+  Scenario: Custom project path
+    When I need a project path not in the configured list
+    Then I should be able to select "Custom path..." from the dropdown
+    And type a path manually
+
+  Scenario: Start immediately checkbox
+    When the task creation form appears
+    Then a "Start immediately" checkbox should be visible
+    And it should be checked by default
+    When I create a task with "Start immediately" checked
+    Then the task should be created in Backlog AND immediately launched
+    And a tmux session should be created with Claude running
+
+  Scenario: Start immediately preference persists
+    Given I unchecked "Start immediately" on the last task I created
+    When I open the task creation form again
+    Then "Start immediately" should still be unchecked
+    Because the preference is saved via @AppStorage
+
+  Scenario: Create without starting
+    When I uncheck "Start immediately" and create a task
+    Then the task should appear in Backlog
+    But no tmux session should be created
+    And I can start it later by clicking the Start button on the card
 
   Scenario: Starting a manual task
     Given a manual task "Refactor database layer" exists in Backlog

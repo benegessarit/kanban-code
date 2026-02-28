@@ -5,6 +5,7 @@ struct CardView: View {
     let card: KanbanCard
     let isSelected: Bool
     var onSelect: () -> Void = {}
+    var onStart: () -> Void = {}
     var onResume: () -> Void = {}
     var onFork: () -> Void = {}
     var onRename: () -> Void = {}
@@ -47,8 +48,6 @@ struct CardView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-
-                statusIcon
             }
         }
         .padding(10)
@@ -58,18 +57,35 @@ struct CardView: View {
                 ProgressView()
                     .controlSize(.small)
                     .padding(6)
+            } else if card.column == .backlog {
+                Button(action: onStart) {
+                    Image(systemName: "play.fill")
+                        .font(.caption)
+                        .foregroundStyle(.white)
+                        .padding(5)
+                        .background(.green, in: Circle())
+                }
+                .buttonStyle(.borderless)
+                .help("Start task")
+                .padding(4)
             }
         }
-        .background {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04))
-                .stroke(isSelected ? Color.accentColor.opacity(0.4) : Color.primary.opacity(0.06), lineWidth: 1)
-        }
+        .background(
+            isSelected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04),
+            in: RoundedRectangle(cornerRadius: 8)
+        )
         .contentShape(Rectangle())
         .onTapGesture { onSelect() }
         .contextMenu {
-            Button(action: onResume) {
-                Label("Resume Session", systemImage: "play.fill")
+            if card.column == .backlog {
+                Button(action: onStart) {
+                    Label("Start", systemImage: "play.fill")
+                }
+            }
+            if card.column != .backlog {
+                Button(action: onResume) {
+                    Label("Resume Session", systemImage: "play.fill")
+                }
             }
             Button(action: onFork) {
                 Label("Fork Session", systemImage: "arrow.branch")
@@ -93,33 +109,4 @@ struct CardView: View {
         }
     }
 
-    @ViewBuilder
-    private var statusIcon: some View {
-        switch card.link.column {
-        case .inProgress:
-            Circle()
-                .fill(.green)
-                .frame(width: 8, height: 8)
-        case .requiresAttention:
-            Circle()
-                .fill(.orange)
-                .frame(width: 8, height: 8)
-        case .inReview:
-            Circle()
-                .fill(.blue)
-                .frame(width: 8, height: 8)
-        case .done:
-            Circle()
-                .fill(.green.opacity(0.6))
-                .frame(width: 8, height: 8)
-        case .backlog:
-            Circle()
-                .fill(.secondary.opacity(0.5))
-                .frame(width: 8, height: 8)
-        case .allSessions:
-            Circle()
-                .fill(.tertiary)
-                .frame(width: 6, height: 6)
-        }
-    }
 }

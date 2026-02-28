@@ -95,3 +95,47 @@ Feature: Multi-Project Support
     And "Scenario" has filter "assignee:@me repo:langwatch/scenario is:open"
     Then each project's backlog should show only its issues
     And the global view should combine all issues
+
+  # ── Project CRUD ──
+
+  Scenario: Adding a project via Settings UI
+    When I open Settings → Projects tab
+    And I click "Add Project"
+    And I select a folder via the picker
+    Then a new project should appear in the list
+    And it should auto-name from the folder name
+    And it should be saved to ~/.kanban/settings.json
+
+  Scenario: Editing project name and repoRoot
+    Given a project "langwatch-saas" exists
+    When I change its name to "LangWatch"
+    And I set repoRoot to ~/Projects/remote/langwatch-saas
+    Then both changes should persist to settings.json
+    And the Kanban menu should reflect the new name
+
+  Scenario: Deleting a project
+    Given a project "OldProject" exists
+    When I delete it with confirmation
+    Then it should be removed from settings.json
+    And its sessions should still appear in the global view
+
+  # ── Project Discovery ──
+
+  Scenario: Project discovery banner in global view
+    Given sessions exist for paths not in configured projects
+    When I view "All Projects"
+    Then a banner should appear: "Found sessions for N unconfigured projects"
+    And clicking "Add" should let me configure them
+
+  # ── Project Selector ──
+
+  Scenario: Kanban menu doubles as project selector
+    When I click the Kanban menu in the toolbar
+    Then I should see All Projects, each configured project, Add New, and Settings
+    And the current selection should be checked
+
+  Scenario: Project selector keyboard shortcuts
+    When I press ⌘1
+    Then the view should switch to "All Projects"
+    When I press ⌘2
+    Then the view should switch to the first configured project

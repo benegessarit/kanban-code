@@ -69,7 +69,7 @@ struct EntityTests {
     @Test("KanbanColumn display names")
     func columnDisplayNames() {
         #expect(KanbanColumn.inProgress.displayName == "In Progress")
-        #expect(KanbanColumn.requiresAttention.displayName == "Requires Attention")
+        #expect(KanbanColumn.requiresAttention.displayName == "Waiting")
         #expect(KanbanColumn.allSessions.displayName == "All Sessions")
     }
 

@@ -113,14 +113,14 @@ struct AssignColumnTests {
 
     @Test("GitHub issue without session → backlog")
     func githubIssueBacklog() {
-        let link = Link(sessionId: "s1", source: .githubIssue)
+        let link = Link(source: .githubIssue)
         let col = AssignColumn.assign(link: link)
         #expect(col == .backlog)
     }
 
     @Test("Manual task without session → backlog")
     func manualTaskBacklog() {
-        let link = Link(sessionId: "s1", source: .manual)
+        let link = Link(source: .manual)
         let col = AssignColumn.assign(link: link)
         #expect(col == .backlog)
     }

@@ -54,15 +54,40 @@ Feature: GitHub Issues as Backlog Source
     And the card should show the linked session
 
   Scenario: Background polling for new issues
-    Given the backlog was loaded 60 seconds ago
-    When the poll interval elapses (configurable, default 60s)
+    Given the backlog was loaded 5 minutes ago
+    When the poll interval elapses (configurable, default 300s)
     Then new issues matching the filter should be fetched
     And new cards should appear in "Backlog"
-    And removed issues should be removed from "Backlog"
+    And stale issues (no longer matching) should be removed from "Backlog"
+    But started issues (moved out of Backlog) should not be removed
 
   Scenario: Polling interval is configurable
     Given settings has "github.pollIntervalSeconds": 120
     Then the background fetch should happen every 120 seconds
+
+  Scenario: Manual backlog refresh via column button
+    Given the backlog column is visible
+    Then a refresh button (arrow.clockwise) should appear in the column header
+    When I click the refresh button
+    Then GitHub issues should be re-fetched immediately regardless of timer
+    And the button should show a spinner while loading
+
+  Scenario: Deduplication of GitHub issues
+    Given issue #123 already exists as a Link with source=githubIssue
+    When the next GitHub fetch also returns issue #123
+    Then no duplicate Link should be created
+    And the existing card should be kept as-is
+
+  Scenario: GitHub issues create proper Link records
+    When a GitHub issue is fetched
+    Then a Link should be created with:
+      | Field         | Value                              |
+      | source        | github_issue                       |
+      | column        | backlog                            |
+      | githubIssue   | issue number                       |
+      | projectPath   | the project's path                 |
+      | name          | "#123: Issue title"                |
+      | issueBody     | the issue body text                |
 
   # ── Starting Work on an Issue ──
 
@@ -118,3 +143,23 @@ Feature: GitHub Issues as Backlog Source
     When a GitHub fetch fails
     Then previously cached issues should remain in the backlog
     And a subtle "offline" indicator should appear
+
+  # ── Per-Project Filters ──
+
+  Scenario: Per-project GitHub filter
+    Given project "LangWatch" has githubFilter "assignee:@me repo:langwatch/langwatch is:open"
+    When I select the LangWatch project view
+    Then the backlog should only show issues matching that filter
+    And not issues from other repos
+
+  Scenario: Global view combines per-project filters
+    Given "LangWatch" has filter "repo:langwatch/langwatch"
+    And "Scenario" has filter "repo:langwatch/scenario"
+    When I select "All Projects"
+    Then the backlog should combine issues from both filters
+
+  Scenario: Project without filter inherits default
+    Given a project "SideProject" has no githubFilter
+    And the global default filter is "assignee:@me is:open"
+    When I view SideProject
+    Then the backlog should use the global default filter

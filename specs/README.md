@@ -11,6 +11,12 @@ specs/
 │   ├── card-lifecycle.feature     # Automated card movement between columns
 │   └── drag-and-drop.feature     # Manual card reordering and column moves
 │
+├── projects/                      # Multi-project management
+│   ├── project-management.feature # Project CRUD (add, edit, delete)
+│   ├── project-selector.feature  # Kanban menu project selector, keyboard shortcuts
+│   ├── project-github.feature    # Per-project GitHub issue filters
+│   └── project-discovery.feature # Auto-discovery of unconfigured project paths
+│
 ├── sources/                       # Where backlog items come from
 │   ├── github-issues.feature     # GitHub issue import via gh CLI
 │   └── manual-tasks.feature      # Manual task creation and management

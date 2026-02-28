@@ -53,6 +53,9 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
+            ProjectsSettingsView()
+                .tabItem { Label("Projects", systemImage: "folder") }
+
             GeneralSettingsView(
                 hooksInstalled: $hooksInstalled,
                 ghAvailable: ghAvailable,
@@ -61,16 +64,16 @@ struct SettingsView: View {
             )
             .tabItem { Label("General", systemImage: "gear") }
 
-            AmphetamineSettingsView()
-                .tabItem { Label("Amphetamine", systemImage: "bolt.fill") }
-
             NotificationSettingsView()
                 .tabItem { Label("Notifications", systemImage: "bell") }
 
             RemoteSettingsView()
                 .tabItem { Label("Remote", systemImage: "network") }
+
+            AmphetamineSettingsView()
+                .tabItem { Label("Amphetamine", systemImage: "bolt.fill") }
         }
-        .frame(width: 480, height: 400)
+        .frame(width: 520, height: 460)
         .task {
             await checkAvailability()
         }
@@ -93,6 +96,9 @@ struct GeneralSettingsView: View {
     let mutagenAvailable: Bool
 
     @AppStorage("preferredEditor") private var preferredEditor: PreferredEditor = .zed
+    @State private var showOnboarding = false
+
+    private let settingsStore = SettingsStore()
 
     var body: some View {
         Form {
@@ -145,9 +151,25 @@ struct GeneralSettingsView: View {
                     .controlSize(.small)
                 }
             }
+
+            Section {
+                Button("Open Setup Wizard...") {
+                    showOnboarding = true
+                }
+                .controlSize(.small)
+            }
         }
         .formStyle(.grouped)
         .padding()
+        .sheet(isPresented: $showOnboarding) {
+            OnboardingWizard(
+                settingsStore: settingsStore,
+                onComplete: {
+                    showOnboarding = false
+                    hooksInstalled = HookManager.isInstalled()
+                }
+            )
+        }
     }
 
     private func statusRow(_ name: String, available: Bool) -> some View {
@@ -191,7 +213,7 @@ struct AmphetamineSettingsView: View {
             Section("Linger Timeout") {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Slider(value: $lingerTimeout, in: 0...300, step: 15)
+                        Slider(value: $lingerTimeout, in: 0...900, step: 30)
                         Text(formatTimeout(lingerTimeout))
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -224,8 +246,11 @@ struct AmphetamineSettingsView: View {
 
     private func formatTimeout(_ seconds: Double) -> String {
         if seconds == 0 { return "Off" }
-        if seconds < 60 { return "\(Int(seconds))s" }
-        return "\(Int(seconds / 60))m"
+        let mins = Int(seconds) / 60
+        let secs = Int(seconds) % 60
+        if mins == 0 { return "\(secs)s" }
+        if secs == 0 { return "\(mins)m" }
+        return "\(mins)m \(secs)s"
     }
 
     private func instructionRow(_ number: Int, _ text: LocalizedStringKey) -> some View {
@@ -246,20 +271,144 @@ struct AmphetamineSettingsView: View {
 
 struct NotificationSettingsView: View {
     @State private var pushoverToken = ""
-    @State private var pushoverUser = ""
+    @State private var pushoverUserKey = ""
+    @State private var isSaving = false
+    @State private var testSending = false
+    @State private var testResult: String?
+    @State private var pandocAvailable = false
+    @State private var wkhtmltoimageAvailable = false
+    @State private var saveTask: Task<Void, Never>?
+
+    private let settingsStore = SettingsStore()
 
     var body: some View {
         Form {
             Section("Pushover") {
                 TextField("App Token", text: $pushoverToken)
-                TextField("User Key", text: $pushoverUser)
+                    .textFieldStyle(.roundedBorder)
+                    .onChange(of: pushoverToken) { scheduleSave() }
+                TextField("User Key", text: $pushoverUserKey)
+                    .textFieldStyle(.roundedBorder)
+                    .onChange(of: pushoverUserKey) { scheduleSave() }
+
+                HStack {
+                    Button {
+                        testNotification()
+                    } label: {
+                        HStack(spacing: 4) {
+                            if testSending {
+                                ProgressView()
+                                    .controlSize(.mini)
+                            } else {
+                                Image(systemName: "play.circle")
+                            }
+                            Text("Send Test")
+                        }
+                    }
+                    .controlSize(.small)
+                    .disabled(pushoverToken.isEmpty || pushoverUserKey.isEmpty || testSending)
+
+                    if let testResult {
+                        Text(testResult)
+                            .font(.caption)
+                            .foregroundStyle(testResult.contains("Sent") ? .green : .red)
+                    }
+                }
+
                 Text("Get your keys at pushover.net")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
+
+            Section("macOS Fallback") {
+                HStack {
+                    Label("Native Notifications", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Spacer()
+                    Text("Always available")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                }
+                Text("When Pushover is not configured, notifications are sent via macOS notification center.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Section("Image Rendering") {
+                statusRow("pandoc", available: pandocAvailable,
+                          hint: "brew install pandoc")
+                statusRow("wkhtmltoimage", available: wkhtmltoimageAvailable,
+                          hint: "brew install wkhtmltopdf")
+                Text("Required for rendering rich notification images. Text notifications work without these.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
         }
         .formStyle(.grouped)
         .padding()
+        .task { await loadSettings() }
+    }
+
+    private func statusRow(_ name: String, available: Bool, hint: String) -> some View {
+        HStack {
+            Label(name, systemImage: available ? "checkmark.circle.fill" : "minus.circle")
+                .foregroundStyle(available ? .green : .secondary)
+            Spacer()
+            if available {
+                Text("Available")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            } else {
+                Text(hint)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    private func loadSettings() async {
+        do {
+            let settings = try await settingsStore.read()
+            pushoverToken = settings.notifications.pushoverToken ?? ""
+            pushoverUserKey = settings.notifications.pushoverUserKey ?? ""
+        } catch {}
+        pandocAvailable = await ShellCommand.isAvailable("pandoc")
+        wkhtmltoimageAvailable = await ShellCommand.isAvailable("wkhtmltoimage")
+    }
+
+    private func scheduleSave() {
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            do {
+                var settings = try await settingsStore.read()
+                settings.notifications.pushoverToken = pushoverToken.isEmpty ? nil : pushoverToken
+                settings.notifications.pushoverUserKey = pushoverUserKey.isEmpty ? nil : pushoverUserKey
+                try await settingsStore.write(settings)
+            } catch {}
+        }
+    }
+
+    private func testNotification() {
+        testSending = true
+        testResult = nil
+        Task {
+            do {
+                let client = PushoverClient(token: pushoverToken, userKey: pushoverUserKey)
+                try await client.sendNotification(
+                    title: "Kanban Test",
+                    message: "Notifications are working!",
+                    imageData: nil
+                )
+                testResult = "Sent!"
+            } catch {
+                testResult = "Failed: \(error.localizedDescription)"
+            }
+            testSending = false
+        }
     }
 }
 
@@ -283,5 +432,319 @@ struct RemoteSettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+    }
+}
+
+// MARK: - Projects
+
+struct ProjectsSettingsView: View {
+    @State private var projects: [Project] = []
+    @State private var excludedPaths: [String] = []
+    @State private var newExcludedPath = ""
+    @State private var error: String?
+    @State private var editingProject: Project?
+    @State private var isEditingNew = false
+
+    private let settingsStore = SettingsStore()
+
+    var body: some View {
+        Form {
+            Section("Projects") {
+                if projects.isEmpty {
+                    Text("No projects configured")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                } else {
+                    ForEach(projects) { project in
+                        projectRow(project)
+                    }
+                }
+
+                Button("Add Project...") {
+                    addProjectViaFolderPicker()
+                }
+                .controlSize(.small)
+            }
+
+            Section("Global View Exclusions") {
+                ForEach(excludedPaths, id: \.self) { path in
+                    HStack {
+                        Text(path)
+                            .font(.caption)
+                        Spacer()
+                        Button {
+                            excludedPaths.removeAll { $0 == path }
+                            saveExclusions()
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+
+                HStack {
+                    TextField("Path to exclude from global view", text: $newExcludedPath)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                    Button("Add") {
+                        guard !newExcludedPath.isEmpty else { return }
+                        excludedPaths.append(newExcludedPath)
+                        newExcludedPath = ""
+                        saveExclusions()
+                    }
+                    .controlSize(.small)
+                    .disabled(newExcludedPath.isEmpty)
+                }
+
+                Text("Sessions from excluded paths won't appear in All Projects view")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
+            if let error {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .task { await loadSettings() }
+        .sheet(item: $editingProject) { project in
+            ProjectEditSheet(
+                project: project,
+                isNew: isEditingNew,
+                onSave: { updated in
+                    Task {
+                        if isEditingNew {
+                            try? await settingsStore.addProject(updated)
+                        } else {
+                            try? await settingsStore.updateProject(updated)
+                        }
+                        await loadSettings()
+                    }
+                    isEditingNew = false
+                    editingProject = nil
+                },
+                onCancel: {
+                    isEditingNew = false
+                    editingProject = nil
+                }
+            )
+        }
+    }
+
+    private func projectRow(_ project: Project) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(project.name)
+                    .fontWeight(.medium)
+                Text(project.path)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let filter = project.githubFilter, !filter.isEmpty {
+                    Text("gh: \(filter)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Spacer()
+
+            if !project.visible {
+                Image(systemName: "eye.slash")
+                    .foregroundStyle(.tertiary)
+                    .font(.caption)
+            }
+
+            Button {
+                editingProject = project
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.borderless)
+            .help("Edit project")
+
+            Button {
+                deleteProject(project)
+            } label: {
+                Image(systemName: "trash")
+                    .foregroundStyle(.red.opacity(0.7))
+            }
+            .buttonStyle(.borderless)
+            .help("Remove project")
+        }
+    }
+
+    private func addProjectViaFolderPicker() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Select a project directory"
+        panel.prompt = "Add Project"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let path = url.path
+        // Check for duplicates before opening the edit sheet
+        if projects.contains(where: { $0.path == path }) {
+            error = "Project already configured at this path"
+            return
+        }
+        isEditingNew = true
+        editingProject = Project(path: path)
+    }
+
+    private func deleteProject(_ project: Project) {
+        Task {
+            try? await settingsStore.removeProject(path: project.path)
+            await loadSettings()
+        }
+    }
+
+    private func saveExclusions() {
+        Task {
+            var settings = try await settingsStore.read()
+            settings.globalView.excludedPaths = excludedPaths
+            try await settingsStore.write(settings)
+        }
+    }
+
+    private func loadSettings() async {
+        do {
+            let settings = try await settingsStore.read()
+            projects = settings.projects
+            excludedPaths = settings.globalView.excludedPaths
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+// MARK: - Project Edit Sheet
+
+struct ProjectEditSheet: View {
+    @State private var name: String
+    @State private var repoRoot: String
+    @State private var githubFilter: String
+    @State private var visible: Bool
+    @State private var testResultCount: Int?
+    @State private var testRunning = false
+    let path: String
+    let isNew: Bool
+    let onSave: (Project) -> Void
+    let onCancel: () -> Void
+
+    init(project: Project, isNew: Bool = false, onSave: @escaping (Project) -> Void, onCancel: @escaping () -> Void) {
+        self.path = project.path
+        self.isNew = isNew
+        self._name = State(initialValue: project.name)
+        self._repoRoot = State(initialValue: project.repoRoot ?? "")
+        self._githubFilter = State(initialValue: project.githubFilter ?? "")
+        self._visible = State(initialValue: project.visible)
+        self.onSave = onSave
+        self.onCancel = onCancel
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(isNew ? "Add Project" : "Edit Project")
+                .font(.title3)
+                .fontWeight(.semibold)
+
+            Form {
+                Section {
+                    TextField("Name", text: $name)
+                    Text(path)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("Repo root (if different from path)", text: $repoRoot)
+                        .font(.caption)
+                    Toggle("Visible in project selector", isOn: $visible)
+                }
+
+                Section("GitHub Issues") {
+                    TextField("Filter", text: $githubFilter)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.caption, design: .monospaced))
+
+                    Text("Uses `gh search issues` syntax — e.g.\nassignee:@me repo:org/repo is:open label:bug")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+
+                    HStack {
+                        Button {
+                            testFilter()
+                        } label: {
+                            HStack(spacing: 4) {
+                                if testRunning {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                } else {
+                                    Image(systemName: "play.circle")
+                                }
+                                Text("Test filter")
+                            }
+                        }
+                        .controlSize(.small)
+                        .disabled(githubFilter.isEmpty || testRunning)
+
+                        if let count = testResultCount {
+                            Text("\(count) issue\(count == 1 ? "" : "s") found")
+                                .font(.caption)
+                                .foregroundStyle(count > 0 ? .green : .orange)
+                        }
+                    }
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { onCancel() }
+                    .keyboardShortcut(.cancelAction)
+                Button(isNew ? "Add" : "Save") {
+                    let project = Project(
+                        path: path,
+                        name: name,
+                        repoRoot: repoRoot.isEmpty ? nil : repoRoot,
+                        visible: visible,
+                        githubFilter: githubFilter.isEmpty ? nil : githubFilter
+                    )
+                    onSave(project)
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
+
+    private func testFilter() {
+        testRunning = true
+        testResultCount = nil
+        let filterArgs = githubFilter.split(separator: " ").map(String.init)
+        Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["gh", "search", "issues", "--limit", "100", "--json", "number"] + filterArgs
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = Pipe()
+            try? process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let count: Int
+            if let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                count = arr.count
+            } else {
+                count = 0
+            }
+            await MainActor.run {
+                testResultCount = count
+                testRunning = false
+            }
+        }
     }
 }

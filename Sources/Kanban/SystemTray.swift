@@ -81,7 +81,7 @@ final class SystemTray: @unchecked Sendable {
 
             if !attentionCards.isEmpty {
                 menu.addItem(NSMenuItem.separator())
-                menu.addItem(NSMenuItem.sectionHeader(title: "Requires Attention"))
+                menu.addItem(NSMenuItem.sectionHeader(title: "Waiting"))
                 for card in attentionCards.prefix(5) {
                     let item = NSMenuItem(title: card.displayTitle, action: nil, keyEquivalent: "")
                     item.image = NSImage(systemSymbolName: "exclamationmark.circle.fill", accessibilityDescription: nil)

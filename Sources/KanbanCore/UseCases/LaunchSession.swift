@@ -1,19 +1,12 @@
 import Foundation
 
 /// Launches a new Claude Code session inside a tmux session.
+/// Does NOT manage Link records — the caller owns link lifecycle.
 public final class LaunchSession: SessionLauncher, @unchecked Sendable {
     private let tmux: TmuxManagerPort
-    private let coordinationStore: CoordinationStore
-    private let skillPrefix: String?
 
-    public init(
-        tmux: TmuxManagerPort,
-        coordinationStore: CoordinationStore,
-        skillPrefix: String? = nil
-    ) {
+    public init(tmux: TmuxManagerPort) {
         self.tmux = tmux
-        self.coordinationStore = coordinationStore
-        self.skillPrefix = skillPrefix
     }
 
     public func launch(
@@ -33,31 +26,15 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
             cmd = "SHELL=\(shellOverride) \(cmd)"
         }
 
-        // Add prompt with optional skill prefix
-        let fullPrompt: String
-        if let skillPrefix {
-            fullPrompt = skillPrefix + " " + prompt
-        } else {
-            fullPrompt = prompt
-        }
-        cmd += " -p \(shellEscape(fullPrompt))"
+        cmd += " -p \(shellEscape(prompt))"
 
         try await tmux.createSession(name: sessionName, path: projectPath, command: cmd)
-
-        // Record in coordination file
-        let link = Link(
-            sessionId: sessionName, // will be updated when session ID is discovered
-            projectPath: projectPath,
-            column: .inProgress,
-            source: .manual
-        )
-        try await coordinationStore.upsertLink(link)
-
         return sessionName
     }
 
     public func resume(
         sessionId: String,
+        projectPath: String,
         shellOverride: String?
     ) async throws -> String {
         // Check if there's already a tmux session for this
@@ -73,18 +50,7 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
             cmd = "SHELL=\(shellOverride) \(cmd)"
         }
 
-        // Get project path from coordination file
-        let link = try await coordinationStore.linkForSession(sessionId)
-        let path = link?.projectPath ?? NSHomeDirectory()
-
-        try await tmux.createSession(name: sessionName, path: path, command: cmd)
-
-        // Update link with tmux session
-        try await coordinationStore.updateLink(sessionId: sessionId) { link in
-            link.tmuxSession = sessionName
-            link.column = .inProgress
-        }
-
+        try await tmux.createSession(name: sessionName, path: projectPath, command: cmd)
         return sessionName
     }
 

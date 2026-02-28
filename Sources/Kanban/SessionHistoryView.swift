@@ -20,9 +20,42 @@ struct SessionHistoryView: View {
     let turns: [ConversationTurn]
     let isLoading: Bool
     var checkpointMode: Bool = false
+    var onCancelCheckpoint: (() -> Void)?
     var onSelectTurn: ((ConversationTurn) -> Void)?
 
     @State private var hoveredTurnIndex: Int?
+    @State private var displayCount: Int = 80
+    @State private var showSearch = false
+    @State private var searchText = ""
+    @State private var activeQuery = ""  // debounced, min 2 chars
+    @State private var searchMatchIndices: [Int] = []
+    @State private var currentMatchPosition: Int = 0
+    @State private var searchDebounceTask: Task<Void, Never>?
+
+    private static let pageSize = 80
+    private static let maxSearchResults = 200
+
+    /// Turns to display: either search results or the last N turns.
+    private var displayedTurns: [ConversationTurn] {
+        if !activeQuery.isEmpty {
+            let query = activeQuery.lowercased()
+            var results: [ConversationTurn] = []
+            for turn in turns {
+                if turn.textPreview.lowercased().contains(query)
+                    || turn.contentBlocks.contains(where: { $0.text.lowercased().contains(query) }) {
+                    results.append(turn)
+                    if results.count >= Self.maxSearchResults { break }
+                }
+            }
+            return results
+        }
+        if turns.count <= displayCount { return turns }
+        return Array(turns.suffix(displayCount))
+    }
+
+    private var hasMoreTurns: Bool {
+        activeQuery.isEmpty && turns.count > displayCount
+    }
 
     var body: some View {
         if isLoading {
@@ -45,7 +78,7 @@ struct SessionHistoryView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ZStack {
+            ZStack(alignment: .top) {
                 Color(white: 0.08)
                     .ignoresSafeArea()
 
@@ -56,13 +89,33 @@ struct SessionHistoryView: View {
                                 checkpointBanner
                             }
 
-                            LazyVStack(alignment: .leading, spacing: 2) {
-                                ForEach(turns, id: \.index) { turn in
+                            // "Load earlier" button
+                            if hasMoreTurns {
+                                Button {
+                                    displayCount += Self.pageSize
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "arrow.up")
+                                            .font(.caption2)
+                                        Text("Load \(min(Self.pageSize, turns.count - displayCount)) earlier turns")
+                                            .font(.caption)
+                                    }
+                                    .foregroundStyle(.white.opacity(0.5))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 6)
+                                }
+                                .buttonStyle(.plain)
+                                .id("load-more")
+                            }
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(displayedTurns, id: \.index) { turn in
                                     TurnBlockView(
                                         turn: turn,
                                         checkpointMode: checkpointMode,
                                         isHovered: hoveredTurnIndex == turn.index,
-                                        isDimmed: checkpointMode && hoveredTurnIndex != nil && turn.index > hoveredTurnIndex!
+                                        isDimmed: checkpointMode && hoveredTurnIndex != nil && turn.index > hoveredTurnIndex!,
+                                        highlightText: activeQuery.isEmpty ? nil : activeQuery
                                     )
                                     .id(turn.index)
                                     .onHover { isHovering in
@@ -76,18 +129,158 @@ struct SessionHistoryView: View {
                                         }
                                     }
                                 }
-                                Color.clear.frame(height: 1).id("bottom-anchor")
+                                Color.clear.frame(height: 30).id("bottom-anchor")
                             }
-                            .padding(.vertical, 8)
+                            .padding(.top, 8)
                             .padding(.horizontal, 12)
                         }
                         .background(DarkScrollbarModifier())
                     }
                     .onAppear { scrollToBottom(proxy: proxy) }
                     .onChange(of: turns.count) { scrollToBottom(proxy: proxy) }
+                    .onChange(of: currentMatchPosition) {
+                        guard !searchMatchIndices.isEmpty,
+                              currentMatchPosition < searchMatchIndices.count else { return }
+                        let idx = searchMatchIndices[currentMatchPosition]
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            proxy.scrollTo(idx, anchor: .center)
+                        }
+                    }
+                }
+
+                // Search overlay
+                if showSearch {
+                    searchBar
                 }
             }
+            .background {
+                // Hidden buttons for keyboard shortcuts
+                Button("") {
+                    showSearch = true
+                }
+                .keyboardShortcut("f", modifiers: .command)
+                .hidden()
+
+                Button("") { dismissSearch() }
+                    .keyboardShortcut(.escape, modifiers: [])
+                    .hidden()
+            }
         }
+    }
+
+    // MARK: - Search bar
+
+    private var searchBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.5))
+
+            TextField("Search history...", text: $searchText)
+                .textFieldStyle(.plain)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.white)
+                .onSubmit { navigateSearch(forward: true) }
+                .onChange(of: searchText) { scheduleSearch() }
+
+            if !activeQuery.isEmpty {
+                if searchMatchIndices.isEmpty {
+                    Text("0 results")
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.4))
+                } else {
+                    Text("\(currentMatchPosition + 1)/\(searchMatchIndices.count)\(searchMatchIndices.count >= Self.maxSearchResults ? "+" : "")")
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.6))
+
+                    Button { navigateSearch(forward: false) } label: {
+                        Image(systemName: "chevron.up")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.white.opacity(0.6))
+
+                    Button { navigateSearch(forward: true) } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.white.opacity(0.6))
+                }
+            }
+
+            Button { dismissSearch() } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white.opacity(0.5))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color(white: 0.15))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
+    }
+
+    private func scheduleSearch() {
+        searchDebounceTask?.cancel()
+
+        // Clear immediately if empty
+        if searchText.isEmpty {
+            activeQuery = ""
+            searchMatchIndices = []
+            currentMatchPosition = 0
+            return
+        }
+
+        // Require at least 2 chars
+        guard searchText.count >= 2 else { return }
+
+        searchDebounceTask = Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            activeQuery = searchText
+            updateSearchMatches()
+        }
+    }
+
+    private func updateSearchMatches() {
+        guard !activeQuery.isEmpty else {
+            searchMatchIndices = []
+            currentMatchPosition = 0
+            return
+        }
+        let query = activeQuery.lowercased()
+        var indices: [Int] = []
+        for turn in turns {
+            if turn.textPreview.lowercased().contains(query)
+                || turn.contentBlocks.contains(where: { $0.text.lowercased().contains(query) }) {
+                indices.append(turn.index)
+                if indices.count >= Self.maxSearchResults { break }
+            }
+        }
+        searchMatchIndices = indices
+        currentMatchPosition = max(0, indices.count - 1)
+    }
+
+    private func navigateSearch(forward: Bool) {
+        guard !searchMatchIndices.isEmpty else { return }
+        if forward {
+            currentMatchPosition = (currentMatchPosition + 1) % searchMatchIndices.count
+        } else {
+            currentMatchPosition = (currentMatchPosition - 1 + searchMatchIndices.count) % searchMatchIndices.count
+        }
+    }
+
+    private func dismissSearch() {
+        searchDebounceTask?.cancel()
+        showSearch = false
+        searchText = ""
+        activeQuery = ""
+        searchMatchIndices = []
+        currentMatchPosition = 0
     }
 
     private var checkpointBanner: some View {
@@ -97,6 +290,16 @@ struct SessionHistoryView: View {
             Text("Click a turn to restore to. Everything after will be removed.")
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.8))
+            Spacer()
+            Button {
+                onCancelCheckpoint?()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            .buttonStyle(.borderless)
+            .help("Cancel checkpoint mode")
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -104,6 +307,7 @@ struct SessionHistoryView: View {
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy) {
+        guard activeQuery.isEmpty else { return }
         DispatchQueue.main.async {
             withAnimation(.none) {
                 proxy.scrollTo("bottom-anchor", anchor: .bottom)
@@ -119,6 +323,7 @@ struct TurnBlockView: View {
     var checkpointMode: Bool = false
     var isHovered: Bool = false
     var isDimmed: Bool = false
+    var highlightText: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -135,15 +340,28 @@ struct TurnBlockView: View {
             RoundedRectangle(cornerRadius: 4)
                 .fill(turnBackground)
         )
+        .overlay(
+            isSearchMatch
+                ? RoundedRectangle(cornerRadius: 4).stroke(Color.yellow.opacity(0.3), lineWidth: 1)
+                : nil
+        )
         .contentShape(Rectangle())
+    }
+
+    private var isSearchMatch: Bool {
+        guard let query = highlightText?.lowercased(), !query.isEmpty else { return false }
+        return turn.textPreview.lowercased().contains(query)
+            || turn.contentBlocks.contains { $0.text.lowercased().contains(query) }
     }
 
     private var turnBackground: Color {
         if isHovered && checkpointMode {
             return Color.orange.opacity(0.1)
         }
+        if isSearchMatch {
+            return Color.yellow.opacity(0.08)
+        }
         if turn.role == "user" {
-            // User turns get a subtle gray background
             let textBlocks = turn.contentBlocks.filter { if case .text = $0.kind { true } else { false } }
             if !textBlocks.isEmpty {
                 return Color(white: 0.15)
@@ -171,9 +389,8 @@ struct TurnBlockView: View {
                             Text("  ")
                                 .font(.system(.caption, design: .monospaced))
                         }
-                        Text(textBlocks[i].text)
+                        styledText(textBlocks[i].text, color: .white)
                             .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.white)
                             .textSelection(.enabled)
                     }
                 }
@@ -187,9 +404,8 @@ struct TurnBlockView: View {
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.green)
                         .fontWeight(.bold)
-                    Text(turn.textPreview)
+                    styledText(turn.textPreview, color: .white)
                         .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.white)
                         .textSelection(.enabled)
                 }
             }
@@ -206,9 +422,8 @@ struct TurnBlockView: View {
                     Text("● ")
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.white)
-                    Text(turn.textPreview)
+                    styledText(turn.textPreview, color: Color(white: 0.85))
                         .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(Color(white: 0.85))
                         .textSelection(.enabled)
                         .lineLimit(20)
                 }
@@ -236,6 +451,27 @@ struct TurnBlockView: View {
         return false
     }
 
+    // MARK: - Highlighted text helper
+
+    private func styledText(_ text: String, color: Color) -> Text {
+        guard let query = highlightText?.lowercased(), !query.isEmpty else {
+            return Text(text).foregroundStyle(color)
+        }
+        var result = AttributedString(text)
+        result.foregroundColor = color
+        let lowerText = text.lowercased()
+        var pos = lowerText.startIndex
+        while let range = lowerText.range(of: query, range: pos..<lowerText.endIndex) {
+            if let attrStart = AttributedString.Index(range.lowerBound, within: result),
+               let attrEnd = AttributedString.Index(range.upperBound, within: result) {
+                result[attrStart..<attrEnd].backgroundColor = .yellow.opacity(0.35)
+                result[attrStart..<attrEnd].foregroundColor = .yellow
+            }
+            pos = range.upperBound
+        }
+        return Text(result)
+    }
+
     // MARK: - Text block
 
     private func textBlockView(_ text: String, isFirst: Bool) -> some View {
@@ -248,9 +484,8 @@ struct TurnBlockView: View {
                 Text("  ")
                     .font(.system(.caption, design: .monospaced))
             }
-            Text(text)
+            styledText(text, color: Color(white: 0.85))
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(Color(white: 0.85))
                 .textSelection(.enabled)
                 .lineLimit(30)
         }
@@ -304,18 +539,4 @@ struct TurnBlockView: View {
         }
     }
 
-    // MARK: - Timestamp formatting
-
-    private func formatTimestamp(_ ts: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = formatter.date(from: ts) ?? ISO8601DateFormatter().date(from: ts) else {
-            return ts
-        }
-        let interval = Date().timeIntervalSince(date)
-        if interval < 60 { return "just now" }
-        if interval < 3600 { return "\(Int(interval / 60))m ago" }
-        if interval < 86400 { return "\(Int(interval / 3600))h ago" }
-        return "\(Int(interval / 86400))d ago"
-    }
 }

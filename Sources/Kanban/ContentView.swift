@@ -6,14 +6,14 @@ struct ContentView: View {
     @State private var orchestrator: BackgroundOrchestrator
     @State private var showSearch = false
     @State private var showNewTask = false
-    @State private var hooksInstalled = true // assume true until checked
+    @State private var showOnboarding = false
     @AppStorage("appearanceMode") private var appearanceMode: AppearanceMode = .auto
-    @State private var hookSetupError: String?
     @State private var showAddFromPath = false
     @State private var addFromPathText = ""
     @AppStorage("selectedProject") private var selectedProjectPersisted: String = ""
     private let coordinationStore: CoordinationStore
     private let settingsStore: SettingsStore
+    private let launcher: LaunchSession
     private let systemTray = SystemTray()
     private let hookEventsPath: String
 
@@ -33,11 +33,13 @@ struct ContentView: View {
             discovery: discovery,
             coordinationStore: coordination,
             activityDetector: activityDetector,
-            settingsStore: settings
+            settingsStore: settings,
+            ghAdapter: GhCliAdapter()
         )
 
-        // Load Pushover config if available
-        let notifier: PushoverClient? = Self.loadPushoverConfig()
+        // Load Pushover from settings.json, wrap in CompositeNotifier with macOS fallback
+        let pushover = Self.loadPushoverConfig()
+        let notifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient())
 
         let orch = BackgroundOrchestrator(
             discovery: discovery,
@@ -47,50 +49,41 @@ struct ContentView: View {
             notifier: notifier
         )
 
+        let launch = LaunchSession(tmux: TmuxAdapter())
+
         _boardState = State(initialValue: state)
         _orchestrator = State(initialValue: orch)
         self.coordinationStore = coordination
         self.settingsStore = settings
+        self.launcher = launch
         self.hookEventsPath = (NSHomeDirectory() as NSString)
             .appendingPathComponent(".kanban/hook-events.jsonl")
     }
 
     private static func loadPushoverConfig() -> PushoverClient? {
-        let configPath = (NSHomeDirectory() as NSString)
-            .appendingPathComponent(".config/claude-pushover/config")
-        guard let contents = try? String(contentsOfFile: configPath, encoding: .utf8) else {
+        let settingsPath = (NSHomeDirectory() as NSString)
+            .appendingPathComponent(".kanban/settings.json")
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
+              let settings = try? JSONDecoder().decode(Settings.self, from: data) else {
             return nil
         }
 
-        var token: String?
-        var user: String?
-        for line in contents.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("#") || trimmed.isEmpty { continue }
-            if trimmed.hasPrefix("PUSHOVER_TOKEN=") {
-                token = trimmed.replacingOccurrences(of: "PUSHOVER_TOKEN=", with: "")
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-            } else if trimmed.hasPrefix("PUSHOVER_USER=") {
-                user = trimmed.replacingOccurrences(of: "PUSHOVER_USER=", with: "")
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-            }
+        guard let token = settings.notifications.pushoverToken,
+              let user = settings.notifications.pushoverUserKey,
+              !token.isEmpty, !user.isEmpty else {
+            return nil
         }
-
-        guard let t = token, let u = user, !t.isEmpty, !u.isEmpty else { return nil }
-        return PushoverClient(token: t, userKey: u)
+        return PushoverClient(token: token, userKey: user)
     }
 
     var body: some View {
         NavigationStack {
-        BoardView(state: boardState)
-            // Hook onboarding banner
-            .overlay(alignment: .top) {
-                if !hooksInstalled {
-                    hookOnboardingBanner
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-            }
-            .animation(.easeInOut(duration: 0.25), value: hooksInstalled)
+        BoardView(
+            state: boardState,
+            onStartCard: { cardId in startCard(cardId: cardId) },
+            onResumeCard: { cardId in resumeCard(cardId: cardId) },
+            onRefreshBacklog: { Task { await boardState.refreshBacklog() } }
+        )
             .ignoresSafeArea(edges: .top)
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .navigationTitle("")
@@ -98,6 +91,7 @@ struct ContentView: View {
                 if let card = boardState.cards.first(where: { $0.id == boardState.selectedCardId }) {
                     CardDetailView(
                         card: card,
+                        onResume: { resumeCard(cardId: card.id) },
                         onRename: { name in
                             boardState.renameCard(cardId: card.id, name: name)
                         },
@@ -130,15 +124,30 @@ struct ContentView: View {
                     isPresented: $showNewTask,
                     projects: boardState.configuredProjects,
                     defaultProjectPath: boardState.selectedProjectPath
-                ) { title, description, projectPath in
-                    createManualTask(title: title, description: description, projectPath: projectPath)
+                ) { title, description, projectPath, startImmediately in
+                    createManualTask(title: title, description: description, projectPath: projectPath, startImmediately: startImmediately)
                 }
             }
             .sheet(isPresented: $showAddFromPath) {
                 addFromPathSheet
             }
+            .sheet(isPresented: $showOnboarding) {
+                OnboardingWizard(
+                    settingsStore: settingsStore,
+                    onComplete: {
+                        showOnboarding = false
+                        // Reload notifier with potentially new pushover credentials
+                        let pushover = Self.loadPushoverConfig()
+                        let newNotifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient())
+                        orchestrator.updateNotifier(newNotifier)
+                    }
+                )
+            }
             .task {
-                hooksInstalled = HookManager.isInstalled()
+                // Show onboarding wizard on first launch
+                if let settings = try? await settingsStore.read(), !settings.hasCompletedOnboarding {
+                    showOnboarding = true
+                }
                 applyAppearance()
                 // Restore persisted project selection
                 boardState.selectedProjectPath = selectedProjectPersisted.isEmpty ? nil : selectedProjectPersisted
@@ -277,55 +286,6 @@ struct ContentView: View {
                     .hidden()
             }
         } // NavigationStack
-    }
-
-    private var hookOnboardingBanner: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "antenna.radiowaves.left.and.right")
-                .foregroundStyle(.orange)
-                .font(.title3)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Set up Claude Code hooks")
-                    .font(.callout)
-                    .fontWeight(.medium)
-                Text("Kanban needs hooks to detect when Claude is actively working, stops, or needs attention.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let error = hookSetupError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            }
-
-            Spacer()
-
-            Button("Set up for me") {
-                do {
-                    try HookManager.install()
-                    hooksInstalled = true
-                    hookSetupError = nil
-                } catch {
-                    hookSetupError = error.localizedDescription
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-
-            Button(action: { hooksInstalled = true }) {
-                Image(systemName: "xmark")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.borderless)
-            .help("Dismiss — Kanban will use file polling as fallback")
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
     }
 
     /// Watch ~/.kanban/hook-events.jsonl for writes → post notification (handled by onReceive above).
@@ -537,17 +497,98 @@ struct ContentView: View {
         }
     }
 
-    private func createManualTask(title: String, description: String, projectPath: String?) {
+    private func createManualTask(title: String, description: String, projectPath: String?, startImmediately: Bool = false) {
         let link = Link(
-            sessionId: UUID().uuidString,
             projectPath: projectPath,
-            column: .backlog,
+            column: startImmediately ? .inProgress : .backlog,
             name: title,
-            source: .manual
+            source: .manual,
+            issueBody: description.isEmpty ? nil : description
         )
+        let linkId = link.id
         Task {
             try? await coordinationStore.upsertLink(link)
             await boardState.refresh()
+            if startImmediately {
+                startCard(cardId: linkId)
+            }
+        }
+    }
+
+    // MARK: - Start / Resume
+
+    private func startCard(cardId: String) {
+        guard let card = boardState.cards.first(where: { $0.id == cardId }) else { return }
+        let projectPath = card.link.projectPath ?? NSHomeDirectory()
+
+        Task {
+            do {
+                // Load skill prefix from settings
+                let settings = try? await settingsStore.read()
+                let skillPrefix = settings?.skill.isEmpty == false ? settings?.skill : nil
+
+                // Build prompt from card name + issue body
+                var prompt = card.displayTitle
+                if let body = card.link.issueBody, !body.isEmpty {
+                    prompt += "\n\n" + body
+                }
+                if let skillPrefix {
+                    prompt = skillPrefix + " " + prompt
+                }
+
+                // Determine worktree name
+                let worktreeName: String?
+                if let issueNum = card.link.githubIssue {
+                    worktreeName = "issue-\(issueNum)"
+                } else {
+                    worktreeName = nil // let claude auto-generate
+                }
+
+                let tmuxName = try await launcher.launch(
+                    projectPath: projectPath,
+                    prompt: prompt,
+                    worktreeName: worktreeName,
+                    shellOverride: nil
+                )
+
+                // Update the EXISTING link (by link.id) — no new link created
+                try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
+                    link.tmuxSession = tmuxName
+                    link.column = .inProgress
+                }
+                boardState.setCardColumn(cardId: cardId, to: .inProgress)
+                await boardState.refresh()
+            } catch {
+                boardState.error = "Launch failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func resumeCard(cardId: String) {
+        guard let card = boardState.cards.first(where: { $0.id == cardId }) else { return }
+        let sessionId = card.link.sessionId ?? card.link.id
+        let projectPath = card.link.projectPath ?? NSHomeDirectory()
+
+        Task {
+            do {
+                let tmuxName = try await launcher.resume(
+                    sessionId: sessionId,
+                    projectPath: projectPath,
+                    shellOverride: nil
+                )
+
+                // Update link with tmux session (by link.id)
+                try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
+                    link.tmuxSession = tmuxName
+                    if link.column != .inProgress {
+                        link.column = .inProgress
+                    }
+                }
+                boardState.setCardColumn(cardId: cardId, to: .inProgress)
+                await boardState.refresh()
+            } catch {
+                boardState.error = "Resume failed: \(error.localizedDescription)"
+            }
         }
     }
 }
