@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var showSearch = false
     @State private var showNewTask = false
     @State private var hooksInstalled = true // assume true until checked
+    @State private var isDarkMode = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     @State private var hookSetupError: String?
     private let coordinationStore: CoordinationStore
     private let systemTray = SystemTray()
@@ -130,7 +131,8 @@ struct ContentView: View {
             }
             .task(id: "hook-watcher") {
                 // Watch hook-events.jsonl for changes → instant refresh
-                await watchHookEvents()
+                // Pass path explicitly so watchHookEvents can be nonisolated
+                await watchHookEvents(path: hookEventsPath)
             }
             .task(id: "refresh-timer") {
                 // Fallback periodic refresh for non-hook changes (new sessions, file mtime)
@@ -173,6 +175,14 @@ struct ContentView: View {
                     }
                     .disabled(boardState.isLoading)
                     .help("Refresh sessions")
+
+                    Button {
+                        isDarkMode.toggle()
+                        NSApp.appearance = NSAppearance(named: isDarkMode ? .darkAqua : .aqua)
+                    } label: {
+                        Image(systemName: isDarkMode ? "sun.max" : "moon")
+                    }
+                    .help(isDarkMode ? "Switch to light mode" : "Switch to dark mode")
                 }
 
                 // Left: title pill (Menu = different control type = own glass)
@@ -189,8 +199,8 @@ struct ContentView: View {
                     }
                 }
 
-                // Center: search pill
-                ToolbarItem(placement: .principal) {
+                // Right: search pill
+                ToolbarItem(placement: .primaryAction) {
                     Button { showSearch.toggle() } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "magnifyingglass")
@@ -206,6 +216,9 @@ struct ContentView: View {
                     }
                     .help("Search sessions (⌘K)")
                 }
+
+                // Spacer between search and sidebar pills
+                ToolbarSpacer(.fixed, placement: .primaryAction)
 
                 // Right: sidebar pill
                 ToolbarItem(placement: .primaryAction) {
@@ -279,9 +292,8 @@ struct ContentView: View {
     }
 
     /// Watch ~/.kanban/hook-events.jsonl for writes → post notification (handled by onReceive above).
-    /// Runs on a background queue via DispatchSource — does NOT capture self to avoid @MainActor isolation crash.
-    private func watchHookEvents() async {
-        let path = hookEventsPath
+    /// Must be nonisolated so GCD closures don't inherit @MainActor isolation (causes crash).
+    private nonisolated func watchHookEvents(path: String) async {
 
         // Ensure the directory and file exist
         let dir = (path as NSString).deletingLastPathComponent
@@ -292,7 +304,6 @@ struct ContentView: View {
 
         guard let fd = open(path, O_EVTONLY) as Int32?,
               fd >= 0 else { return }
-        defer { close(fd) }
 
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd,
@@ -300,23 +311,26 @@ struct ContentView: View {
             queue: .global(qos: .userInitiated)
         )
 
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            // Post notification instead of capturing self — avoids @MainActor isolation crash
+        // AsyncStream bridges GCD callbacks → async/await without actor isolation issues
+        let events = AsyncStream<Void> { continuation in
             source.setEventHandler {
-                NotificationCenter.default.post(name: .kanbanHookEvent, object: nil)
+                continuation.yield()
             }
             source.setCancelHandler {
-                continuation.resume()
+                continuation.finish()
             }
-            source.resume()
-
-            Task {
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(60))
-                }
+            continuation.onTermination = { @Sendable _ in
                 source.cancel()
             }
+            source.resume()
         }
+
+        // for-await runs on @MainActor, so posting notifications is safe
+        for await _ in events {
+            NotificationCenter.default.post(name: .kanbanHookEvent, object: nil)
+        }
+
+        close(fd)
     }
 
     private func createManualTask(title: String, description: String, projectPath: String?) {

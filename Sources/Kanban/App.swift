@@ -37,7 +37,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        NSApp.windows.first?.makeKeyAndOrderFront(nil)
+        if let window = NSApp.windows.first {
+            window.makeKeyAndOrderFront(nil)
+            window.titlebarSeparatorStyle = .none
+        }
     }
 }
 

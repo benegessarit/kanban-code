@@ -266,6 +266,12 @@ struct CardDetailView: View {
         guard fd >= 0 else { return }
         historyWatcherFD = fd
 
+        let source = Self.makeHistorySource(fd: fd)
+        historyWatcherSource = source
+    }
+
+    /// Must be nonisolated so GCD closures don't inherit @MainActor isolation (causes crash).
+    private nonisolated static func makeHistorySource(fd: Int32) -> DispatchSourceFileSystemObject {
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd,
             eventMask: [.write, .extend],
@@ -278,7 +284,7 @@ struct CardDetailView: View {
             close(fd)
         }
         source.resume()
-        historyWatcherSource = source
+        return source
     }
 
     private func stopHistoryWatcher() {

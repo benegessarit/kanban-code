@@ -16,7 +16,7 @@ struct BoardView: View {
 
     private var boardContent: some View {
         ScrollView(.horizontal, showsIndicators: true) {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .top, spacing: 6) {
                 ForEach(state.visibleColumns, id: \.self) { column in
                     DroppableColumnView(
                         column: column,

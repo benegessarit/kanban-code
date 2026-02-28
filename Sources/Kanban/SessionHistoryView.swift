@@ -1,5 +1,20 @@
 import SwiftUI
+import AppKit
 import KanbanCore
+
+// MARK: - Force dark scrollbar on the history view
+
+struct DarkScrollbarModifier: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            view.enclosingScrollView?.scrollerStyle = .overlay
+            view.enclosingScrollView?.appearance = NSAppearance(named: .darkAqua)
+        }
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
 
 struct SessionHistoryView: View {
     let turns: [ConversationTurn]
@@ -66,6 +81,7 @@ struct SessionHistoryView: View {
                             .padding(.vertical, 8)
                             .padding(.horizontal, 12)
                         }
+                        .background(DarkScrollbarModifier())
                     }
                     .onAppear { scrollToBottom(proxy: proxy) }
                     .onChange(of: turns.count) { scrollToBottom(proxy: proxy) }
@@ -114,19 +130,32 @@ struct TurnBlockView: View {
         }
         .opacity(isDimmed ? 0.3 : 1.0)
         .padding(.vertical, 4)
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 6)
         .background(
             RoundedRectangle(cornerRadius: 4)
-                .fill(isHovered && checkpointMode ? Color.orange.opacity(0.1) : .clear)
+                .fill(turnBackground)
         )
         .contentShape(Rectangle())
+    }
+
+    private var turnBackground: Color {
+        if isHovered && checkpointMode {
+            return Color.orange.opacity(0.1)
+        }
+        if turn.role == "user" {
+            // User turns get a subtle gray background
+            let textBlocks = turn.contentBlocks.filter { if case .text = $0.kind { true } else { false } }
+            if !textBlocks.isEmpty {
+                return Color(white: 0.15)
+            }
+        }
+        return .clear
     }
 
     // MARK: - User turn
 
     private var userTurnView: some View {
         VStack(alignment: .leading, spacing: 1) {
-            // User text blocks
             let textBlocks = turn.contentBlocks.filter { if case .text = $0.kind { true } else { false } }
             let toolResults = turn.contentBlocks.filter { if case .toolResult = $0.kind { true } else { false } }
 
@@ -149,7 +178,6 @@ struct TurnBlockView: View {
                     }
                 }
             } else if !toolResults.isEmpty {
-                // Tool result-only user message (auto-response to tool calls)
                 ForEach(toolResults.indices, id: \.self) { i in
                     toolResultLine(toolResults[i])
                 }
@@ -165,14 +193,6 @@ struct TurnBlockView: View {
                         .textSelection(.enabled)
                 }
             }
-
-            // Timestamp
-            if let ts = turn.timestamp {
-                Text(formatTimestamp(ts))
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(Color(white: 0.4))
-                    .padding(.leading, 18)
-            }
         }
     }
 
@@ -185,11 +205,12 @@ struct TurnBlockView: View {
                 HStack(alignment: .top, spacing: 0) {
                     Text("● ")
                         .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.purple)
+                        .foregroundStyle(.white)
                     Text(turn.textPreview)
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(Color(white: 0.85))
                         .textSelection(.enabled)
+                        .lineLimit(20)
                 }
             } else {
                 ForEach(turn.contentBlocks.indices, id: \.self) { i in
@@ -222,7 +243,7 @@ struct TurnBlockView: View {
             if isFirst {
                 Text("● ")
                     .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.purple)
+                    .foregroundStyle(.white)
             } else {
                 Text("  ")
                     .font(.system(.caption, design: .monospaced))
@@ -231,6 +252,7 @@ struct TurnBlockView: View {
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(Color(white: 0.85))
                 .textSelection(.enabled)
+                .lineLimit(30)
         }
     }
 
@@ -238,14 +260,13 @@ struct TurnBlockView: View {
 
     private func toolUseLine(name: String, displayText: String) -> some View {
         HStack(alignment: .top, spacing: 0) {
-            Text("  ⎿ ")
+            Text("  ● ")
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(Color(white: 0.4))
+                .foregroundStyle(.green)
             Text(name)
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.cyan.opacity(0.7))
+                .foregroundStyle(.green.opacity(0.8))
             if displayText != name {
-                // Strip tool name prefix to show just the args
                 let args = displayText.hasPrefix(name) ? String(displayText.dropFirst(name.count)) : "(\(displayText))"
                 Text(args)
                     .font(.system(.caption, design: .monospaced))
@@ -261,11 +282,11 @@ struct TurnBlockView: View {
         HStack(alignment: .top, spacing: 0) {
             Text("  ⎿ ")
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(Color(white: 0.4))
+                .foregroundStyle(Color(white: 0.35))
             Text(block.text)
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(Color(white: 0.4))
-                .lineLimit(1)
+                .foregroundStyle(Color(white: 0.35))
+                .lineLimit(3)
         }
     }
 
@@ -273,13 +294,13 @@ struct TurnBlockView: View {
 
     private func thinkingLine(_ text: String) -> some View {
         HStack(alignment: .top, spacing: 0) {
-            Text("  💭 ")
+            Text("  ∴ ")
                 .font(.system(.caption, design: .monospaced))
-            Text(String(text.prefix(100)) + (text.count > 100 ? "..." : ""))
+                .foregroundStyle(Color(white: 0.3))
+            Text("Thinking...")
                 .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(Color(white: 0.35))
+                .foregroundStyle(Color(white: 0.3))
                 .italic()
-                .lineLimit(1)
         }
     }
 

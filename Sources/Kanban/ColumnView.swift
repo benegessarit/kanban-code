@@ -27,8 +27,6 @@ struct ColumnView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
 
-            Divider()
-
             // Card list
             ScrollView {
                 LazyVStack(spacing: 8) {
