@@ -29,8 +29,8 @@ struct DroppableColumnView: View {
     @State private var renamingCardId: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Column header
+        VStack(spacing: 6) {
+            // Header pill
             HStack {
                 Text(column.displayName)
                     .font(.headline)
@@ -47,11 +47,11 @@ struct DroppableColumnView: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.vertical, 12)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
 
-            Divider()
-
-            // Card list
+            // Floating cards
             ScrollView {
                 LazyVStack(spacing: 8) {
                     ForEach(cards) { card in
@@ -86,12 +86,11 @@ struct DroppableColumnView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 4)
+                .padding(.bottom, 8)
             }
         }
         .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
-        .glassColumn()
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .stroke(

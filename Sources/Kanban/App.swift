@@ -39,7 +39,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         NSApp.activate(ignoringOtherApps: true)
         if let window = NSApp.windows.first {
             window.makeKeyAndOrderFront(nil)
-            window.titlebarSeparatorStyle = .none
+        }
+    }
+}
+
+
+enum AppearanceMode: String, CaseIterable {
+    case auto, light, dark
+
+    var next: AppearanceMode {
+        switch self {
+        case .auto: .light
+        case .light: .dark
+        case .dark: .auto
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .auto: "circle.lefthalf.filled"
+        case .light: "sun.max"
+        case .dark: "moon"
+        }
+    }
+
+    var helpText: String {
+        switch self {
+        case .auto: "Appearance: Auto (click for Light)"
+        case .light: "Appearance: Light (click for Dark)"
+        case .dark: "Appearance: Dark (click for Auto)"
         }
     }
 }

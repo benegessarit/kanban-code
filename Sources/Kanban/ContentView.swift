@@ -7,9 +7,13 @@ struct ContentView: View {
     @State private var showSearch = false
     @State private var showNewTask = false
     @State private var hooksInstalled = true // assume true until checked
-    @State private var isDarkMode = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    @AppStorage("appearanceMode") private var appearanceMode: AppearanceMode = .auto
     @State private var hookSetupError: String?
+    @State private var showAddFromPath = false
+    @State private var addFromPathText = ""
+    @AppStorage("selectedProject") private var selectedProjectPersisted: String = ""
     private let coordinationStore: CoordinationStore
+    private let settingsStore: SettingsStore
     private let systemTray = SystemTray()
     private let hookEventsPath: String
 
@@ -23,11 +27,13 @@ struct ContentView: View {
     init() {
         let discovery = ClaudeCodeSessionDiscovery()
         let coordination = CoordinationStore()
+        let settings = SettingsStore()
         let activityDetector = ClaudeCodeActivityDetector()
         let state = BoardState(
             discovery: discovery,
             coordinationStore: coordination,
-            activityDetector: activityDetector
+            activityDetector: activityDetector,
+            settingsStore: settings
         )
 
         // Load Pushover config if available
@@ -44,6 +50,7 @@ struct ContentView: View {
         _boardState = State(initialValue: state)
         _orchestrator = State(initialValue: orch)
         self.coordinationStore = coordination
+        self.settingsStore = settings
         self.hookEventsPath = (NSHomeDirectory() as NSString)
             .appendingPathComponent(".kanban/hook-events.jsonl")
     }
@@ -84,7 +91,8 @@ struct ContentView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.25), value: hooksInstalled)
-            .extendedBackground()
+            .ignoresSafeArea(edges: .top)
+            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .navigationTitle("")
             .inspector(isPresented: showInspector) {
                 if let card = boardState.cards.first(where: { $0.id == boardState.selectedCardId }) {
@@ -118,12 +126,22 @@ struct ContentView: View {
             }
             .animation(.easeInOut(duration: 0.15), value: showSearch)
             .sheet(isPresented: $showNewTask) {
-                NewTaskDialog(isPresented: $showNewTask) { title, description, projectPath in
+                NewTaskDialog(
+                    isPresented: $showNewTask,
+                    projects: boardState.configuredProjects,
+                    defaultProjectPath: boardState.selectedProjectPath
+                ) { title, description, projectPath in
                     createManualTask(title: title, description: description, projectPath: projectPath)
                 }
             }
+            .sheet(isPresented: $showAddFromPath) {
+                addFromPathSheet
+            }
             .task {
                 hooksInstalled = HookManager.isInstalled()
+                applyAppearance()
+                // Restore persisted project selection
+                boardState.selectedProjectPath = selectedProjectPersisted.isEmpty ? nil : selectedProjectPersisted
                 systemTray.setup(boardState: boardState)
                 await boardState.refresh()
                 systemTray.update()
@@ -177,26 +195,17 @@ struct ContentView: View {
                     .help("Refresh sessions")
 
                     Button {
-                        isDarkMode.toggle()
-                        NSApp.appearance = NSAppearance(named: isDarkMode ? .darkAqua : .aqua)
+                        appearanceMode = appearanceMode.next
+                        applyAppearance()
                     } label: {
-                        Image(systemName: isDarkMode ? "sun.max" : "moon")
+                        Image(systemName: appearanceMode.icon)
                     }
-                    .help(isDarkMode ? "Switch to light mode" : "Switch to dark mode")
+                    .help(appearanceMode.helpText)
                 }
 
-                // Left: title pill (Menu = different control type = own glass)
+                // Left: project selector pill
                 ToolbarItem(placement: .navigation) {
-                    Menu {
-                        SettingsLink()
-                        Divider()
-                        Button("About Kanban") {
-                            NSApplication.shared.orderFrontStandardAboutPanel()
-                        }
-                    } label: {
-                        Text("Kanban")
-                            .font(.headline)
-                    }
+                    projectSelectorMenu
                 }
 
                 // Right: search pill
@@ -237,6 +246,34 @@ struct ContentView: View {
             .background {
                 Button("") { showSearch.toggle() }
                     .keyboardShortcut("k", modifiers: .command)
+                    .hidden()
+                // Project switching shortcuts ⌘1..⌘9
+                Button("") { selectProject(at: 0) }
+                    .keyboardShortcut("1", modifiers: .command)
+                    .hidden()
+                Button("") { selectProject(at: 1) }
+                    .keyboardShortcut("2", modifiers: .command)
+                    .hidden()
+                Button("") { selectProject(at: 2) }
+                    .keyboardShortcut("3", modifiers: .command)
+                    .hidden()
+                Button("") { selectProject(at: 3) }
+                    .keyboardShortcut("4", modifiers: .command)
+                    .hidden()
+                Button("") { selectProject(at: 4) }
+                    .keyboardShortcut("5", modifiers: .command)
+                    .hidden()
+                Button("") { selectProject(at: 5) }
+                    .keyboardShortcut("6", modifiers: .command)
+                    .hidden()
+                Button("") { selectProject(at: 6) }
+                    .keyboardShortcut("7", modifiers: .command)
+                    .hidden()
+                Button("") { selectProject(at: 7) }
+                    .keyboardShortcut("8", modifiers: .command)
+                    .hidden()
+                Button("") { selectProject(at: 8) }
+                    .keyboardShortcut("9", modifiers: .command)
                     .hidden()
             }
         } // NavigationStack
@@ -331,6 +368,173 @@ struct ContentView: View {
         }
 
         close(fd)
+    }
+
+    // MARK: - Project Selector Menu
+
+    private var projectSelectorMenu: some View {
+        Menu {
+            Button {
+                setSelectedProject(nil)
+            } label: {
+                HStack {
+                    Text("All Projects")
+                    Spacer()
+                    if boardState.selectedProjectPath == nil {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+
+            let visibleProjects = boardState.configuredProjects.filter(\.visible)
+            if !visibleProjects.isEmpty {
+                Divider()
+                ForEach(visibleProjects) { project in
+                    Button {
+                        setSelectedProject(project.path)
+                    } label: {
+                        HStack {
+                            Text(project.name)
+                            Spacer()
+                            if boardState.selectedProjectPath == project.path {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Discovered projects (from sessions, not yet configured)
+            let discovered = boardState.discoveredProjectPaths
+            if !discovered.isEmpty {
+                Divider()
+                Section("Discovered") {
+                    ForEach(discovered.prefix(8), id: \.self) { path in
+                        Button {
+                            addDiscoveredProject(path: path)
+                        } label: {
+                            Label(
+                                (path as NSString).lastPathComponent,
+                                systemImage: "folder.badge.plus"
+                            )
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            Button("Add from folder...") {
+                addProjectViaFolderPicker()
+            }
+
+            Button("Add from path...") {
+                addFromPathText = ""
+                showAddFromPath = true
+            }
+
+            SettingsLink {
+                Text("Settings...")
+            }
+        } label: {
+            Text(currentProjectName)
+                .font(.headline)
+        }
+    }
+
+    private var currentProjectName: String {
+        guard let path = boardState.selectedProjectPath else { return "All Projects" }
+        return boardState.configuredProjects.first(where: { $0.path == path })?.name
+            ?? (path as NSString).lastPathComponent
+    }
+
+    private func setSelectedProject(_ path: String?) {
+        boardState.selectedProjectPath = path
+        selectedProjectPersisted = path ?? ""
+    }
+
+    /// Select project by index: 0 = All Projects, 1+ = configured projects by order.
+    private func selectProject(at index: Int) {
+        if index == 0 {
+            setSelectedProject(nil)
+            return
+        }
+        let visibleProjects = boardState.configuredProjects.filter(\.visible)
+        let projectIndex = index - 1
+        guard projectIndex < visibleProjects.count else { return }
+        setSelectedProject(visibleProjects[projectIndex].path)
+    }
+
+    private func addProjectViaFolderPicker() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Select a project directory"
+        panel.prompt = "Add Project"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let path = url.path
+        let project = Project(path: path)
+        Task {
+            try? await settingsStore.addProject(project)
+            await boardState.refresh()
+            setSelectedProject(path)
+        }
+    }
+
+    private func addDiscoveredProject(path: String) {
+        let project = Project(path: path)
+        Task {
+            try? await settingsStore.addProject(project)
+            await boardState.refresh()
+            setSelectedProject(path)
+        }
+    }
+
+    // MARK: - Add from Path Sheet
+
+    private var addFromPathSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Add Project")
+                .font(.title3)
+                .fontWeight(.semibold)
+
+            TextField("Project path (e.g. ~/Projects/my-repo)", text: $addFromPathText)
+                .textFieldStyle(.roundedBorder)
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    showAddFromPath = false
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button("Add") {
+                    let path = (addFromPathText as NSString).expandingTildeInPath
+                    let project = Project(path: path)
+                    Task {
+                        try? await settingsStore.addProject(project)
+                        await boardState.refresh()
+                        setSelectedProject(path)
+                    }
+                    showAddFromPath = false
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(addFromPathText.isEmpty)
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+
+    private func applyAppearance() {
+        switch appearanceMode {
+        case .auto: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
     }
 
     private func createManualTask(title: String, description: String, projectPath: String?) {

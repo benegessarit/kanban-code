@@ -7,8 +7,36 @@ struct ColumnView: View {
     @Binding var selectedCardId: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Column header
+        // Card list with header pill overlaid on top
+        ScrollView {
+            LazyVStack(spacing: 8) {
+                ForEach(cards) { card in
+                    CardView(
+                        card: card,
+                        isSelected: card.id == selectedCardId,
+                        onSelect: {
+                            if selectedCardId == card.id {
+                                selectedCardId = nil
+                            } else {
+                                selectedCardId = card.id
+                            }
+                        }
+                    )
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 44) // space for the floating header
+            .padding(.bottom, 8)
+        }
+        .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
+        .background(Color(.windowBackgroundColor).opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
+        )
+        // Header pill floating on top of the column
+        .overlay(alignment: .top) {
             HStack {
                 Text(column.displayName)
                     .font(.headline)
@@ -25,35 +53,9 @@ struct ColumnView: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-
-            // Card list
-            ScrollView {
-                LazyVStack(spacing: 8) {
-                    ForEach(cards) { card in
-                        CardView(
-                            card: card,
-                            isSelected: card.id == selectedCardId,
-                            onSelect: {
-                                if selectedCardId == card.id {
-                                    selectedCardId = nil
-                                } else {
-                                    selectedCardId = card.id
-                                }
-                            }
-                        )
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 8)
-            }
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .padding(4)
         }
-        .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
-        .background(Color(.windowBackgroundColor).opacity(0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
-        )
     }
 }

@@ -6,7 +6,7 @@ struct BoardView: View {
 
     var body: some View {
         Group {
-            if state.cards.isEmpty && !state.isLoading {
+            if state.filteredCards.isEmpty && !state.isLoading {
                 emptyState
             } else {
                 boardContent
@@ -34,7 +34,9 @@ struct BoardView: View {
                     )
                 }
             }
-            .padding(16)
+            .padding(.horizontal, 16)
+            .padding(.top, 52)
+            .padding(.bottom, 16)
         }
         // Error banner overlaid at top
         .overlay(alignment: .top) {
@@ -63,12 +65,25 @@ struct BoardView: View {
             Image(systemName: "rectangle.on.rectangle.slash")
                 .font(.system(size: 40))
                 .foregroundStyle(.tertiary)
-            Text("No sessions found")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            Text("Claude Code sessions will appear here once discovered.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+
+            if let projectPath = state.selectedProjectPath {
+                let name = state.configuredProjects.first(where: { $0.path == projectPath })?.name
+                    ?? (projectPath as NSString).lastPathComponent
+                Text("No sessions for \(name)")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                Text("Sessions for this project will appear here once discovered.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                Text("No sessions found")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                Text("Claude Code sessions will appear here once discovered.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
             Button("Refresh") {
                 Task { await state.refresh() }
             }
