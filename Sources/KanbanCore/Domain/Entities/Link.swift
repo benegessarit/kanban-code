@@ -38,9 +38,15 @@ public struct WorktreeLink: Codable, Sendable, Equatable {
 /// Link to a GitHub pull request.
 public struct PRLink: Codable, Sendable, Equatable {
     public var number: Int
+    public var url: String?
+    public var status: PRStatus?
+    public var unresolvedThreads: Int?
 
-    public init(number: Int) {
+    public init(number: Int, url: String? = nil, status: PRStatus? = nil, unresolvedThreads: Int? = nil) {
         self.number = number
+        self.url = url
+        self.status = status
+        self.unresolvedThreads = unresolvedThreads
     }
 }
 
@@ -94,6 +100,9 @@ public struct Link: Identifiable, Codable, Sendable {
     public var prLink: PRLink?
     public var issueLink: IssueLink?
 
+    /// Whether this card's project is configured for remote execution.
+    public var isRemote: Bool
+
     // MARK: - Backward-compat computed properties
 
     /// Claude session UUID. Use `sessionLink?.sessionId` for new code.
@@ -142,7 +151,8 @@ public struct Link: Identifiable, Codable, Sendable {
         tmuxLink: TmuxLink? = nil,
         worktreeLink: WorktreeLink? = nil,
         prLink: PRLink? = nil,
-        issueLink: IssueLink? = nil
+        issueLink: IssueLink? = nil,
+        isRemote: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -160,6 +170,7 @@ public struct Link: Identifiable, Codable, Sendable {
         self.worktreeLink = worktreeLink
         self.prLink = prLink
         self.issueLink = issueLink
+        self.isRemote = isRemote
     }
 
     // MARK: - Backward-compatible Codable
@@ -167,7 +178,7 @@ public struct Link: Identifiable, Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         // Card-level
         case id, name, projectPath, column, createdAt, updatedAt, lastActivity
-        case manualOverrides, manuallyArchived, source, promptBody
+        case manualOverrides, manuallyArchived, source, promptBody, isRemote
         // Typed links (new nested format)
         case sessionLink, tmuxLink, worktreeLink, prLink, issueLink
         // Old flat keys (for reading legacy format)
@@ -189,6 +200,7 @@ public struct Link: Identifiable, Codable, Sendable {
         manuallyArchived = try c.decodeIfPresent(Bool.self, forKey: .manuallyArchived) ?? false
         source = try c.decodeIfPresent(LinkSource.self, forKey: .source) ?? .discovered
         promptBody = try c.decodeIfPresent(String.self, forKey: .promptBody)
+        isRemote = try c.decodeIfPresent(Bool.self, forKey: .isRemote) ?? false
 
         // Session link: try nested first, fallback to flat
         if let sl = try c.decodeIfPresent(SessionLink.self, forKey: .sessionLink) {
@@ -262,6 +274,7 @@ public struct Link: Identifiable, Codable, Sendable {
         try c.encode(manuallyArchived, forKey: .manuallyArchived)
         try c.encode(source, forKey: .source)
         try c.encodeIfPresent(promptBody, forKey: .promptBody)
+        try c.encode(isRemote, forKey: .isRemote)
 
         // Always write new nested format
         try c.encodeIfPresent(sessionLink, forKey: .sessionLink)
@@ -278,17 +291,23 @@ public struct ManualOverrides: Codable, Sendable {
     public var tmuxSession: Bool
     public var name: Bool
     public var column: Bool
+    public var prLink: Bool
+    public var issueLink: Bool
 
     public init(
         worktreePath: Bool = false,
         tmuxSession: Bool = false,
         name: Bool = false,
-        column: Bool = false
+        column: Bool = false,
+        prLink: Bool = false,
+        issueLink: Bool = false
     ) {
         self.worktreePath = worktreePath
         self.tmuxSession = tmuxSession
         self.name = name
         self.column = column
+        self.prLink = prLink
+        self.issueLink = issueLink
     }
 
     public init(from decoder: Decoder) throws {
@@ -297,6 +316,8 @@ public struct ManualOverrides: Codable, Sendable {
         tmuxSession = try c.decodeIfPresent(Bool.self, forKey: .tmuxSession) ?? false
         name = try c.decodeIfPresent(Bool.self, forKey: .name) ?? false
         column = try c.decodeIfPresent(Bool.self, forKey: .column) ?? false
+        prLink = try c.decodeIfPresent(Bool.self, forKey: .prLink) ?? false
+        issueLink = try c.decodeIfPresent(Bool.self, forKey: .issueLink) ?? false
     }
 }
 

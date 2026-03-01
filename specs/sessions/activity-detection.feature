@@ -16,24 +16,17 @@ Feature: Activity Detection
     Then the session's last_activity timestamp should update
     And the session should be considered "active"
 
-  Scenario: Tool use keeps session alive
-    Given a Claude session is actively using tools
-    When PreToolUse and PostToolUse hooks fire
-    Then the session's last_activity should update on each fire
-    And the session should remain in "In Progress"
-
   Scenario: Session stop detection
     Given a Claude session stops working
     When the Stop hook fires for session "abc-123"
-    Then Kanban should wait 1 second
-    And if no UserPromptSubmit fires within that window
     Then the session should be flagged as "needs attention"
+    And a push notification should be sent (deduplicated within 62 seconds)
 
-  Scenario: Stop followed by new prompt (anti-duplicate)
+  Scenario: Stop followed by new prompt (anti-duplicate notification)
     Given the Stop hook fired for session "abc-123"
-    And within 1 second, a UserPromptSubmit fires for the same session
-    Then the session should remain in "In Progress"
-    And no notification should be sent
+    And a UserPromptSubmit fires for the same session within the dedup window
+    Then the session should return to "In Progress"
+    And subsequent Stop events should be deduplicated
 
   # ── Polling-Based Detection (Fallback) ──
 
@@ -82,7 +75,7 @@ Feature: Activity Detection
 
     Examples:
       | last_activity | process | last_hook         | state              |
-      | 10 seconds    | yes     | PreToolUse        | actively_working   |
+      | 10 seconds    | yes     | UserPromptSubmit  | actively_working   |
       | 2 minutes     | yes     | Stop              | needs_attention    |
       | 2 minutes     | yes     | Notification      | needs_attention    |
       | 30 minutes    | yes     | UserPromptSubmit  | idle_waiting       |

@@ -13,20 +13,29 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
         projectPath: String,
         prompt: String,
         worktreeName: String?,
-        shellOverride: String?
+        shellOverride: String?,
+        extraEnv: [String: String] = [:]
     ) async throws -> String {
         let sessionName = tmuxSessionName(project: projectPath, worktree: worktreeName)
 
         // Build the claude command
         var cmd = "claude"
         if let worktreeName {
-            cmd += " --worktree \(worktreeName)"
-        }
-        if let shellOverride {
-            cmd = "SHELL=\(shellOverride) \(cmd)"
+            if worktreeName.isEmpty {
+                // Empty string = auto-generate worktree name
+                cmd += " --worktree"
+            } else {
+                cmd += " --worktree \(worktreeName)"
+            }
         }
 
         cmd += " -p \(shellEscape(prompt))"
+
+        // Prepend environment variables (SHELL override + KANBAN_* vars)
+        let envPrefix = buildEnvPrefix(shellOverride: shellOverride, extraEnv: extraEnv)
+        if !envPrefix.isEmpty {
+            cmd = envPrefix + " " + cmd
+        }
 
         try await tmux.createSession(name: sessionName, path: projectPath, command: cmd)
         return sessionName
@@ -35,7 +44,8 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
     public func resume(
         sessionId: String,
         projectPath: String,
-        shellOverride: String?
+        shellOverride: String?,
+        extraEnv: [String: String] = [:]
     ) async throws -> String {
         // Check if there's already a tmux session for this
         let existing = try await tmux.listSessions()
@@ -46,12 +56,35 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
         // Create new tmux session with resume command
         let sessionName = "claude-\(String(sessionId.prefix(8)))"
         var cmd = "claude --resume \(sessionId)"
-        if let shellOverride {
-            cmd = "SHELL=\(shellOverride) \(cmd)"
+
+        // Prepend environment variables
+        let envPrefix = buildEnvPrefix(shellOverride: shellOverride, extraEnv: extraEnv)
+        if !envPrefix.isEmpty {
+            cmd = envPrefix + " " + cmd
         }
 
         try await tmux.createSession(name: sessionName, path: projectPath, command: cmd)
         return sessionName
+    }
+
+    // MARK: - Private
+
+    /// Build a string of VAR=value assignments to prepend to the command.
+    private func buildEnvPrefix(shellOverride: String?, extraEnv: [String: String]) -> String {
+        var parts: [String] = []
+
+        if let shellOverride {
+            parts.append("SHELL=\(shellOverride)")
+        }
+
+        // Sort for deterministic output
+        for key in extraEnv.keys.sorted() {
+            if let value = extraEnv[key] {
+                parts.append("\(key)=\(shellEscape(value))")
+            }
+        }
+
+        return parts.joined(separator: " ")
     }
 
     private func tmuxSessionName(project: String, worktree: String?) -> String {

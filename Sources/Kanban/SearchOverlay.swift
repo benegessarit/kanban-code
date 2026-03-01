@@ -4,12 +4,17 @@ import KanbanCore
 struct SearchOverlay: View {
     @Binding var isPresented: Bool
     let cards: [KanbanCard]
+    let sessionStore: SessionStore
     var onSelectCard: (KanbanCard) -> Void = { _ in }
+    var onResumeCard: (KanbanCard) -> Void = { _ in }
+    var onForkCard: (KanbanCard) -> Void = { _ in }
+    var onCheckpointCard: (KanbanCard) -> Void = { _ in }
 
     @State private var query = ""
     @State private var searchResults: [SearchResultItem] = []
     @State private var isDeepSearching = false
     @State private var selectedIndex = 0
+    @State private var searchTask: Task<Void, Never>?
     @FocusState private var isSearchFocused: Bool
 
     var body: some View {
@@ -61,6 +66,11 @@ struct SearchOverlay: View {
                                     if let card = result.card {
                                         onSelectCard(card)
                                         isPresented = false
+                                    }
+                                }
+                                .contextMenu {
+                                    if let card = result.card {
+                                        searchCardContextMenu(for: card)
                                     }
                                 }
                         }
@@ -148,6 +158,7 @@ struct SearchOverlay: View {
                         onSelectCard(card)
                         isPresented = false
                     }
+                    .contextMenu { searchCardContextMenu(for: card) }
             }
         }
     }
@@ -172,6 +183,7 @@ struct SearchOverlay: View {
                             onSelectCard(card)
                             isPresented = false
                         }
+                        .contextMenu { searchCardContextMenu(for: card) }
                 }
             }
         }
@@ -181,37 +193,77 @@ struct SearchOverlay: View {
         let terms = queryTerms
         guard !terms.isEmpty else { return [] }
         return cards.filter { card in
-            let text = "\(card.displayTitle) \(card.projectName ?? "") \(card.link.worktreeLink?.branch ?? "")".lowercased()
+            let text = "\(card.displayTitle) \(card.projectName ?? "") \(card.link.worktreeLink?.branch ?? "") \(card.link.projectPath ?? "") \(card.session?.firstPrompt ?? "") \(card.link.promptBody ?? "")".lowercased()
             return terms.allSatisfy { text.contains($0) }
         }
     }
 
+    @ViewBuilder
+    private func searchCardContextMenu(for card: KanbanCard) -> some View {
+        Button {
+            onResumeCard(card)
+            isPresented = false
+        } label: {
+            Label("Resume Session", systemImage: "play.fill")
+        }
+        .disabled(card.link.sessionLink == nil)
+
+        Button {
+            onForkCard(card)
+            isPresented = false
+        } label: {
+            Label("Fork Session", systemImage: "arrow.branch")
+        }
+        .disabled(card.link.sessionLink?.sessionPath == nil)
+
+        Button {
+            onCheckpointCard(card)
+            isPresented = false
+        } label: {
+            Label("Checkpoint / Restore", systemImage: "clock.arrow.circlepath")
+        }
+        .disabled(card.link.sessionLink?.sessionPath == nil)
+    }
+
     private func updateFilter(_ query: String) {
+        // Cancel any in-progress deep search when query changes
+        searchTask?.cancel()
+        searchTask = nil
         searchResults = []
+        isDeepSearching = false
     }
 
     private func deepSearch() async {
         guard !query.isEmpty else { return }
-        isDeepSearching = true
-        defer { isDeepSearching = false }
 
-        let paths = cards.compactMap { $0.link.sessionLink?.sessionPath ?? $0.session?.jsonlPath }
-        let store = ClaudeCodeSessionStore()
+        // Cancel previous search
+        searchTask?.cancel()
 
-        do {
-            let results = try await store.searchSessions(query: query, paths: paths)
-            searchResults = results.map { result in
-                let card = cards.first { ($0.link.sessionLink?.sessionPath ?? $0.session?.jsonlPath) == result.sessionPath }
-                return SearchResultItem(
-                    id: result.sessionPath,
-                    card: card,
-                    score: result.score,
-                    snippet: result.snippet
-                )
+        let currentQuery = query
+        let task = Task {
+            isDeepSearching = true
+            defer { isDeepSearching = false }
+
+            let paths = cards.compactMap { $0.link.sessionLink?.sessionPath ?? $0.session?.jsonlPath }
+
+            do {
+                let results = try await sessionStore.searchSessions(query: currentQuery, paths: paths)
+                guard !Task.isCancelled else { return }
+                searchResults = results.map { result in
+                    let card = cards.first { ($0.link.sessionLink?.sessionPath ?? $0.session?.jsonlPath) == result.sessionPath }
+                    return SearchResultItem(
+                        id: result.sessionPath,
+                        card: card,
+                        score: result.score,
+                        snippet: result.snippet
+                    )
+                }
+            } catch {
+                // Silently fail (or cancelled)
             }
-        } catch {
-            // Silently fail
         }
+        searchTask = task
+        await task.value
     }
 }
 

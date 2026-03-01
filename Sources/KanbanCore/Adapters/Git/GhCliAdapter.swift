@@ -40,7 +40,15 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
                 headRefName: headRefName,
                 reviewDecision: reviewDecision
             )
-            prs[headRefName] = pr
+            // Prefer open PRs over closed/merged for the same branch
+            if let existing = prs[headRefName] {
+                if pr.state == "open" && existing.state != "open" {
+                    prs[headRefName] = pr
+                }
+                // Otherwise keep existing (first match)
+            } else {
+                prs[headRefName] = pr
+            }
         }
 
         return prs

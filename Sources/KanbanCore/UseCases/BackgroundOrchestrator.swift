@@ -92,6 +92,10 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 switch event.eventName {
                 case "Stop":
                     let _ = await notificationDedup.recordStop(sessionId: event.sessionId)
+                case "Notification":
+                    // Notification hook fires when Claude needs user attention
+                    // (permission request, question, etc.) — also send push
+                    let _ = await notificationDedup.recordStop(sessionId: event.sessionId)
                 case "UserPromptSubmit":
                     await notificationDedup.recordPrompt(sessionId: event.sessionId)
                 default:
@@ -184,6 +188,17 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 let pr = links[i].worktreeLink?.branch.flatMap { allPRs[$0] }
                 let hasWorktree = links[i].worktreeLink?.branch != nil
                 let hasTmux = links[i].tmuxLink.map { tmuxNames.contains($0.sessionName) } ?? false
+
+                // Sync PR enrichment data to prLink
+                if let pr {
+                    if links[i].prLink == nil {
+                        links[i].prLink = PRLink(number: pr.number, url: pr.url)
+                    }
+                    links[i].prLink?.url = pr.url
+                    links[i].prLink?.status = pr.status
+                    links[i].prLink?.unresolvedThreads = pr.unresolvedThreads > 0 ? pr.unresolvedThreads : nil
+                    changed = true
+                }
 
                 // Clear manual column override when we have definitive activity data
                 // (hooks fired, or tmux session gone). Manual override is only for user drags.

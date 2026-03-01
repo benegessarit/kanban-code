@@ -101,10 +101,7 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
             return (path, mtime)
         }.sorted { $0.1 > $1.1 }
 
-        // Limit to most recent 50 files to keep search responsive
-        let searchPaths = validPaths.prefix(50)
-
-        for (path, mtime) in searchPaths {
+        for (path, mtime) in validPaths {
             guard !Task.isCancelled else { break }
 
             // Read file as Data (much faster than AsyncBytes line-by-line)

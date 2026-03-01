@@ -7,10 +7,17 @@ struct CardDetailView: View {
     var onRename: (String) -> Void = { _ in }
     var onFork: () -> Void = {}
     var onDismiss: () -> Void = {}
+    var onUnlink: (BoardState.LinkType) -> Void = { _ in }
+    var onAddBranch: (String) -> Void = { _ in }
+    var onAddIssue: (Int) -> Void = { _ in }
+    var onCleanupWorktree: () -> Void = {}
+    var onDeleteCard: () -> Void = {}
 
     @State private var turns: [ConversationTurn] = []
     @State private var isLoadingHistory = false
-    @State private var selectedTab: Int
+    @State private var hasMoreTurns = false
+    @State private var isLoadingMore = false
+    @State private var selectedTab: String
     @State private var showRenameSheet = false
     @State private var renameText = ""
 
@@ -23,21 +30,36 @@ struct CardDetailView: View {
     @State private var showForkConfirm = false
     @State private var forkResult: String?
 
+    // Add link popover
+    @State private var showAddLink = false
+
+    // Resolved GitHub base URL for constructing issue/PR links
+    @State private var githubBaseURL: String?
+
+    // Delete confirmation
+    @State private var showDeleteConfirm = false
+    @State private var deleteConfirmText = ""
+
     // File watcher for real-time history
     @State private var historyWatcherFD: Int32 = -1
     @State private var historyWatcherSource: DispatchSourceFileSystemObject?
     @State private var lastReloadTime: Date = .distantPast
 
-    private let sessionStore = ClaudeCodeSessionStore()
+    let sessionStore: SessionStore
 
-    init(card: KanbanCard, onResume: @escaping () -> Void = {}, onRename: @escaping (String) -> Void = { _ in }, onFork: @escaping () -> Void = {}, onDismiss: @escaping () -> Void = {}) {
+    init(card: KanbanCard, sessionStore: SessionStore = ClaudeCodeSessionStore(), onResume: @escaping () -> Void = {}, onRename: @escaping (String) -> Void = { _ in }, onFork: @escaping () -> Void = {}, onDismiss: @escaping () -> Void = {}, onUnlink: @escaping (BoardState.LinkType) -> Void = { _ in }, onAddBranch: @escaping (String) -> Void = { _ in }, onAddIssue: @escaping (Int) -> Void = { _ in }, onCleanupWorktree: @escaping () -> Void = {}, onDeleteCard: @escaping () -> Void = {}) {
         self.card = card
+        self.sessionStore = sessionStore
         self.onResume = onResume
         self.onRename = onRename
         self.onFork = onFork
         self.onDismiss = onDismiss
-        _selectedTab = State(initialValue: card.link.tmuxLink == nil ? 1 : 0)
-        // Tab 0 = Terminal, Tab 1 = History (Actions tab removed — buttons in header now)
+        self.onUnlink = onUnlink
+        self.onAddBranch = onAddBranch
+        self.onAddIssue = onAddIssue
+        self.onCleanupWorktree = onCleanupWorktree
+        self.onDeleteCard = onDeleteCard
+        _selectedTab = State(initialValue: Self.initialTab(for: card))
     }
 
     var body: some View {
@@ -72,49 +94,90 @@ struct CardDetailView: View {
                     }
                 }
 
-                // Link pills
+                // Badge + timestamp row
                 HStack(spacing: 6) {
                     CardLabelBadge(label: card.link.cardLabel)
-
-                    if let sessionNum = card.link.sessionLink?.sessionNumber {
-                        linkPill(icon: "terminal", text: "#\(sessionNum)", color: .blue)
-                    }
-                    if let tmux = card.link.tmuxLink?.sessionName {
-                        linkPill(icon: "terminal.fill", text: tmux, color: .green)
-                    }
-                    if let branch = card.link.worktreeLink?.branch {
-                        linkPill(icon: "arrow.triangle.branch", text: branch, color: .teal)
-                    }
-                    if let pr = card.link.prLink?.number {
-                        linkPill(icon: "arrow.triangle.pull", text: "#\(pr)", color: .purple)
-                    }
-                    if let issue = card.link.issueLink?.number {
-                        linkPill(icon: "exclamationmark.circle", text: "#\(issue)", color: .orange)
-                    }
-
                     Spacer()
-
                     Text(card.relativeTime)
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
 
-                if let projectPath = card.link.projectPath {
-                    copyableRow(icon: "folder", text: projectPath)
-                }
+                // Property rows — one per link type
+                VStack(alignment: .leading, spacing: 2) {
+                    if let branch = card.link.worktreeLink?.branch, !branch.isEmpty {
+                        linkPropertyRow(
+                            icon: "arrow.triangle.branch", label: "Branch", value: branch,
+                            onUnlink: { onUnlink(.worktree) }
+                        )
+                    }
+                    if let worktreePath = card.link.worktreeLink?.path, !worktreePath.isEmpty {
+                        copyableRow(icon: "folder", text: worktreePath)
+                    }
+                    if let pr = card.link.prLink {
+                        let detail = pr.status.map { " · \($0.rawValue)" } ?? ""
+                        let prURL = pr.url ?? githubBaseURL.map { GitRemoteResolver.prURL(base: $0, number: pr.number) }
+                        linkPropertyRow(
+                            icon: "arrow.triangle.pull", label: "PR", value: "#\(pr.number)\(detail)",
+                            url: prURL,
+                            onUnlink: { onUnlink(.pr) }
+                        )
+                    }
+                    if let issue = card.link.issueLink {
+                        let issueURL = issue.url ?? githubBaseURL.map { GitRemoteResolver.issueURL(base: $0, number: issue.number) }
+                        linkPropertyRow(
+                            icon: "circle.circle", label: "Issue", value: "#\(issue.number)",
+                            url: issueURL,
+                            onUnlink: { onUnlink(.issue) }
+                        )
+                    }
+                    if let projectPath = card.link.projectPath {
+                        copyableRow(icon: "folder.badge.gearshape", text: projectPath)
+                    }
+                    if let sessionId = card.link.sessionLink?.sessionId {
+                        copyableRow(icon: "number", text: sessionId)
+                    }
 
-                if let sessionId = card.link.sessionLink?.sessionId {
-                    copyableRow(icon: "number", text: sessionId)
+                    // Add link button
+                    Button {
+                        showAddLink = true
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "plus")
+                                .font(.caption2)
+                            Text("Add link")
+                                .font(.caption)
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $showAddLink) {
+                        AddLinkPopover(
+                            onAddBranch: { branch in
+                                onAddBranch(branch)
+                                showAddLink = false
+                            },
+                            onAddIssue: { number in
+                                onAddIssue(number)
+                                showAddLink = false
+                            }
+                        )
+                    }
                 }
             }
             .padding(16)
 
             Divider()
 
-            // Tab bar
+            // Tab bar — only show tabs relevant to this card
             Picker("Tab", selection: $selectedTab) {
-                Text("Terminal").tag(0)
-                Text("History").tag(1)
+                if card.link.tmuxLink != nil {
+                    Text("Terminal").tag("terminal")
+                }
+                Text("History").tag("history")
+                if hasContextContent {
+                    Text("Context").tag("context")
+                }
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 16)
@@ -122,19 +185,24 @@ struct CardDetailView: View {
 
             // Content
             switch selectedTab {
-            case 0:
+            case "terminal":
                 terminalView
-            case 1:
+            case "history":
                 SessionHistoryView(
                     turns: turns,
                     isLoading: isLoadingHistory,
                     checkpointMode: checkpointMode,
+                    hasMoreTurns: hasMoreTurns,
+                    isLoadingMore: isLoadingMore,
                     onCancelCheckpoint: { checkpointMode = false },
                     onSelectTurn: { turn in
                         checkpointTurn = turn
                         showCheckpointConfirm = true
-                    }
+                    },
+                    onLoadMore: { Task { await loadMoreHistory() } }
                 )
+            case "context":
+                contextView
             default:
                 EmptyView()
             }
@@ -143,18 +211,31 @@ struct CardDetailView: View {
         .task(id: card.id) {
             turns = []
             isLoadingHistory = false
+            isLoadingMore = false
+            hasMoreTurns = false
             checkpointMode = false
+            // Reset tab to a valid one for this card
+            selectedTab = defaultTab(for: card)
+            // Resolve GitHub base URL for constructing issue/PR links
+            if let projectPath = card.link.projectPath {
+                githubBaseURL = await GitRemoteResolver.shared.githubBaseURL(for: projectPath)
+            } else {
+                githubBaseURL = nil
+            }
             await loadHistory()
+            if selectedTab == "history" {
+                startHistoryWatcher()
+            }
         }
         .onChange(of: selectedTab) {
-            if selectedTab == 1 {
+            if selectedTab == "history" {
                 startHistoryWatcher()
             } else {
                 stopHistoryWatcher()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .kanbanHistoryChanged)) { _ in
-            guard selectedTab == 1 else { return }
+            guard selectedTab == "history" else { return }
             // Debounce: only reload if >0.5s since last reload
             let now = Date()
             guard now.timeIntervalSince(lastReloadTime) > 0.5 else { return }
@@ -185,6 +266,22 @@ struct CardDetailView: View {
         } message: {
             Text("Everything after this point will be removed. A .bkp backup will be created.")
         }
+        .alert("Delete Task", isPresented: $showDeleteConfirm) {
+            TextField("Type \"delete\" to confirm", text: $deleteConfirmText)
+            Button("Cancel", role: .cancel) {
+                deleteConfirmText = ""
+            }
+            Button("Delete", role: .destructive) {
+                if deleteConfirmText.lowercased() == "delete" {
+                    onDeleteCard()
+                    onDismiss()
+                }
+                deleteConfirmText = ""
+            }
+            .disabled(deleteConfirmText.lowercased() != "delete")
+        } message: {
+            Text("This will permanently delete this task. Type \"delete\" to confirm.")
+        }
     }
 
     @ViewBuilder
@@ -209,6 +306,65 @@ struct CardDetailView: View {
         }
     }
 
+    private static func initialTab(for card: KanbanCard) -> String {
+        if card.link.tmuxLink != nil { return "terminal" }
+        if card.link.sessionLink != nil { return "history" }
+        if card.link.issueLink?.body != nil || card.link.promptBody != nil { return "context" }
+        return "history"
+    }
+
+    private func defaultTab(for card: KanbanCard) -> String {
+        Self.initialTab(for: card)
+    }
+
+    private var hasContextContent: Bool {
+        card.link.issueLink?.body != nil || card.link.promptBody != nil
+    }
+
+    @ViewBuilder
+    private var contextView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                // Issue header with open button
+                if let issue = card.link.issueLink {
+                    HStack {
+                        Label("Issue #\(issue.number)", systemImage: "exclamationmark.circle")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        if let url = issue.url.flatMap({ URL(string: $0) }) {
+                            Button {
+                                NSWorkspace.shared.open(url)
+                            } label: {
+                                Label("Open in Browser", systemImage: "arrow.up.right.square")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+                }
+
+                // Body text
+                if let body = card.link.issueLink?.body ?? card.link.promptBody {
+                    Text(body)
+                        .font(.body.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                // Start Work button for backlog cards
+                if card.column == .backlog {
+                    Button(action: onResume) {
+                        Label("Start Work", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(16)
+        }
+    }
+
     private var actionsMenu: some View {
         Menu {
             Button(action: { showRenameSheet = true }) {
@@ -222,7 +378,7 @@ struct CardDetailView: View {
 
             Button {
                 checkpointMode = true
-                selectedTab = 1
+                selectedTab = "history"
             } label: {
                 Label("Checkpoint / Restore", systemImage: "clock.arrow.circlepath")
             }
@@ -240,10 +396,44 @@ struct CardDetailView: View {
                 }
             }
 
-            if let pr = card.link.prLink?.number {
+            if let tmux = card.link.tmuxLink?.sessionName {
+                Button(action: { copyToClipboard("tmux attach -t \(tmux)") }) {
+                    Label("Copy Tmux Command", systemImage: "terminal")
+                }
+            }
+
+            if let pr = card.link.prLink {
                 Divider()
-                Button(action: {}) {
-                    Label("Open PR #\(pr)", systemImage: "arrow.up.right.square")
+                Button {
+                    if let url = pr.url.flatMap({ URL(string: $0) }) {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Label("Open PR #\(pr.number)", systemImage: "arrow.up.right.square")
+                }
+            }
+            if let issue = card.link.issueLink {
+                Button {
+                    if let url = issue.url.flatMap({ URL(string: $0) }) {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Label("Open Issue #\(issue.number)", systemImage: "arrow.up.right.square")
+                }
+            }
+
+            if card.link.worktreeLink != nil {
+                Divider()
+                Button(role: .destructive, action: onCleanupWorktree) {
+                    Label("Remove Worktree", systemImage: "trash")
+                }
+            }
+
+            let isOrphan = card.link.sessionLink == nil && card.link.tmuxLink == nil && card.link.worktreeLink == nil
+            if card.link.source == .manual || isOrphan {
+                Divider()
+                Button(role: .destructive, action: { showDeleteConfirm = true }) {
+                    Label("Delete Task", systemImage: "trash")
                 }
             }
         } label: {
@@ -256,15 +446,38 @@ struct CardDetailView: View {
 
     // MARK: - History loading
 
+    private static let pageSize = 80
+
     private func loadHistory() async {
         guard let path = card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath else { return }
         if turns.isEmpty { isLoadingHistory = true }
         do {
-            turns = try await TranscriptReader.readTurns(from: path)
+            let result = try await TranscriptReader.readTail(from: path, maxTurns: Self.pageSize)
+            turns = result.turns
+            hasMoreTurns = result.hasMore
         } catch {
             // Silently fail — empty history is fine
         }
         isLoadingHistory = false
+    }
+
+    private func loadMoreHistory() async {
+        guard hasMoreTurns, !isLoadingMore else { return }
+        guard let path = card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath else { return }
+        guard let firstTurn = turns.first else { return }
+
+        isLoadingMore = true
+        let rangeStart = max(0, firstTurn.index - Self.pageSize)
+        let rangeEnd = firstTurn.index
+
+        do {
+            let earlier = try await TranscriptReader.readRange(from: path, turnRange: rangeStart..<rangeEnd)
+            turns = earlier + turns
+            hasMoreTurns = rangeStart > 0
+        } catch {
+            // Silently fail
+        }
+        isLoadingMore = false
     }
 
     // MARK: - File watcher
@@ -349,16 +562,48 @@ struct CardDetailView: View {
         copyToClipboard(cmd)
     }
 
-    private func linkPill(icon: String, text: String, color: Color) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: icon)
-            Text(text)
+    /// Property row: icon + "Label: value", all secondary color, with optional link and × buttons.
+    private func linkPropertyRow(
+        icon: String, label: String, value: String,
+        color: Color = .secondary,
+        url: String? = nil,
+        onUnlink: (() -> Void)? = nil
+    ) -> some View {
+        HStack(spacing: 4) {
+            Label {
+                Text("\(label): \(value)")
+            } icon: {
+                Image(systemName: icon)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+
+            if let url, let parsed = URL(string: url) {
+                Button {
+                    NSWorkspace.shared.open(parsed)
+                } label: {
+                    Image(systemName: "link")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Open in browser")
+            }
+
+            if let onUnlink {
+                Button {
+                    onUnlink()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.borderless)
+                .help("Remove link")
+            }
         }
-        .font(.caption2)
-        .foregroundStyle(color)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(color.opacity(0.12), in: Capsule())
     }
 
     private func copyToClipboard(_ text: String) {

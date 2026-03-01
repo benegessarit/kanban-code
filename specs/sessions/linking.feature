@@ -193,3 +193,89 @@ Feature: Card Reconciliation and Link Management
     Given the reconciler polls tmux sessions
     Then `tmux list-sessions` should be called at most every 5 seconds
     And the result should be cached between polls
+
+  # ── Branch-Centric Link Model ──
+  #
+  # A branch is the anchor for work:
+  #   card → branch → {worktree (on disk), PR (on GitHub)}
+  # PRs are NEVER manually linked — they are discovered from branches.
+  # Issues are standalone (come from GitHub, not branch-dependent).
+  # A branch can be linked without a worktree existing on disk.
+
+  Scenario: Branch is the anchor for worktree and PR
+    Given a card has worktreeLink.branch = "feat/issue-123"
+    Then the reconciler should:
+      | Action                | Source                              |
+      | Find worktree on disk | Branch name → worktree path         |
+      | Find PR on GitHub     | headRefName = "feat/issue-123"      |
+    And both worktreeLink.path and prLink should be populated automatically
+
+  Scenario: Adding a branch to a card
+    Given a card with no worktreeLink
+    When I click "+ Add link" in the detail header
+    And I select "Branch" and enter "feat/new-feature"
+    Then worktreeLink should be set with branch = "feat/new-feature" and path = ""
+    And manualOverrides.worktreePath should be true
+    And the reconciler should discover the worktree path and PR on next run
+
+  Scenario: Branch without a worktree on disk
+    Given a card has worktreeLink.branch = "feat/remote-only"
+    And no worktree directory exists on disk for that branch
+    Then the branch link should persist (manualOverrides protects it)
+    And worktreeLink.path should remain empty
+    And the PR can still be discovered if a PR exists for that branch
+
+  Scenario: PRs cannot be manually linked
+    Given a card with no prLink
+    When I click "+ Add link"
+    Then the popover should offer "Branch" and "Issue" options
+    And there should be NO option to add a PR number directly
+    Because PRs are discovered from branches, not linked independently
+
+  # ── Interactive Link Management (Property Rows) ──
+  #
+  # The card detail header shows each link as a full property row:
+  #   icon + label + value + action buttons (↗ open, × unlink)
+  # This replaces the old cramped pill layout.
+
+  Scenario: Open PR in browser from property row
+    Given a card has prLink with number 42 and url "https://github.com/org/repo/pull/42"
+    When I click the ↗ button on the PR property row
+    Then the PR should open in the default browser
+
+  Scenario: Open issue in browser from property row
+    Given a card has issueLink with number 11 and url "https://github.com/org/repo/issues/11"
+    When I click the ↗ button on the issue property row
+    Then the issue should open in the default browser
+
+  Scenario: Remove branch link from card
+    Given a card has worktreeLink.branch = "feat/login"
+    When I click the × button on the Branch property row
+    Then worktreeLink should be set to nil
+    And manualOverrides.worktreePath should be true
+    And the reconciler should not re-add this worktree link
+
+  Scenario: Remove PR link from card
+    Given a card has prLink.number = 42
+    When I click the × button on the PR property row
+    Then prLink should be set to nil
+    And manualOverrides.prLink should be true
+    And the reconciler should not re-add this PR
+
+  Scenario: Remove issue link from card
+    Given a card has issueLink.number = 11
+    When I click the × button on the Issue property row
+    Then issueLink should be set to nil
+    And manualOverrides.issueLink should be true
+
+  Scenario: Add issue link manually
+    Given a card with no issueLink
+    When I click "+ Add link" and select "Issue" with number 55
+    Then issueLink should be set with number 55
+    And manualOverrides.issueLink should be true
+
+  Scenario: Remove tmux link from card
+    Given a card has tmuxLink.sessionName = "feat-login"
+    When I click the × button on the Tmux property row
+    Then tmuxLink should be set to nil
+    And manualOverrides.tmuxSession should be true

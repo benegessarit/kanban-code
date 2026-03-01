@@ -72,7 +72,7 @@ struct TranscriptReaderTests {
 
         let turns = try await TranscriptReader.readTurns(from: path)
         #expect(turns.count == 1)
-        #expect(turns[0].textPreview == "(tool use)")
+        #expect(turns[0].textPreview == "[tool: Read]")
     }
 
     @Test("Line numbers are correct")

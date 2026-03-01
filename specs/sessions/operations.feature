@@ -97,12 +97,12 @@ Feature: Session Operations (Fork, Checkpoint, Rename)
 
   # ── Rename ──
 
-  Scenario: Rename a session
+  Scenario: Rename a session via dialog
     Given a session card shows "Fix authentication bug..."
-    When I double-click the title
-    Then it should become an editable text field
-    And I can type a new name
-    And pressing Enter should save the name
+    When I select "Rename" from the context menu or detail view
+    Then a rename dialog appears with the current name pre-filled
+    And I can type a new name and confirm
+    And pressing Enter saves the name
 
   Scenario: Rename persists in coordination file
     Given I rename session "abc-123" to "Auth refactor v2"
@@ -124,4 +124,4 @@ Feature: Session Operations (Fork, Checkpoint, Rename)
   Scenario: Rename via context menu
     Given I right-click on a session card
     When I select "Rename"
-    Then the title should become editable
+    Then a rename dialog appears

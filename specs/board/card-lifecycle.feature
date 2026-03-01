@@ -13,12 +13,13 @@ Feature: Card Lifecycle and Automation
     Given a card exists on the board
     Then the card should show a label based on which links are present:
       | Links present                    | Label     | Color  |
-      | sessionLink (with or without others) | SESSION   | blue   |
+      | sessionLink (with or without others) | SESSION   | orange |
       | worktreeLink only                | WORKTREE  | green  |
-      | issueLink only                   | ISSUE     | orange |
+      | issueLink only                   | ISSUE     | blue   |
       | prLink only                      | PR        | purple |
       | no typed links (manual task)     | TASK      | gray   |
     And the priority order is: SESSION > WORKTREE > ISSUE > PR > TASK
+    And badge text color adapts: white in light mode, black in dark mode
 
   Scenario: Card shows secondary link indicators
     Given a card has sessionLink AND prLink AND issueLink
@@ -27,15 +28,18 @@ Feature: Card Lifecycle and Automation
 
   # ── Card Detail Header ──
 
-  Scenario: Card detail shows link pills
+  Scenario: Card detail shows property rows for each link
     Given I select a card with sessionLink, tmuxLink, worktreeLink, prLink, and issueLink
-    Then the detail header should show link pills for each:
-      | Pill      | Icon                        | Label                |
-      | Session   | terminal                    | #3 (session number)  |
-      | Tmux      | rectangle.on.rectangle      | tmux                 |
-      | Worktree  | arrow.triangle.branch       | feat/login           |
-      | PR        | arrow.triangle.pull         | #456                 |
-      | Issue     | exclamationmark.circle      | #123                 |
+    Then the detail header should show property rows (icon + label + value + actions):
+      | Row       | Icon                        | Value                   | Actions      |
+      | Branch    | arrow.triangle.branch       | feat/login              | × unlink     |
+      | Worktree  | folder                      | /path/to/worktree       | (shown if path exists) |
+      | PR        | arrow.triangle.pull         | #456 · Open             | ↗ open, × unlink |
+      | Issue     | circle.circle               | #123                    | ↗ open, × unlink |
+      | Project   | folder                      | /Users/.../langwatch    | copy         |
+      | Session   | number                      | C0BFCB49-D60E-...       | copy         |
+    And only rows with data should be shown
+    And a "+ Add link" button should appear at the bottom
 
   Scenario: Card detail has dynamic tabs based on links
     Given a card's available links determine which tabs appear:
@@ -97,9 +101,9 @@ Feature: Card Lifecycle and Automation
 
   Scenario: Claude thinks it's done
     Given a Claude session is actively working in "In Progress"
-    When Claude's Stop hook fires and no new prompt follows within 1 second
+    When Claude's Stop hook fires
     Then the card should move to "Requires Attention"
-    And a push notification should be sent
+    And a push notification should be sent (deduplicated within 62s)
     And the card should show "Task may be complete" status
 
   Scenario: Claude needs permission for a tool

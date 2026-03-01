@@ -4,14 +4,12 @@ import Foundation
 /// Atomic writes, file locking, corruption recovery.
 public actor CoordinationStore {
     private let filePath: String
-    private let lockPath: String
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
     public init(basePath: String? = nil) {
         let base = basePath ?? (NSHomeDirectory() as NSString).appendingPathComponent(".kanban")
         self.filePath = (base as NSString).appendingPathComponent("links.json")
-        self.lockPath = (base as NSString).appendingPathComponent("links.json.lock")
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

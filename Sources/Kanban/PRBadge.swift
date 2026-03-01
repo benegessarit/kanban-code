@@ -10,7 +10,7 @@ struct PRBadge: View {
         HStack(spacing: 3) {
             Image(systemName: iconName)
                 .font(.caption2)
-            Text("#\(prNumber)")
+            Text(verbatim: "#\(prNumber)")
                 .font(.caption2)
         }
         .padding(.horizontal, 5)

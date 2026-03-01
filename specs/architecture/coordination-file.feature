@@ -46,7 +46,8 @@ Feature: Coordination File
           "branch": "feat/issue-123"
         },
         "prLink": {
-          "number": 456
+          "number": 456,
+          "url": "https://github.com/langwatch/langwatch/pull/456"
         },
         "issueLink": {
           "number": 123,

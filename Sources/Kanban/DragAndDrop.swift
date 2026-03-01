@@ -27,6 +27,8 @@ struct DroppableColumnView: View {
     var onArchiveCard: (String) -> Void = { _ in }
     var onStartCard: (String) -> Void = { _ in }
     var onResumeCard: (String) -> Void = { _ in }
+    var onForkCard: (String) -> Void = { _ in }
+    var onCopyResumeCmd: (String) -> Void = { _ in }
     var onRefreshBacklog: (() -> Void)?
 
     @State private var isTargeted = false
@@ -44,9 +46,11 @@ struct DroppableColumnView: View {
                         },
                         onStart: { onStartCard(card.id) },
                         onResume: { onResumeCard(card.id) },
+                        onFork: { onForkCard(card.id) },
                         onRename: {
                             renamingCardId = card.id
                         },
+                        onCopyResumeCmd: { onCopyResumeCmd(card.id) },
                         onArchive: {
                             onArchiveCard(card.id)
                         }

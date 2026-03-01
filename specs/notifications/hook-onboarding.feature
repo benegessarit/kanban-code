@@ -16,8 +16,6 @@ Feature: Hook Onboarding
       | UserPromptSubmit  | Track when user sends messages   |
       | Stop              | Detect when Claude stops working |
       | Notification      | Detect permission/question/idle  |
-      | PreToolUse        | Keep activity timestamp fresh    |
-      | PostToolUse       | Keep activity timestamp fresh    |
       | SessionStart      | Track new session starts         |
       | SessionEnd        | Track session endings            |
 

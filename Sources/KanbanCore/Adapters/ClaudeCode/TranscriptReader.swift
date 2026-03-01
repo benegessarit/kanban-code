@@ -3,8 +3,95 @@ import Foundation
 /// Reads conversation turns from a .jsonl transcript file.
 public enum TranscriptReader {
 
-    /// Read all conversation turns from a .jsonl file.
+    /// Result of a paginated read: turns + whether more exist before these.
+    public struct ReadResult: Sendable {
+        public let turns: [ConversationTurn]
+        public let totalLineCount: Int
+        public let hasMore: Bool
+    }
+
+    /// Read all conversation turns from a .jsonl file (legacy — use readTail for large files).
     public static func readTurns(from filePath: String) async throws -> [ConversationTurn] {
+        let result = try await readTail(from: filePath, maxTurns: Int.max)
+        return result.turns
+    }
+
+    /// Read the last `maxTurns` conversation turns from a .jsonl file.
+    /// Reads the file efficiently: scans all lines but only parses the last N turns fully.
+    public static func readTail(from filePath: String, maxTurns: Int = 80) async throws -> ReadResult {
+        guard FileManager.default.fileExists(atPath: filePath) else {
+            return ReadResult(turns: [], totalLineCount: 0, hasMore: false)
+        }
+
+        let url = URL(fileURLWithPath: filePath)
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+
+        // First pass: count turns and record line offsets for the last N
+        var turnLineInfos: [(lineNumber: Int, line: String)] = []
+        var lineNumber = 0
+        var totalTurnCount = 0
+
+        for try await line in handle.bytes.lines {
+            lineNumber += 1
+            guard !line.isEmpty, line.contains("\"type\"") else { continue }
+
+            // Quick check: is this a user/assistant line?
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let type = obj["type"] as? String,
+                  type == "user" || type == "assistant" else { continue }
+
+            totalTurnCount += 1
+            turnLineInfos.append((lineNumber, line))
+            // Keep only the last maxTurns entries in the ring
+            if turnLineInfos.count > maxTurns {
+                turnLineInfos.removeFirst()
+            }
+        }
+
+        // Second pass: parse only the turns we're keeping
+        let startIndex = totalTurnCount - turnLineInfos.count
+        var turns: [ConversationTurn] = []
+        turns.reserveCapacity(turnLineInfos.count)
+
+        for (i, info) in turnLineInfos.enumerated() {
+            guard let data = info.line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let type = obj["type"] as? String else { continue }
+
+            let blocks: [ContentBlock]
+            let textPreview: String
+
+            if type == "user" {
+                blocks = extractUserBlocks(from: obj)
+                textPreview = Self.buildTextPreview(blocks: blocks, role: type)
+            } else {
+                blocks = extractAssistantBlocks(from: obj)
+                textPreview = Self.buildTextPreview(blocks: blocks, role: type)
+            }
+
+            let timestamp = obj["timestamp"] as? String
+
+            turns.append(ConversationTurn(
+                index: startIndex + i,
+                lineNumber: info.lineNumber,
+                role: type,
+                textPreview: textPreview,
+                timestamp: timestamp,
+                contentBlocks: blocks
+            ))
+        }
+
+        return ReadResult(
+            turns: turns,
+            totalLineCount: lineNumber,
+            hasMore: totalTurnCount > turnLineInfos.count
+        )
+    }
+
+    /// Load earlier turns before the current set (for "load more" pagination).
+    public static func readRange(from filePath: String, turnRange: Range<Int>) async throws -> [ConversationTurn] {
         guard FileManager.default.fileExists(atPath: filePath) else { return [] }
 
         let url = URL(fileURLWithPath: filePath)
@@ -21,27 +108,26 @@ public enum TranscriptReader {
 
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let type = obj["type"] as? String else {
+                  let type = obj["type"] as? String,
+                  type == "user" || type == "assistant" else { continue }
+
+            defer { turnIndex += 1 }
+
+            // Skip turns outside our range
+            guard turnRange.contains(turnIndex) else {
+                if turnIndex >= turnRange.upperBound { break }
                 continue
             }
-
-            guard type == "user" || type == "assistant" else { continue }
 
             let blocks: [ContentBlock]
             let textPreview: String
 
             if type == "user" {
                 blocks = extractUserBlocks(from: obj)
-                let textOnly = blocks.filter { if case .text = $0.kind { true } else { false } }
-                    .map(\.text).joined(separator: "\n")
-                textPreview = textOnly.isEmpty ? "(empty)" : String(textOnly.prefix(500))
+                textPreview = Self.buildTextPreview(blocks: blocks, role: type)
             } else {
                 blocks = extractAssistantBlocks(from: obj)
-                let textOnly = blocks.filter { if case .text = $0.kind { true } else { false } }
-                    .map(\.text).joined(separator: "\n")
-                textPreview = textOnly.isEmpty
-                    ? (blocks.isEmpty ? "(empty)" : "(tool use)")
-                    : String(textOnly.prefix(500))
+                textPreview = Self.buildTextPreview(blocks: blocks, role: type)
             }
 
             let timestamp = obj["timestamp"] as? String
@@ -54,7 +140,6 @@ public enum TranscriptReader {
                 timestamp: timestamp,
                 contentBlocks: blocks
             ))
-            turnIndex += 1
         }
 
         return turns
@@ -135,6 +220,40 @@ public enum TranscriptReader {
             }
         }
         return result
+    }
+
+    // MARK: - Preview text
+
+    /// Build a descriptive text preview for a conversation turn.
+    static func buildTextPreview(blocks: [ContentBlock], role: String) -> String {
+        let textOnly = blocks.filter { if case .text = $0.kind { true } else { false } }
+            .map(\.text).joined(separator: "\n")
+
+        if !textOnly.isEmpty {
+            return String(textOnly.prefix(500))
+        }
+
+        if blocks.isEmpty { return "(empty)" }
+
+        if role == "user" {
+            // User messages with tool_result blocks
+            let resultCount = blocks.filter { if case .toolResult = $0.kind { true } else { false } }.count
+            if resultCount > 0 {
+                return "[tool result x\(resultCount)]"
+            }
+        } else {
+            // Assistant messages with tool_use blocks — list tool names
+            let toolNames = blocks.compactMap { block -> String? in
+                if case .toolUse(let name, _) = block.kind { return name }
+                return nil
+            }
+            if !toolNames.isEmpty {
+                let unique = Array(NSOrderedSet(array: toolNames)) as! [String]
+                return "[tool: \(unique.joined(separator: ", "))]"
+            }
+        }
+
+        return "(empty)"
     }
 
     // MARK: - Tool use parsing

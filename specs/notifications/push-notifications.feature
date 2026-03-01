@@ -59,20 +59,18 @@ Feature: Push Notifications
       | Remote connection restored | yes    |
 
   # ── Anti-Duplicate Logic ──
-  # (Learned from claude-pushover: Stop+1s delay, 62s dedup window)
+  # (62-second dedup window prevents spam from rapid Stop events)
 
-  Scenario: Stop hook anti-duplicate
+  Scenario: Stop hook triggers notification
     Given a Stop hook fires for session "abc-123"
-    When 1 second elapses
-    And no UserPromptSubmit has fired for "abc-123"
-    Then a notification should be sent
+    Then a notification should be sent (after dedup check)
     And the session should move to "Requires Attention"
 
-  Scenario: Stop followed by immediate new prompt
+  Scenario: Stop followed by new prompt (dedup)
     Given a Stop hook fires for session "abc-123"
-    And within 1 second, a UserPromptSubmit fires
-    Then no notification should be sent
-    And the session should remain in "In Progress"
+    And a UserPromptSubmit fires within the dedup window
+    Then the session should return to "In Progress"
+    And subsequent Stop notifications are deduplicated within 62 seconds
 
   Scenario: Notification hook deduplication
     Given a Stop hook already sent a notification 30 seconds ago
@@ -98,7 +96,9 @@ Feature: Push Notifications
     Then each should receive its own notification
     And session numbers should help distinguish them
 
+  @future
   Scenario: Notification includes clickable action
     Given a Pushover notification is sent
     Then it should include a URL that opens the Kanban app
     And ideally deep-links to the specific session
+    # Requires adding a kanban:// URL scheme to the app bundle

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import KanbanCore
 
 struct CardView: View {
@@ -35,13 +36,70 @@ struct CardView: View {
             }
             .lineLimit(1)
 
-            // Bottom row: badge + time + link indicators + session number
+            // Bottom row: badge + time + link indicators
             HStack(spacing: 6) {
-                CardLabelBadge(label: card.link.cardLabel)
+                if card.link.cardLabel == .session {
+                    ClawdIcon()
+                        .frame(width: 14, height: 14)
+                        .opacity(0.4)
+                } else {
+                    CardLabelBadge(label: card.link.cardLabel)
+                }
 
                 Text(card.relativeTime)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+
+                Spacer()
+
+                // Tmux indicator (green when attached)
+                if card.link.tmuxLink != nil {
+                    Image(systemName: "terminal")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                }
+
+                // PR badge with status
+                if let pr = card.link.prLink {
+                    if let status = pr.status {
+                        PRBadge(status: status, prNumber: pr.number)
+                    } else {
+                        HStack(spacing: 2) {
+                            Image(systemName: "arrow.triangle.pull")
+                                .font(.caption2)
+                            Text(verbatim: "#\(pr.number)")
+                                .font(.caption2)
+                        }
+                        .foregroundStyle(.purple)
+                    }
+                    if let threads = pr.unresolvedThreads, threads > 0 {
+                        HStack(spacing: 1) {
+                            Image(systemName: "bubble.left.and.exclamationmark.bubble.right")
+                                .font(.system(size: 8))
+                            Text(verbatim: "\(threads)")
+                                .font(.system(size: 9, weight: .medium))
+                        }
+                        .foregroundStyle(.orange)
+                    }
+                }
+
+                // Issue indicator
+                if let issue = card.link.issueLink {
+                    HStack(spacing: 2) {
+                        Image(systemName: "circle.circle")
+                            .font(.caption2)
+                        Text(verbatim: "\(issue.number)")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.secondary)
+                }
+
+                // Remote execution indicator
+                if card.link.isRemote {
+                    Image(systemName: "cloud")
+                        .font(.caption2)
+                        .foregroundStyle(.teal)
+                }
             }
         }
         .padding(10)
@@ -54,14 +112,17 @@ struct CardView: View {
             } else if card.column == .backlog {
                 Button(action: onStart) {
                     Image(systemName: "play.fill")
-                        .font(.caption)
-                        .foregroundStyle(.white)
-                        .padding(5)
-                        .background(.green, in: Circle())
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.green.opacity(0.8))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(Color.green.opacity(0.08), in: Capsule())
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
                 }
                 .buttonStyle(.borderless)
                 .help("Start task")
-                .padding(4)
+                .padding(8)
             }
         }
         .background(
@@ -91,15 +152,49 @@ struct CardView: View {
                 Label("Copy Resume Command", systemImage: "doc.on.doc")
             }
             Divider()
-            if let pr = card.link.prLink?.number {
-                Button(action: {}) {
-                    Label("Open PR #\(pr)", systemImage: "arrow.up.right.square")
+            if let pr = card.link.prLink {
+                Button {
+                    if let url = pr.url.flatMap({ URL(string: $0) }) {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Label("Open PR #\(pr.number)", systemImage: "arrow.up.right.square")
+                }
+            }
+            if let issue = card.link.issueLink {
+                Button {
+                    if let url = issue.url.flatMap({ URL(string: $0) }) {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Label("Open Issue #\(issue.number)", systemImage: "arrow.up.right.square")
                 }
             }
             Divider()
             Button(action: onArchive) {
                 Label("Archive", systemImage: "archivebox")
             }
+        }
+    }
+}
+
+// MARK: - Clawd Icon
+
+/// Loads the clawd mascot PNG from the SPM bundle resource.
+private struct ClawdIcon: View {
+    private let image: NSImage? = {
+        guard let url = Bundle.module.url(forResource: "clawd@2x", withExtension: "png", subdirectory: "Resources")
+                ?? Bundle.module.url(forResource: "clawd", withExtension: "png", subdirectory: "Resources") else {
+            return nil
+        }
+        return NSImage(contentsOf: url)
+    }()
+
+    var body: some View {
+        if let image {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
         }
     }
 }
@@ -122,7 +217,7 @@ struct CardLabelBadge: View {
     private var color: Color {
         switch label {
         case .session: .orange
-        case .worktree: .teal
+        case .worktree: .green
         case .issue: .blue
         case .pr: .purple
         case .task: .gray

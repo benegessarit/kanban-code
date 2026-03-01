@@ -9,6 +9,18 @@ public final class MutagenAdapter: SyncManagerPort, @unchecked Sendable {
     }
 
     public func startSync(localPath: String, remotePath: String, name: String) async throws {
+        // Check for existing sync session to avoid duplicates
+        let existingStatuses = try await status()
+        if let existing = existingStatuses[name] {
+            if existing == .watching || existing == .staging {
+                // Already running — flush and return
+                try? await flushSync()
+                return
+            }
+            // Paused or error — terminate and recreate
+            try? await stopSync(name: name)
+        }
+
         let result = try await ShellCommand.run(
             "/usr/bin/env",
             arguments: [
@@ -20,11 +32,20 @@ public final class MutagenAdapter: SyncManagerPort, @unchecked Sendable {
                 "--default-file-mode-beta", "0644",
                 "--default-directory-mode-beta", "0755",
                 "--ignore-vcs",
+                "--ignore", "node_modules",
+                "--ignore", ".venv",
+                "--ignore", ".next",
+                "--ignore", "dist",
             ]
         )
         if !result.succeeded {
             throw MutagenError.createFailed(name: name, message: result.stderr)
         }
+    }
+
+    /// Reset a stuck or errored sync session.
+    public func resetSync(name: String) async throws {
+        try await stopSync(name: name)
     }
 
     public func stopSync(name: String) async throws {

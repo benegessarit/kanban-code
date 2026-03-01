@@ -76,8 +76,6 @@ Feature: Adapter Pattern and Clean Architecture
       | user_prompt         | UserPromptSubmit     |
       | ai_stopped          | Stop                 |
       | needs_attention     | Notification         |
-      | tool_start          | PreToolUse           |
-      | tool_end            | PostToolUse          |
 
   # ── Shared Infrastructure (adapter-independent) ──
 

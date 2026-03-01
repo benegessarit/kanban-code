@@ -27,9 +27,10 @@ public enum AssignColumn {
             return .done
         }
 
-        // PR exists and session idle → inReview
+        // PR exists and session not actively working → inReview
+        // This skips Waiting when addressing review feedback: Claude stops → goes directly to In Review
         if hasPR, let state = activityState,
-           state == .idleWaiting || state == .ended || state == .stale {
+           state == .needsAttention || state == .idleWaiting || state == .ended || state == .stale {
             return .inReview
         }
 
@@ -39,12 +40,12 @@ public enum AssignColumn {
             case .activelyWorking:
                 return .inProgress
             case .needsAttention:
-                return .requiresAttention
+                return .waiting
             case .idleWaiting:
                 if hasWorktree { return .inProgress }
                 // No worktree: fall through to recency check below
             case .ended:
-                if hasWorktree { return .requiresAttention }
+                if hasWorktree { return .waiting }
                 // No worktree: fall through to recency check below
             case .stale:
                 break // No hook data: fall through to recency check below
@@ -61,14 +62,14 @@ public enum AssignColumn {
             return .backlog
         }
 
-        // Recently active (within 24h) → requiresAttention
+        // Recently active (within 24h) → waiting
         // These sessions are recent but not confirmed active by hooks/polling.
         // In Progress is reserved for hook-confirmed actively working sessions.
         // User can triage from here: drag to All Sessions to archive, or resume.
         if let lastActivity = link.lastActivity {
             let hoursSinceActivity = Date.now.timeIntervalSince(lastActivity) / 3600
             if hoursSinceActivity < 24 {
-                return .requiresAttention
+                return .waiting
             }
         }
 

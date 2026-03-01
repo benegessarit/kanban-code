@@ -126,9 +126,9 @@ public enum CardReconciler {
 
                 let existingCardIds = cardIdsByBranch[baseName] ?? []
                 if existingCardIds.isEmpty {
-                    // Orphan worktree — create a new card
+                    // Orphan worktree — create a new card in Waiting for user triage
                     let newLink = Link(
-                        column: .allSessions,
+                        column: .waiting,
                         source: .discovered,
                         worktreeLink: WorktreeLink(path: worktree.path, branch: baseName)
                     )
@@ -151,7 +151,7 @@ public enum CardReconciler {
             let cardIds = cardIdsByBranch[branch] ?? []
             for cardId in cardIds {
                 if var link = linksById[cardId] {
-                    link.prLink = PRLink(number: pr.number)
+                    link.prLink = PRLink(number: pr.number, url: pr.url)
                     linksById[cardId] = link
                 }
             }

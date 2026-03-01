@@ -34,6 +34,13 @@ struct AssignColumnTests {
         #expect(col == .inReview)
     }
 
+    @Test("PR exists + needsAttention → inReview (skips waiting for review workflow)")
+    func prExistsNeedsAttention() {
+        let link = Link(sessionLink: SessionLink(sessionId: "s1"))
+        let col = AssignColumn.assign(link: link, activityState: .needsAttention, hasPR: true)
+        #expect(col == .inReview)
+    }
+
     @Test("PR exists + actively working → inProgress (not inReview)")
     func prExistsActive() {
         let link = Link(sessionLink: SessionLink(sessionId: "s1"))
@@ -48,11 +55,11 @@ struct AssignColumnTests {
         #expect(col == .inProgress)
     }
 
-    @Test("Needs attention → requiresAttention")
+    @Test("Needs attention → waiting")
     func needsAttention() {
         let link = Link(sessionLink: SessionLink(sessionId: "s1"))
         let col = AssignColumn.assign(link: link, activityState: .needsAttention)
-        #expect(col == .requiresAttention)
+        #expect(col == .waiting)
     }
 
     @Test("Idle with worktree → inProgress")
@@ -62,11 +69,11 @@ struct AssignColumnTests {
         #expect(col == .inProgress)
     }
 
-    @Test("Idle without worktree, recent → requiresAttention")
+    @Test("Idle without worktree, recent → waiting")
     func idleNoWorktreeRecent() {
         let link = Link(lastActivity: Date.now.addingTimeInterval(-3600), sessionLink: SessionLink(sessionId: "s1"))
         let col = AssignColumn.assign(link: link, activityState: .idleWaiting)
-        #expect(col == .requiresAttention)
+        #expect(col == .waiting)
     }
 
     @Test("Idle without worktree, old → allSessions")
@@ -76,18 +83,18 @@ struct AssignColumnTests {
         #expect(col == .allSessions)
     }
 
-    @Test("Ended with worktree → requiresAttention")
+    @Test("Ended with worktree → waiting")
     func endedWithWorktree() {
         let link = Link(sessionLink: SessionLink(sessionId: "s1"))
         let col = AssignColumn.assign(link: link, activityState: .ended, hasWorktree: true)
-        #expect(col == .requiresAttention)
+        #expect(col == .waiting)
     }
 
-    @Test("Stale + recent → requiresAttention (falls through to recency check)")
+    @Test("Stale + recent → waiting (falls through to recency check)")
     func staleRecent() {
         let link = Link(lastActivity: Date.now.addingTimeInterval(-3600), sessionLink: SessionLink(sessionId: "s1"))
         let col = AssignColumn.assign(link: link, activityState: .stale)
-        #expect(col == .requiresAttention)
+        #expect(col == .waiting)
     }
 
     @Test("Stale + old → allSessions")
@@ -97,11 +104,11 @@ struct AssignColumnTests {
         #expect(col == .allSessions)
     }
 
-    @Test("Ended without worktree, recent → requiresAttention")
+    @Test("Ended without worktree, recent → waiting")
     func endedNoWorktreeRecent() {
         let link = Link(lastActivity: Date.now.addingTimeInterval(-3600), sessionLink: SessionLink(sessionId: "s1"))
         let col = AssignColumn.assign(link: link, activityState: .ended)
-        #expect(col == .requiresAttention)
+        #expect(col == .waiting)
     }
 
     @Test("Ended without worktree, old → allSessions")
@@ -132,18 +139,18 @@ struct AssignColumnTests {
         #expect(col == .allSessions)
     }
 
-    @Test("Recently active session (within 24h) → requiresAttention (not inProgress)")
+    @Test("Recently active session (within 24h) → waiting (not inProgress)")
     func recentlyActive() {
         let link = Link(lastActivity: Date.now.addingTimeInterval(-3600), sessionLink: SessionLink(sessionId: "s1"))
         let col = AssignColumn.assign(link: link)
-        #expect(col == .requiresAttention)
+        #expect(col == .waiting)
     }
 
-    @Test("Session active 2h ago → requiresAttention")
+    @Test("Session active 2h ago → waiting")
     func activeToday() {
         let link = Link(lastActivity: Date.now.addingTimeInterval(-7200), sessionLink: SessionLink(sessionId: "s1"))
         let col = AssignColumn.assign(link: link)
-        #expect(col == .requiresAttention)
+        #expect(col == .waiting)
     }
 
     @Test("Only activelyWorking activity state → inProgress")
@@ -151,7 +158,7 @@ struct AssignColumnTests {
         // Without activityState, recent sessions should NOT be inProgress
         let recentLink = Link(lastActivity: Date.now.addingTimeInterval(-60), sessionLink: SessionLink(sessionId: "s1"))
         let col = AssignColumn.assign(link: recentLink)
-        #expect(col == .requiresAttention)
+        #expect(col == .waiting)
 
         // With activityState = activelyWorking → inProgress
         let col2 = AssignColumn.assign(link: recentLink, activityState: .activelyWorking)

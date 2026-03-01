@@ -87,19 +87,22 @@ public final class BoardState: @unchecked Sendable {
     private let activityDetector: ClaudeCodeActivityDetector?
     private let settingsStore: SettingsStore?
     private let ghAdapter: GhCliAdapter?
+    public let sessionStore: SessionStore
 
     public init(
         discovery: SessionDiscovery,
         coordinationStore: CoordinationStore,
         activityDetector: ClaudeCodeActivityDetector? = nil,
         settingsStore: SettingsStore? = nil,
-        ghAdapter: GhCliAdapter? = nil
+        ghAdapter: GhCliAdapter? = nil,
+        sessionStore: SessionStore = ClaudeCodeSessionStore()
     ) {
         self.discovery = discovery
         self.coordinationStore = coordinationStore
         self.activityDetector = activityDetector
         self.settingsStore = settingsStore
         self.ghAdapter = ghAdapter
+        self.sessionStore = sessionStore
     }
 
     /// Cards visible after project filtering.
@@ -110,7 +113,12 @@ public final class BoardState: @unchecked Sendable {
     /// Cards for a specific column, sorted by last activity (newest first).
     public func cards(in column: KanbanColumn) -> [KanbanCard] {
         filteredCards.filter { $0.column == column }
-            .sorted { ($0.link.lastActivity ?? $0.link.updatedAt) > ($1.link.lastActivity ?? $1.link.updatedAt) }
+            .sorted {
+                let t0 = $0.link.lastActivity ?? $0.link.updatedAt
+                let t1 = $1.link.lastActivity ?? $1.link.updatedAt
+                if t0 != t1 { return t0 > t1 }
+                return $0.id < $1.id
+            }
     }
 
     /// Count of cards in a column.
@@ -150,7 +158,7 @@ public final class BoardState: @unchecked Sendable {
     /// The visible columns (non-empty or always-shown).
     public var visibleColumns: [KanbanColumn] {
         // Always show the main workflow columns; show allSessions only if it has cards
-        let alwaysVisible: [KanbanColumn] = [.backlog, .inProgress, .requiresAttention, .inReview, .done]
+        let alwaysVisible: [KanbanColumn] = [.backlog, .inProgress, .waiting, .inReview, .done]
         var result = alwaysVisible
         if cardCount(in: .allSessions) > 0 {
             result.append(.allSessions)
@@ -195,6 +203,22 @@ public final class BoardState: @unchecked Sendable {
         }
     }
 
+    /// Delete a card permanently (manual tasks or orphan cards with no active links).
+    public func deleteCard(cardId: String) {
+        guard let index = cards.firstIndex(where: { $0.id == cardId }) else { return }
+        let card = cards[index]
+        let isManual = card.link.source == .manual
+        let isOrphan = card.link.sessionLink == nil && card.link.tmuxLink == nil && card.link.worktreeLink == nil
+        guard isManual || isOrphan else { return }
+        let link = cards[index].link
+        cards.remove(at: index)
+        if selectedCardId == cardId { selectedCardId = nil }
+
+        Task {
+            try? await coordinationStore.removeLink(id: link.id)
+        }
+    }
+
     /// Move a card to a different column (manual override — e.g. user drag).
     public func moveCard(cardId: String, to column: KanbanColumn) {
         setCardColumn(cardId: cardId, to: column, manualOverride: true)
@@ -207,7 +231,80 @@ public final class BoardState: @unchecked Sendable {
         link.column = column
         if manualOverride {
             link.manualOverrides.column = true
+            // Dragging to allSessions = archive; dragging out = unarchive
+            if column == .allSessions {
+                link.manuallyArchived = true
+            } else if link.manuallyArchived {
+                link.manuallyArchived = false
+            }
         }
+        link.updatedAt = .now
+        let session = cards[index].session
+        let activity = cards[index].activityState
+        cards[index] = KanbanCard(link: link, session: session, activityState: activity)
+
+        Task {
+            try? await coordinationStore.upsertLink(link)
+        }
+    }
+
+    /// Remove a typed link from a card (e.g. unlink PR or issue).
+    public enum LinkType: Sendable {
+        case pr, issue, worktree, tmux
+    }
+
+    public func unlinkFromCard(cardId: String, linkType: LinkType) {
+        guard let index = cards.firstIndex(where: { $0.id == cardId }) else { return }
+        var link = cards[index].link
+        switch linkType {
+        case .pr:
+            link.prLink = nil
+            link.manualOverrides.prLink = true
+        case .issue:
+            link.issueLink = nil
+            link.manualOverrides.issueLink = true
+        case .worktree:
+            link.worktreeLink = nil
+            link.manualOverrides.worktreePath = true
+        case .tmux:
+            link.tmuxLink = nil
+            link.manualOverrides.tmuxSession = true
+        }
+        link.updatedAt = .now
+        let session = cards[index].session
+        let activity = cards[index].activityState
+        cards[index] = KanbanCard(link: link, session: session, activityState: activity)
+
+        Task {
+            try? await coordinationStore.upsertLink(link)
+        }
+    }
+
+    /// Add a worktree/branch link to a card manually.
+    public func addBranchToCard(cardId: String, branch: String) {
+        guard let index = cards.firstIndex(where: { $0.id == cardId }) else { return }
+        var link = cards[index].link
+        if link.worktreeLink != nil {
+            link.worktreeLink?.branch = branch
+        } else {
+            link.worktreeLink = WorktreeLink(path: "", branch: branch)
+        }
+        link.manualOverrides.worktreePath = true
+        link.updatedAt = .now
+        let session = cards[index].session
+        let activity = cards[index].activityState
+        cards[index] = KanbanCard(link: link, session: session, activityState: activity)
+
+        Task {
+            try? await coordinationStore.upsertLink(link)
+        }
+    }
+
+    public func addIssueLinkToCard(cardId: String, issueNumber: Int) {
+        guard let index = cards.firstIndex(where: { $0.id == cardId }) else { return }
+        var link = cards[index].link
+        link.issueLink = IssueLink(number: issueNumber)
+        link.manualOverrides.issueLink = true
         link.updatedAt = .now
         let session = cards[index].session
         let activity = cards[index].activityState
@@ -229,6 +326,14 @@ public final class BoardState: @unchecked Sendable {
                 let settings = try await store.read()
                 configuredProjects = settings.projects
                 excludedPaths = settings.globalView.excludedPaths
+            }
+
+            // Show cached data immediately while discovery runs
+            if cards.isEmpty {
+                let cached = try await coordinationStore.readLinks()
+                if !cached.isEmpty {
+                    cards = cached.map { KanbanCard(link: $0) }
+                }
             }
 
             let sessions = try await discovery.discoverSessions()
@@ -338,14 +443,15 @@ public final class BoardState: @unchecked Sendable {
                             projectPath: project.path,
                             column: .backlog,
                             source: .githubIssue,
-                            issueLink: IssueLink(number: issue.number, body: issue.body)
+                            issueLink: IssueLink(number: issue.number, url: issue.url, body: issue.body)
                         )
                         links.append(link)
                         changed = true
                     }
                 }
             } catch {
-                // Silently continue — keep cached issues
+                // Surface GitHub API errors briefly
+                self.error = "GitHub: \(error.localizedDescription)"
             }
         }
 

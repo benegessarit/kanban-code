@@ -12,11 +12,11 @@ struct CardLifecycleTests {
         #expect(link.column == .inProgress)
     }
 
-    @Test("Stop with no follow-up moves to requiresAttention")
+    @Test("Stop with no follow-up moves to waiting")
     func stopToRequiresAttention() {
         var link = Link(column: .inProgress, sessionLink: SessionLink(sessionId: "s1"))
         UpdateCardColumn.update(link: &link, activityState: .needsAttention, pr: nil, hasWorktree: false)
-        #expect(link.column == .requiresAttention)
+        #expect(link.column == .waiting)
     }
 
     @Test("PR exists + idle → inReview")
@@ -47,7 +47,7 @@ struct CardLifecycleTests {
         #expect(link.column == .done)
     }
 
-    @Test("Ended session with worktree → requiresAttention")
+    @Test("Ended session with worktree → waiting")
     func endedWithWorktree() {
         var link = Link(
             column: .inProgress,
@@ -55,7 +55,7 @@ struct CardLifecycleTests {
             worktreeLink: WorktreeLink(path: "", branch: "feature-x")
         )
         UpdateCardColumn.update(link: &link, activityState: .ended, pr: nil, hasWorktree: true)
-        #expect(link.column == .requiresAttention)
+        #expect(link.column == .waiting)
     }
 
     @Test("Stale session → allSessions")
@@ -77,7 +77,7 @@ struct CardLifecycleTests {
         ]
         UpdateCardColumn.updateAll(links: &links, activityStates: states, prs: [:], worktreeBranches: [])
         #expect(links[0].column == .inProgress)
-        #expect(links[1].column == .requiresAttention)
+        #expect(links[1].column == .waiting)
     }
 
     @Test("Column doesn't change when state results in same column")

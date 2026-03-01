@@ -5,6 +5,8 @@ struct BoardView: View {
     @Bindable var state: BoardState
     var onStartCard: (String) -> Void = { _ in }
     var onResumeCard: (String) -> Void = { _ in }
+    var onForkCard: (String) -> Void = { _ in }
+    var onCopyResumeCmd: (String) -> Void = { _ in }
     var onRefreshBacklog: () -> Void = {}
 
     var body: some View {
@@ -37,6 +39,8 @@ struct BoardView: View {
                         },
                         onStartCard: onStartCard,
                         onResumeCard: onResumeCard,
+                        onForkCard: onForkCard,
+                        onCopyResumeCmd: onCopyResumeCmd,
                         onRefreshBacklog: column == .backlog ? onRefreshBacklog : nil
                     )
                 }

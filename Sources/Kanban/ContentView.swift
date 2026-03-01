@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import KanbanCore
 
 struct ContentView: View {
@@ -15,12 +16,16 @@ struct ContentView: View {
     @State private var launchPrompt: String = ""
     @State private var launchProjectPath: String = ""
     @State private var launchWorktreeName: String?
+    @State private var syncStatuses: [String: SyncStatus] = [:]
+    @State private var isSyncRefreshing = false
     @AppStorage("selectedProject") private var selectedProjectPersisted: String = ""
     private let coordinationStore: CoordinationStore
     private let settingsStore: SettingsStore
     private let launcher: LaunchSession
     private let systemTray = SystemTray()
+    private let mutagenAdapter = MutagenAdapter()
     private let hookEventsPath: String
+    private let settingsFilePath: String
 
     private var showInspector: Binding<Bool> {
         Binding(
@@ -63,6 +68,8 @@ struct ContentView: View {
         self.launcher = launch
         self.hookEventsPath = (NSHomeDirectory() as NSString)
             .appendingPathComponent(".kanban/hook-events.jsonl")
+        self.settingsFilePath = (NSHomeDirectory() as NSString)
+            .appendingPathComponent(".kanban/settings.json")
     }
 
     private static func loadPushoverConfig() -> PushoverClient? {
@@ -87,6 +94,22 @@ struct ContentView: View {
             state: boardState,
             onStartCard: { cardId in startCard(cardId: cardId) },
             onResumeCard: { cardId in resumeCard(cardId: cardId) },
+            onForkCard: { cardId in
+                // Select card and show detail view for fork action
+                boardState.selectedCardId = cardId
+            },
+            onCopyResumeCmd: { cardId in
+                guard let card = boardState.cards.first(where: { $0.id == cardId }) else { return }
+                var cmd = ""
+                if let projectPath = card.link.projectPath {
+                    cmd += "cd \(projectPath) && "
+                }
+                if let sessionId = card.link.sessionLink?.sessionId {
+                    cmd += "claude --resume \(sessionId)"
+                }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(cmd, forType: .string)
+            },
             onRefreshBacklog: { Task { await boardState.refreshBacklog() } }
         )
             .ignoresSafeArea(edges: .top)
@@ -96,12 +119,28 @@ struct ContentView: View {
                 if let card = boardState.cards.first(where: { $0.id == boardState.selectedCardId }) {
                     CardDetailView(
                         card: card,
+                        sessionStore: boardState.sessionStore,
                         onResume: { resumeCard(cardId: card.id) },
                         onRename: { name in
                             boardState.renameCard(cardId: card.id, name: name)
                         },
                         onFork: {},
-                        onDismiss: { boardState.selectedCardId = nil }
+                        onDismiss: { boardState.selectedCardId = nil },
+                        onUnlink: { linkType in
+                            boardState.unlinkFromCard(cardId: card.id, linkType: linkType)
+                        },
+                        onAddBranch: { branch in
+                            boardState.addBranchToCard(cardId: card.id, branch: branch)
+                        },
+                        onAddIssue: { number in
+                            boardState.addIssueLinkToCard(cardId: card.id, issueNumber: number)
+                        },
+                        onCleanupWorktree: {
+                            Task { await cleanupWorktree(cardId: card.id) }
+                        },
+                        onDeleteCard: {
+                            boardState.deleteCard(cardId: card.id)
+                        }
                     )
                     .inspectorColumnWidth(min: 600, ideal: 800, max: 1000)
                 }
@@ -115,7 +154,17 @@ struct ContentView: View {
                     SearchOverlay(
                         isPresented: $showSearch,
                         cards: boardState.cards,
+                        sessionStore: boardState.sessionStore,
                         onSelectCard: { card in
+                            boardState.selectedCardId = card.id
+                        },
+                        onResumeCard: { card in
+                            resumeCard(cardId: card.id)
+                        },
+                        onForkCard: { card in
+                            boardState.selectedCardId = card.id
+                        },
+                        onCheckpointCard: { card in
                             boardState.selectedCardId = card.id
                         }
                     )
@@ -145,7 +194,9 @@ struct ContentView: View {
                     isPresented: $showLaunchConfirmation
                 ) { editedPrompt, createWorktree in
                     if let cardId = launchCardId {
-                        executeLaunch(cardId: cardId, prompt: editedPrompt, projectPath: launchProjectPath, worktreeName: createWorktree ? launchWorktreeName : nil)
+                        // When createWorktree is checked but no explicit name, pass "" for auto-generation
+                        let wtName: String? = createWorktree ? (launchWorktreeName ?? "") : nil
+                        executeLaunch(cardId: cardId, prompt: editedPrompt, projectPath: launchProjectPath, worktreeName: wtName)
                     }
                 }
             }
@@ -167,8 +218,19 @@ struct ContentView: View {
                     showOnboarding = true
                 }
                 applyAppearance()
-                // Restore persisted project selection
-                boardState.selectedProjectPath = selectedProjectPersisted.isEmpty ? nil : selectedProjectPersisted
+                // Deploy remote shell script (idempotent)
+                try? RemoteShellManager.deploy()
+                // Restore persisted project selection (validate it still exists)
+                if !selectedProjectPersisted.isEmpty {
+                    let settings = try? await settingsStore.read()
+                    let validPaths = Set(settings?.projects.map(\.path) ?? [])
+                    if validPaths.contains(selectedProjectPersisted) {
+                        boardState.selectedProjectPath = selectedProjectPersisted
+                    } else {
+                        selectedProjectPersisted = ""
+                        boardState.selectedProjectPath = nil
+                    }
+                }
                 systemTray.setup(boardState: boardState)
                 await boardState.refresh()
                 systemTray.update()
@@ -178,6 +240,10 @@ struct ContentView: View {
                 // Watch hook-events.jsonl for changes → instant refresh
                 // Pass path explicitly so watchHookEvents can be nonisolated
                 await watchHookEvents(path: hookEventsPath)
+            }
+            .task(id: "settings-watcher") {
+                // Watch settings.json for changes → hot-reload
+                await watchSettingsFile(path: settingsFilePath)
             }
             .task(id: "refresh-timer") {
                 // Fallback periodic refresh for non-hook changes (new sessions, file mtime)
@@ -199,6 +265,12 @@ struct ContentView: View {
                     await orchestrator.tick()
                     await boardState.refresh()
                     systemTray.update()
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .kanbanSettingsChanged)) { _ in
+                Task {
+                    await boardState.refresh()
+                    applyAppearance()
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -233,6 +305,13 @@ struct ContentView: View {
                 // Left: project selector pill
                 ToolbarItem(placement: .navigation) {
                     projectSelectorMenu
+                }
+
+                // Left: sync status (only when remote is configured for selected project)
+                ToolbarItem(placement: .navigation) {
+                    if currentProjectHasRemote {
+                        syncStatusView
+                    }
                 }
 
                 // Right: search pill
@@ -348,6 +427,39 @@ struct ContentView: View {
         close(fd)
     }
 
+    /// Watch ~/.kanban/settings.json for changes → hot-reload settings and refresh board.
+    private nonisolated func watchSettingsFile(path: String) async {
+        guard FileManager.default.fileExists(atPath: path) else { return }
+
+        guard let fd = open(path, O_EVTONLY) as Int32?,
+              fd >= 0 else { return }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .rename, .delete],
+            queue: .global(qos: .utility)
+        )
+
+        let events = AsyncStream<Void> { continuation in
+            source.setEventHandler {
+                continuation.yield()
+            }
+            source.setCancelHandler {
+                continuation.finish()
+            }
+            continuation.onTermination = { @Sendable _ in
+                source.cancel()
+            }
+            source.resume()
+        }
+
+        for await _ in events {
+            NotificationCenter.default.post(name: .kanbanSettingsChanged, object: nil)
+        }
+
+        close(fd)
+    }
+
     // MARK: - Project Selector Menu
 
     private var projectSelectorMenu: some View {
@@ -358,6 +470,9 @@ struct ContentView: View {
                 HStack {
                     Text("All Projects")
                     Spacer()
+                    Text("\(boardState.cards.count)")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
                     if boardState.selectedProjectPath == nil {
                         Image(systemName: "checkmark")
                     }
@@ -374,6 +489,12 @@ struct ContentView: View {
                         HStack {
                             Text(project.name)
                             Spacer()
+                            let count = boardState.cards.filter { $0.link.projectPath == project.path }.count
+                            if count > 0 {
+                                Text("\(count)")
+                                    .foregroundStyle(.secondary)
+                                    .font(.caption)
+                            }
                             if boardState.selectedProjectPath == project.path {
                                 Image(systemName: "checkmark")
                             }
@@ -424,6 +545,126 @@ struct ContentView: View {
         guard let path = boardState.selectedProjectPath else { return "All Projects" }
         return boardState.configuredProjects.first(where: { $0.path == path })?.name
             ?? (path as NSString).lastPathComponent
+    }
+
+    /// Whether the currently selected project has remote execution configured.
+    private var currentProjectHasRemote: Bool {
+        guard let path = boardState.selectedProjectPath else {
+            // Global view — show if any project has remote config
+            return boardState.configuredProjects.contains { $0.remoteConfig != nil }
+        }
+        return boardState.configuredProjects.first(where: { $0.path == path })?.remoteConfig != nil
+    }
+
+    /// The aggregate sync status for the current project(s).
+    private var currentSyncStatus: SyncStatus {
+        if syncStatuses.isEmpty { return .notRunning }
+        // Return worst status: error > paused > staging > watching
+        if syncStatuses.values.contains(.error) { return .error }
+        if syncStatuses.values.contains(.paused) { return .paused }
+        if syncStatuses.values.contains(.staging) { return .staging }
+        if syncStatuses.values.contains(.watching) { return .watching }
+        return .notRunning
+    }
+
+    @ViewBuilder
+    private var syncStatusView: some View {
+        Menu {
+            let status = currentSyncStatus
+            Text("Mutagen Sync: \(syncStatusLabel(status))")
+
+            if !syncStatuses.isEmpty {
+                Divider()
+                ForEach(Array(syncStatuses.keys.sorted()), id: \.self) { name in
+                    if let st = syncStatuses[name] {
+                        Label("\(name): \(syncStatusLabel(st))", systemImage: syncStatusIcon(st))
+                    }
+                }
+            }
+
+            Divider()
+
+            Button {
+                Task {
+                    try? await mutagenAdapter.flushSync()
+                    await refreshSyncStatus()
+                }
+            } label: {
+                Label("Flush Sync", systemImage: "arrow.triangle.2.circlepath")
+            }
+
+            if currentSyncStatus == .error || currentSyncStatus == .paused {
+                Button {
+                    Task {
+                        for name in syncStatuses.keys {
+                            try? await mutagenAdapter.resetSync(name: name)
+                        }
+                        await refreshSyncStatus()
+                    }
+                } label: {
+                    Label("Reset Sync", systemImage: "arrow.counterclockwise")
+                }
+            }
+
+            Button {
+                Task { await refreshSyncStatus() }
+            } label: {
+                Label("Refresh Status", systemImage: "arrow.clockwise")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: syncStatusIcon(currentSyncStatus))
+                    .font(.caption)
+                    .foregroundStyle(syncStatusColor(currentSyncStatus))
+                Text("Sync")
+                    .font(.caption)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Mutagen file sync status")
+        .task { await refreshSyncStatus() }
+    }
+
+    private func refreshSyncStatus() async {
+        guard await mutagenAdapter.isAvailable() else {
+            syncStatuses = [:]
+            return
+        }
+        isSyncRefreshing = true
+        defer { isSyncRefreshing = false }
+        syncStatuses = (try? await mutagenAdapter.status()) ?? [:]
+    }
+
+    private func syncStatusLabel(_ status: SyncStatus) -> String {
+        switch status {
+        case .watching: "Watching"
+        case .staging: "Syncing..."
+        case .paused: "Paused"
+        case .error: "Error"
+        case .notRunning: "Not Running"
+        }
+    }
+
+    private func syncStatusIcon(_ status: SyncStatus) -> String {
+        switch status {
+        case .watching: "checkmark.circle.fill"
+        case .staging: "arrow.triangle.2.circlepath"
+        case .paused: "pause.circle.fill"
+        case .error: "exclamationmark.triangle.fill"
+        case .notRunning: "circle.dashed"
+        }
+    }
+
+    private func syncStatusColor(_ status: SyncStatus) -> Color {
+        switch status {
+        case .watching: .green
+        case .staging: .blue
+        case .paused: .yellow
+        case .error: .red
+        case .notRunning: .secondary
+        }
     }
 
     private func setSelectedProject(_ path: String?) {
@@ -540,17 +781,26 @@ struct ContentView: View {
 
     private func startCard(cardId: String) {
         guard let card = boardState.cards.first(where: { $0.id == cardId }) else { return }
-        let projectPath = card.link.projectPath ?? NSHomeDirectory()
+        // If card has an existing worktree, launch from there instead of project root
+        let effectivePath: String
+        if let worktreePath = card.link.worktreeLink?.path, !worktreePath.isEmpty {
+            effectivePath = worktreePath
+        } else {
+            effectivePath = card.link.projectPath ?? NSHomeDirectory()
+        }
 
         // Build prompt using PromptBuilder
         Task {
             let settings = try? await settingsStore.read()
-            let project = settings?.projects.first(where: { $0.path == projectPath })
+            let project = settings?.projects.first(where: { $0.path == (card.link.projectPath ?? effectivePath) })
             let prompt = PromptBuilder.buildPrompt(card: card.link, project: project, settings: settings)
 
             // Determine worktree name
             let worktreeName: String?
-            if let issueNum = card.link.issueLink?.number {
+            if card.link.worktreeLink != nil {
+                // Already has a worktree — don't create another
+                worktreeName = nil
+            } else if let issueNum = card.link.issueLink?.number {
                 worktreeName = "issue-\(issueNum)"
             } else {
                 worktreeName = nil
@@ -559,7 +809,7 @@ struct ContentView: View {
             // Show launch confirmation dialog
             launchCardId = cardId
             launchPrompt = prompt
-            launchProjectPath = projectPath
+            launchProjectPath = effectivePath
             launchWorktreeName = worktreeName
             showLaunchConfirmation = true
         }
@@ -568,23 +818,75 @@ struct ContentView: View {
     private func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?) {
         Task {
             do {
+                // Resolve remote config from project settings
+                let settings = try? await settingsStore.read()
+                let project = settings?.projects.first(where: { $0.path == projectPath })
+
+                let shellOverride: String?
+                let extraEnv: [String: String]
+                let isRemote: Bool
+
+                if let project, project.remoteConfig != nil {
+                    // Deploy remote shell script and get override path
+                    try? RemoteShellManager.deploy()
+                    shellOverride = RemoteShellManager.shellOverridePath(for: project)
+                    extraEnv = RemoteShellManager.setupEnvironment(for: project)
+                    isRemote = true
+
+                    // Start Mutagen sync before launching
+                    if let remote = project.remoteConfig {
+                        let syncName = "kanban-\((project.path as NSString).lastPathComponent)"
+                        let remoteDest = "\(remote.host):\(remote.remotePath)"
+                        try? await mutagenAdapter.startSync(
+                            localPath: remote.localPath,
+                            remotePath: remoteDest,
+                            name: syncName
+                        )
+                    }
+                } else {
+                    shellOverride = nil
+                    extraEnv = [:]
+                    isRemote = false
+                }
+
                 let tmuxName = try await launcher.launch(
                     projectPath: projectPath,
                     prompt: prompt,
                     worktreeName: worktreeName,
-                    shellOverride: nil
+                    shellOverride: shellOverride,
+                    extraEnv: extraEnv
                 )
 
                 // Update the EXISTING link (by link.id) — no new link created
+                let remoteFlag = isRemote
                 try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
                     link.tmuxLink = TmuxLink(sessionName: tmuxName)
                     link.column = .inProgress
+                    link.isRemote = remoteFlag
                 }
                 boardState.setCardColumn(cardId: cardId, to: .inProgress)
                 await boardState.refresh()
             } catch {
                 boardState.error = "Launch failed: \(error.localizedDescription)"
             }
+        }
+    }
+
+    private func cleanupWorktree(cardId: String) async {
+        guard let card = boardState.cards.first(where: { $0.id == cardId }),
+              let worktreePath = card.link.worktreeLink?.path,
+              !worktreePath.isEmpty else { return }
+
+        let adapter = GitWorktreeAdapter()
+        do {
+            try await adapter.removeWorktree(path: worktreePath, force: false)
+            // Clear worktree link from card
+            try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
+                link.worktreeLink = nil
+            }
+            await boardState.refresh()
+        } catch {
+            boardState.error = "Worktree cleanup failed: \(error.localizedDescription)"
         }
     }
 
@@ -595,10 +897,38 @@ struct ContentView: View {
 
         Task {
             do {
+                // Resolve remote config from project settings
+                let settings = try? await settingsStore.read()
+                let project = settings?.projects.first(where: { $0.path == projectPath })
+
+                let shellOverride: String?
+                let extraEnv: [String: String]
+
+                if let project, project.remoteConfig != nil {
+                    try? RemoteShellManager.deploy()
+                    shellOverride = RemoteShellManager.shellOverridePath(for: project)
+                    extraEnv = RemoteShellManager.setupEnvironment(for: project)
+
+                    // Start Mutagen sync before resuming
+                    if let remote = project.remoteConfig {
+                        let syncName = "kanban-\((project.path as NSString).lastPathComponent)"
+                        let remoteDest = "\(remote.host):\(remote.remotePath)"
+                        try? await mutagenAdapter.startSync(
+                            localPath: remote.localPath,
+                            remotePath: remoteDest,
+                            name: syncName
+                        )
+                    }
+                } else {
+                    shellOverride = nil
+                    extraEnv = [:]
+                }
+
                 let tmuxName = try await launcher.resume(
                     sessionId: sessionId,
                     projectPath: projectPath,
-                    shellOverride: nil
+                    shellOverride: shellOverride,
+                    extraEnv: extraEnv
                 )
 
                 // Update link with tmux session (by link.id)

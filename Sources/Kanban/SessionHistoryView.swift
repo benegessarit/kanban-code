@@ -20,11 +20,14 @@ struct SessionHistoryView: View {
     let turns: [ConversationTurn]
     let isLoading: Bool
     var checkpointMode: Bool = false
+    var hasMoreTurns: Bool = false
+    var isLoadingMore: Bool = false
     var onCancelCheckpoint: (() -> Void)?
     var onSelectTurn: ((ConversationTurn) -> Void)?
+    var onLoadMore: (() -> Void)?
 
     @State private var hoveredTurnIndex: Int?
-    @State private var displayCount: Int = 80
+    @State private var isAtBottom = true
     @State private var showSearch = false
     @State private var searchText = ""
     @State private var activeQuery = ""  // debounced, min 2 chars
@@ -32,10 +35,9 @@ struct SessionHistoryView: View {
     @State private var currentMatchPosition: Int = 0
     @State private var searchDebounceTask: Task<Void, Never>?
 
-    private static let pageSize = 80
     private static let maxSearchResults = 200
 
-    /// Turns to display: either search results or the last N turns.
+    /// Turns to display: either search results or all loaded turns.
     private var displayedTurns: [ConversationTurn] {
         if !activeQuery.isEmpty {
             let query = activeQuery.lowercased()
@@ -49,12 +51,7 @@ struct SessionHistoryView: View {
             }
             return results
         }
-        if turns.count <= displayCount { return turns }
-        return Array(turns.suffix(displayCount))
-    }
-
-    private var hasMoreTurns: Bool {
-        activeQuery.isEmpty && turns.count > displayCount
+        return turns
     }
 
     var body: some View {
@@ -90,14 +87,19 @@ struct SessionHistoryView: View {
                             }
 
                             // "Load earlier" button
-                            if hasMoreTurns {
+                            if hasMoreTurns && activeQuery.isEmpty {
                                 Button {
-                                    displayCount += Self.pageSize
+                                    onLoadMore?()
                                 } label: {
                                     HStack(spacing: 4) {
-                                        Image(systemName: "arrow.up")
-                                            .font(.caption2)
-                                        Text("Load \(min(Self.pageSize, turns.count - displayCount)) earlier turns")
+                                        if isLoadingMore {
+                                            ProgressView()
+                                                .controlSize(.mini)
+                                        } else {
+                                            Image(systemName: "arrow.up")
+                                                .font(.caption2)
+                                        }
+                                        Text("Load 80 earlier turns")
                                             .font(.caption)
                                     }
                                     .foregroundStyle(.white.opacity(0.5))
@@ -105,6 +107,7 @@ struct SessionHistoryView: View {
                                     .padding(.vertical, 6)
                                 }
                                 .buttonStyle(.plain)
+                                .disabled(isLoadingMore)
                                 .id("load-more")
                             }
 
@@ -135,8 +138,9 @@ struct SessionHistoryView: View {
                             .padding(.horizontal, 12)
                         }
                         .background(DarkScrollbarModifier())
+                        .background(ScrollBottomDetector(isAtBottom: $isAtBottom))
                     }
-                    .onAppear { scrollToBottom(proxy: proxy) }
+                    .onAppear { scrollToBottom(proxy: proxy, force: true) }
                     .onChange(of: turns.count) { scrollToBottom(proxy: proxy) }
                     .onChange(of: currentMatchPosition) {
                         guard !searchMatchIndices.isEmpty,
@@ -306,12 +310,16 @@ struct SessionHistoryView: View {
         .background(Color.orange.opacity(0.15))
     }
 
-    private func scrollToBottom(proxy: ScrollViewProxy) {
+    private func scrollToBottom(proxy: ScrollViewProxy, force: Bool = false) {
         guard activeQuery.isEmpty else { return }
-        DispatchQueue.main.async {
-            withAnimation(.none) {
-                proxy.scrollTo("bottom-anchor", anchor: .bottom)
-            }
+        guard force || isAtBottom else { return }
+        // Use a task with small delay so layout completes first,
+        // then scroll twice to handle late layout updates
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+            proxy.scrollTo("bottom-anchor", anchor: .bottom)
+            try? await Task.sleep(for: .milliseconds(100))
+            proxy.scrollTo("bottom-anchor", anchor: .bottom)
         }
     }
 }
@@ -539,4 +547,58 @@ struct TurnBlockView: View {
         }
     }
 
+}
+
+// MARK: - Scroll position detector
+
+/// Observes the enclosing NSScrollView to detect whether the user is scrolled to the bottom.
+/// When at bottom, auto-scroll is enabled. When the user scrolls up, auto-scroll stops.
+/// Scrolling back to bottom re-enables it.
+private struct ScrollBottomDetector: NSViewRepresentable {
+    @Binding var isAtBottom: Bool
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            guard let scrollView = view.enclosingScrollView else { return }
+            let clipView = scrollView.contentView
+            clipView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                context.coordinator,
+                selector: #selector(Coordinator.boundsChanged(_:)),
+                name: NSView.boundsDidChangeNotification,
+                object: clipView
+            )
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isAtBottom: $isAtBottom)
+    }
+
+    class Coordinator: NSObject {
+        private var isAtBottom: Binding<Bool>
+
+        init(isAtBottom: Binding<Bool>) {
+            self.isAtBottom = isAtBottom
+        }
+
+        @objc func boundsChanged(_ notification: Notification) {
+            guard let clipView = notification.object as? NSClipView,
+                  let documentView = clipView.documentView else { return }
+            let contentHeight = documentView.frame.height
+            let visibleHeight = clipView.bounds.height
+            let scrollOffset = clipView.bounds.origin.y
+            let threshold: CGFloat = 50
+            let atBottom = scrollOffset + visibleHeight >= contentHeight - threshold
+            if isAtBottom.wrappedValue != atBottom {
+                DispatchQueue.main.async { [isAtBottom] in
+                    isAtBottom.wrappedValue = atBottom
+                }
+            }
+        }
+    }
 }

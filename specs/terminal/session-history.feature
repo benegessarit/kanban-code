@@ -43,6 +43,8 @@ Feature: Session History View
   Scenario: History loads lazily for large sessions
     Given a session has 5000 conversation turns
     When I open the history view
-    Then only the last 100 turns should be loaded initially
-    And scrolling up should load more turns incrementally
-    And the view should never freeze
+    Then only the last 80 turns should be loaded initially via readTail
+    And a "Load 80 earlier turns" button should appear at the top
+    When I click the load-more button
+    Then the previous 80 turns should be loaded via readRange
+    And the view should never freeze or block the UI

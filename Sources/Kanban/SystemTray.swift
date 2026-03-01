@@ -64,7 +64,7 @@ final class SystemTray: @unchecked Sendable {
 
         if let state = boardState {
             let activeCards = state.cards(in: .inProgress)
-            let attentionCards = state.cards(in: .requiresAttention)
+            let attentionCards = state.cards(in: .waiting)
 
             if !activeCards.isEmpty {
                 menu.addItem(NSMenuItem.sectionHeader(title: "In Progress"))
