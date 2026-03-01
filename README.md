@@ -23,13 +23,9 @@
 
 ## What is Kanban Code?
 
-Kanban Code turns your Claude Code workflow into a visual command center. Instead of juggling terminals, browser tabs, and scattered sessions, you get a single native macOS app where every AI task flows through a Kanban board — from backlog to done.
+A native macOS app for running multiple Claude Code agents in parallel. Each task is a card on a Kanban board that automatically links your Claude session, git worktree, tmux terminal, and GitHub PR together — cards flow from backlog to done as Claude works, opens PRs, and gets them merged. Push notifications on your phone when agents need attention, remote execution to offload work to a server, and sleep prevention to keep your Mac awake while agents run.
 
-Each card on the board is a living entity that automatically links your Claude session, git worktree, tmux terminal, and GitHub PR together. Start a task, and Kanban Code creates the worktree, launches Claude in tmux, tracks its progress, sends you a push notification when it needs your attention, follows the PR through review, keeps your Mac from sleeping while agents are working, and archives everything when you're done.
-
-It's built for developers who run multiple Claude Code agents in parallel across multiple projects — locally or on remote machines — and need to stay on top of all of them.
-
-Kanban Code combines the lessons learned from five battle-tested open source tools into one unified experience: [claude-resume](https://github.com/langwatch/claude-resume) (session discovery, search, fork & checkpoint), [claude-remote](https://github.com/langwatch/claude-remote) (remote execution with file sync), [git-orchard](https://github.com/drewdrewthis/git-orchard) (tmux + worktree management), [claude-pushover](https://github.com/langwatch/claude-pushover) (push notifications with dedup), and [cc-amphetamine](https://github.com/rogeriochaves/cc-amphetamine) (sleep prevention).
+Kanban Code combines the lessons learned from [claude-resume](https://github.com/langwatch/claude-resume), [claude-remote](https://github.com/langwatch/claude-remote), [git-orchard](https://github.com/drewdrewthis/git-orchard), [claude-pushover](https://github.com/langwatch/claude-pushover), and [cc-amphetamine](https://github.com/rogeriochaves/cc-amphetamine) into one unified experience.
 
 ## Features
 
