@@ -12,19 +12,17 @@ public enum AssignColumn {
         allPRsDone: Bool = false,
         hasWorktree: Bool = false
     ) -> KanbanColumn {
-        // Manual override always wins
-        if link.manualOverrides.column {
-            return link.column
-        }
-
-        // Manually archived → allSessions
+        // Terminal states always win — these are definitive regardless of manual drag
         if link.manuallyArchived {
             return .allSessions
         }
-
-        // ALL PRs merged/closed → done
         if allPRsDone {
             return .done
+        }
+
+        // Manual drag override (non-terminal)
+        if link.manualOverrides.column {
+            return link.column
         }
 
         // PR exists and session not actively working → inReview

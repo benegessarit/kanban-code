@@ -342,14 +342,19 @@ public final class BoardState: @unchecked Sendable {
 
             // Reconcile: match sessions/worktrees/PRs to existing cards
             let snapshot = CardReconciler.DiscoverySnapshot(sessions: sessions)
-            let mergedLinks = CardReconciler.reconcile(existing: existingLinks, snapshot: snapshot)
+            var mergedLinks = CardReconciler.reconcile(existing: existingLinks, snapshot: snapshot)
+
+            // Recalculate columns: f(state) = column
+            // Column is a derived property, not stored state — always recompute.
             var newCards: [KanbanCard] = []
-            for link in mergedLinks {
-                let sessionId = link.sessionLink?.sessionId ?? link.id
+            for i in mergedLinks.indices {
+                let sessionId = mergedLinks[i].sessionLink?.sessionId ?? mergedLinks[i].id
                 let activity = await activityDetector?.activityState(for: sessionId)
+                let hasWorktree = mergedLinks[i].worktreeLink?.branch != nil
+                UpdateCardColumn.update(link: &mergedLinks[i], activityState: activity, hasWorktree: hasWorktree)
                 newCards.append(KanbanCard(
-                    link: link,
-                    session: link.sessionLink.flatMap { sessionsById[$0.sessionId] },
+                    link: mergedLinks[i],
+                    session: mergedLinks[i].sessionLink.flatMap { sessionsById[$0.sessionId] },
                     activityState: activity
                 ))
             }
@@ -364,7 +369,7 @@ public final class BoardState: @unchecked Sendable {
                 configuredProjects: configuredProjects
             )
 
-            // Persist merged links so manual overrides survive
+            // Persist recalculated columns + merged links
             try? await coordinationStore.writeLinks(mergedLinks)
 
             // Fetch GitHub issues if enough time has elapsed
