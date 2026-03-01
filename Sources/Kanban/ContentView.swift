@@ -17,7 +17,7 @@ struct LaunchConfig: Identifiable {
 }
 
 struct ContentView: View {
-    @State private var boardState: BoardState
+    @State private var store: BoardStore
     @State private var orchestrator: BackgroundOrchestrator
     @State private var showSearch = false
     @State private var showNewTask = false
@@ -29,7 +29,6 @@ struct ContentView: View {
     @State private var syncStatuses: [String: SyncStatus] = [:]
     @State private var isSyncRefreshing = false
     @AppStorage("selectedProject") private var selectedProjectPersisted: String = ""
-    private let coordinationStore: CoordinationStore
     private let settingsStore: SettingsStore
     private let launcher: LaunchSession
     private let systemTray = SystemTray()
@@ -39,8 +38,8 @@ struct ContentView: View {
 
     private var showInspector: Binding<Bool> {
         Binding(
-            get: { boardState.selectedCardId != nil },
-            set: { if !$0 { boardState.selectedCardId = nil } }
+            get: { store.state.selectedCardId != nil },
+            set: { if !$0 { store.dispatch(.selectCard(cardId: nil)) } }
         )
     }
 
@@ -49,13 +48,22 @@ struct ContentView: View {
         let coordination = CoordinationStore()
         let settings = SettingsStore()
         let activityDetector = ClaudeCodeActivityDetector()
-        let state = BoardState(
+        let tmux = TmuxAdapter()
+
+        let effectHandler = EffectHandler(
+            coordinationStore: coordination,
+            tmuxAdapter: tmux
+        )
+
+        let boardStore = BoardStore(
+            effectHandler: effectHandler,
             discovery: discovery,
             coordinationStore: coordination,
             activityDetector: activityDetector,
             settingsStore: settings,
             ghAdapter: GhCliAdapter(),
-            worktreeAdapter: GitWorktreeAdapter()
+            worktreeAdapter: GitWorktreeAdapter(),
+            tmuxAdapter: tmux
         )
 
         // Load Pushover from settings.json, wrap in CompositeNotifier with macOS fallback
@@ -66,16 +74,15 @@ struct ContentView: View {
             discovery: discovery,
             coordinationStore: coordination,
             activityDetector: activityDetector,
-            tmux: TmuxAdapter(),
+            tmux: tmux,
             prTracker: GhCliAdapter(),
             notifier: notifier
         )
 
-        let launch = LaunchSession(tmux: TmuxAdapter())
+        let launch = LaunchSession(tmux: tmux)
 
-        _boardState = State(initialValue: state)
+        _store = State(initialValue: boardStore)
         _orchestrator = State(initialValue: orch)
-        self.coordinationStore = coordination
         self.settingsStore = settings
         self.launcher = launch
         self.hookEventsPath = (NSHomeDirectory() as NSString)
@@ -103,15 +110,14 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
         BoardView(
-            state: boardState,
+            store: store,
             onStartCard: { cardId in startCard(cardId: cardId) },
             onResumeCard: { cardId in resumeCard(cardId: cardId) },
             onForkCard: { cardId in
-                // Select card and show detail view for fork action
-                boardState.selectedCardId = cardId
+                store.dispatch(.selectCard(cardId: cardId))
             },
             onCopyResumeCmd: { cardId in
-                guard let card = boardState.cards.first(where: { $0.id == cardId }) else { return }
+                guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
                 var cmd = ""
                 if let projectPath = card.link.projectPath {
                     cmd += "cd \(projectPath) && "
@@ -124,31 +130,38 @@ struct ContentView: View {
             },
             onCleanupWorktree: { cardId in Task { await cleanupWorktree(cardId: cardId) } },
             onDeleteCard: { cardId in pendingDeleteCardId = cardId },
-            onRefreshBacklog: { Task { await boardState.refreshBacklog() } },
+            onRefreshBacklog: { Task { await store.refreshBacklog() } },
             onNewTask: { showNewTask = true }
         )
             .ignoresSafeArea(edges: .top)
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .navigationTitle("")
             .inspector(isPresented: showInspector) {
-                if let card = boardState.cards.first(where: { $0.id == boardState.selectedCardId }) {
+                if let card = store.state.cards.first(where: { $0.id == store.state.selectedCardId }) {
                     CardDetailView(
                         card: card,
-                        sessionStore: boardState.sessionStore,
+                        sessionStore: store.sessionStore,
                         onResume: { resumeCard(cardId: card.id) },
                         onRename: { name in
-                            boardState.renameCard(cardId: card.id, name: name)
+                            store.dispatch(.renameCard(cardId: card.id, name: name))
                         },
                         onFork: {},
-                        onDismiss: { boardState.selectedCardId = nil },
+                        onDismiss: { store.dispatch(.selectCard(cardId: nil)) },
                         onUnlink: { linkType in
-                            boardState.unlinkFromCard(cardId: card.id, linkType: linkType)
+                            let actionType: Action.LinkType
+                            switch linkType {
+                            case .pr: actionType = .pr
+                            case .issue: actionType = .issue
+                            case .worktree: actionType = .worktree
+                            case .tmux: actionType = .tmux
+                            }
+                            store.dispatch(.unlinkFromCard(cardId: card.id, linkType: actionType))
                         },
                         onAddBranch: { branch in
-                            boardState.addBranchToCard(cardId: card.id, branch: branch)
+                            store.dispatch(.addBranchToCard(cardId: card.id, branch: branch))
                         },
                         onAddIssue: { number in
-                            boardState.addIssueLinkToCard(cardId: card.id, issueNumber: number)
+                            store.dispatch(.addIssueLinkToCard(cardId: card.id, issueNumber: number))
                         },
                         onCleanupWorktree: {
                             Task { await cleanupWorktree(cardId: card.id) }
@@ -160,12 +173,12 @@ struct ContentView: View {
                             createExtraTerminal(cardId: card.id)
                         },
                         onKillTerminal: { sessionName in
-                            killExtraTerminal(cardId: card.id, sessionName: sessionName)
+                            store.dispatch(.killTerminal(cardId: card.id, sessionName: sessionName))
                         },
                         onDiscover: {
                             Task {
                                 await orchestrator.discoverBranchesForCard(cardId: card.id)
-                                await boardState.refresh()
+                                await store.reconcile()
                             }
                         }
                     )
@@ -180,19 +193,19 @@ struct ContentView: View {
 
                     SearchOverlay(
                         isPresented: $showSearch,
-                        cards: boardState.cards,
-                        sessionStore: boardState.sessionStore,
+                        cards: store.state.cards,
+                        sessionStore: store.sessionStore,
                         onSelectCard: { card in
-                            boardState.selectedCardId = card.id
+                            store.dispatch(.selectCard(cardId: card.id))
                         },
                         onResumeCard: { card in
                             resumeCard(cardId: card.id)
                         },
                         onForkCard: { card in
-                            boardState.selectedCardId = card.id
+                            store.dispatch(.selectCard(cardId: card.id))
                         },
                         onCheckpointCard: { card in
-                            boardState.selectedCardId = card.id
+                            store.dispatch(.selectCard(cardId: card.id))
                         }
                     )
                     .padding(40)
@@ -203,8 +216,8 @@ struct ContentView: View {
             .sheet(isPresented: $showNewTask) {
                 NewTaskDialog(
                     isPresented: $showNewTask,
-                    projects: boardState.configuredProjects,
-                    defaultProjectPath: boardState.selectedProjectPath,
+                    projects: store.state.configuredProjects,
+                    defaultProjectPath: store.state.selectedProjectPath,
                     onCreate: { prompt, projectPath, title, startImmediately in
                         createManualTask(prompt: prompt, projectPath: projectPath, title: title, startImmediately: startImmediately)
                     },
@@ -240,7 +253,6 @@ struct ContentView: View {
                     settingsStore: settingsStore,
                     onComplete: {
                         showOnboarding = false
-                        // Reload notifier with potentially new pushover credentials
                         let pushover = Self.loadPushoverConfig()
                         let newNotifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient())
                         orchestrator.updateNotifier(newNotifier)
@@ -277,7 +289,7 @@ struct ContentView: View {
             ) {
                 Button("Delete", role: .destructive) {
                     if let cardId = pendingDeleteCardId {
-                        deleteCardWithCleanup(cardId: cardId)
+                        store.dispatch(.deleteCard(cardId: cardId))
                     }
                     pendingDeleteCardId = nil
                 }
@@ -293,39 +305,37 @@ struct ContentView: View {
                     showOnboarding = true
                 }
                 applyAppearance()
-                // Deploy remote shell script (idempotent)
                 try? RemoteShellManager.deploy()
-                // Restore persisted project selection (validate it still exists)
+                // Restore persisted project selection
                 if !selectedProjectPersisted.isEmpty {
                     let settings = try? await settingsStore.read()
                     let validPaths = Set(settings?.projects.map(\.path) ?? [])
                     if validPaths.contains(selectedProjectPersisted) {
-                        boardState.selectedProjectPath = selectedProjectPersisted
+                        store.dispatch(.setSelectedProject(selectedProjectPersisted))
                     } else {
                         selectedProjectPersisted = ""
-                        boardState.selectedProjectPath = nil
                     }
                 }
-                systemTray.setup(boardState: boardState)
-                await boardState.refresh()
+                // Register TerminalCache relay for KanbanCore effects
+                TerminalCacheRelay.removeHandler = { name in
+                    TerminalCache.shared.remove(name)
+                }
+                systemTray.setup(store: store)
+                await store.reconcile()
                 systemTray.update()
                 orchestrator.start()
             }
             .task(id: "hook-watcher") {
-                // Watch hook-events.jsonl for changes → instant refresh
-                // Pass path explicitly so watchHookEvents can be nonisolated
                 await watchHookEvents(path: hookEventsPath)
             }
             .task(id: "settings-watcher") {
-                // Watch settings.json for changes → hot-reload
                 await watchSettingsFile(path: settingsFilePath)
             }
             .task(id: "refresh-timer") {
-                // Fallback periodic refresh for non-hook changes (new sessions, file mtime)
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(5))
                     guard !Task.isCancelled else { break }
-                    await boardState.refresh()
+                    await store.reconcile()
                     systemTray.update()
                 }
             }
@@ -338,39 +348,38 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .kanbanHookEvent)) { _ in
                 Task {
                     await orchestrator.processHookEvents()
-                    await boardState.refresh()
+                    await store.reconcile()
                     systemTray.update()
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanSelectCard)) { notification in
                 if let cardId = notification.userInfo?["cardId"] as? String {
-                    boardState.selectedCardId = cardId
+                    store.dispatch(.selectCard(cardId: cardId))
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanSettingsChanged)) { _ in
                 Task {
-                    await boardState.refresh()
+                    await store.reconcile()
                     applyAppearance()
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 Task {
-                    await boardState.refresh()
+                    await store.reconcile()
                     systemTray.update()
                 }
             }
             .toolbar {
-                // Left: actions pill
                 ToolbarItemGroup(placement: .navigation) {
                     Button { showNewTask = true } label: {
                         Image(systemName: "square.and.pencil")
                     }
                     .help("New task (⌘N)")
 
-                    Button { Task { await boardState.refresh() } } label: {
+                    Button { Task { await store.reconcile() } } label: {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .disabled(boardState.isLoading)
+                    .disabled(store.state.isLoading)
                     .help("Refresh sessions")
 
                     Button {
@@ -382,19 +391,16 @@ struct ContentView: View {
                     .help(appearanceMode.helpText)
                 }
 
-                // Left: project selector pill
                 ToolbarItem(placement: .navigation) {
                     projectSelectorMenu
                 }
 
-                // Left: sync status (only when remote is configured for selected project)
                 ToolbarItem(placement: .navigation) {
                     if currentProjectHasRemote {
                         syncStatusView
                     }
                 }
 
-                // Right: search pill
                 ToolbarItem(placement: .primaryAction) {
                     Button { showSearch.toggle() } label: {
                         HStack(spacing: 6) {
@@ -412,20 +418,18 @@ struct ContentView: View {
                     .help("Search sessions (⌘K)")
                 }
 
-                // Spacer between search and sidebar pills
                 ToolbarSpacer(.fixed, placement: .primaryAction)
 
-                // Right: sidebar pill
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        if boardState.selectedCardId != nil {
-                            boardState.selectedCardId = nil
+                        if store.state.selectedCardId != nil {
+                            store.dispatch(.selectCard(cardId: nil))
                         }
                     } label: {
                         Image(systemName: "sidebar.right")
                     }
-                    .disabled(boardState.selectedCardId == nil)
-                    .opacity(boardState.selectedCardId != nil ? 1.0 : 0.3)
+                    .disabled(store.state.selectedCardId == nil)
+                    .opacity(store.state.selectedCardId != nil ? 1.0 : 0.3)
                     .help("Toggle session details")
                 }
             }
@@ -433,7 +437,6 @@ struct ContentView: View {
                 Button("") { showSearch.toggle() }
                     .keyboardShortcut("k", modifiers: .command)
                     .hidden()
-                // Project switching shortcuts ⌘1..⌘9
                 Button("") { selectProject(at: 0) }
                     .keyboardShortcut("1", modifiers: .command)
                     .hidden()
@@ -465,11 +468,8 @@ struct ContentView: View {
         } // NavigationStack
     }
 
-    /// Watch ~/.kanban/hook-events.jsonl for writes → post notification (handled by onReceive above).
-    /// Must be nonisolated so GCD closures don't inherit @MainActor isolation (causes crash).
+    /// Watch ~/.kanban/hook-events.jsonl for writes → post notification.
     private nonisolated func watchHookEvents(path: String) async {
-
-        // Ensure the directory and file exist
         let dir = (path as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         if !FileManager.default.fileExists(atPath: path) {
@@ -485,7 +485,6 @@ struct ContentView: View {
             queue: .global(qos: .userInitiated)
         )
 
-        // AsyncStream bridges GCD callbacks → async/await without actor isolation issues
         let events = AsyncStream<Void> { continuation in
             source.setEventHandler {
                 continuation.yield()
@@ -499,7 +498,6 @@ struct ContentView: View {
             source.resume()
         }
 
-        // for-await runs on @MainActor, so posting notifications is safe
         KanbanLog.info("watcher", "File watcher started for hook-events.jsonl")
         for await _ in events {
             KanbanLog.info("watcher", "hook-events.jsonl changed")
@@ -510,7 +508,7 @@ struct ContentView: View {
         close(fd)
     }
 
-    /// Watch ~/.kanban/settings.json for changes → hot-reload settings and refresh board.
+    /// Watch ~/.kanban/settings.json for changes → hot-reload.
     private nonisolated func watchSettingsFile(path: String) async {
         guard FileManager.default.fileExists(atPath: path) else { return }
 
@@ -553,16 +551,16 @@ struct ContentView: View {
                 HStack {
                     Text("All Projects")
                     Spacer()
-                    Text("\(boardState.cards.count)")
+                    Text("\(store.state.cards.count)")
                         .foregroundStyle(.secondary)
                         .font(.caption)
-                    if boardState.selectedProjectPath == nil {
+                    if store.state.selectedProjectPath == nil {
                         Image(systemName: "checkmark")
                     }
                 }
             }
 
-            let visibleProjects = boardState.configuredProjects.filter(\.visible)
+            let visibleProjects = store.state.configuredProjects.filter(\.visible)
             if !visibleProjects.isEmpty {
                 Divider()
                 ForEach(visibleProjects) { project in
@@ -572,13 +570,13 @@ struct ContentView: View {
                         HStack {
                             Text(project.name)
                             Spacer()
-                            let count = boardState.cards.filter { $0.link.projectPath == project.path }.count
+                            let count = store.state.cards.filter { $0.link.projectPath == project.path }.count
                             if count > 0 {
                                 Text("\(count)")
                                     .foregroundStyle(.secondary)
                                     .font(.caption)
                             }
-                            if boardState.selectedProjectPath == project.path {
+                            if store.state.selectedProjectPath == project.path {
                                 Image(systemName: "checkmark")
                             }
                         }
@@ -586,8 +584,7 @@ struct ContentView: View {
                 }
             }
 
-            // Discovered projects (from sessions, not yet configured)
-            let discovered = boardState.discoveredProjectPaths
+            let discovered = store.state.discoveredProjectPaths
             if !discovered.isEmpty {
                 Divider()
                 Section("Discovered") {
@@ -625,24 +622,20 @@ struct ContentView: View {
     }
 
     private var currentProjectName: String {
-        guard let path = boardState.selectedProjectPath else { return "All Projects" }
-        return boardState.configuredProjects.first(where: { $0.path == path })?.name
+        guard let path = store.state.selectedProjectPath else { return "All Projects" }
+        return store.state.configuredProjects.first(where: { $0.path == path })?.name
             ?? (path as NSString).lastPathComponent
     }
 
-    /// Whether the currently selected project has remote execution configured.
     private var currentProjectHasRemote: Bool {
-        guard let path = boardState.selectedProjectPath else {
-            // Global view — show if any project has remote config
-            return boardState.configuredProjects.contains { $0.remoteConfig != nil }
+        guard let path = store.state.selectedProjectPath else {
+            return store.state.configuredProjects.contains { $0.remoteConfig != nil }
         }
-        return boardState.configuredProjects.first(where: { $0.path == path })?.remoteConfig != nil
+        return store.state.configuredProjects.first(where: { $0.path == path })?.remoteConfig != nil
     }
 
-    /// The aggregate sync status for the current project(s).
     private var currentSyncStatus: SyncStatus {
         if syncStatuses.isEmpty { return .notRunning }
-        // Return worst status: error > paused > staging > watching
         if syncStatuses.values.contains(.error) { return .error }
         if syncStatuses.values.contains(.paused) { return .paused }
         if syncStatuses.values.contains(.staging) { return .staging }
@@ -751,17 +744,16 @@ struct ContentView: View {
     }
 
     private func setSelectedProject(_ path: String?) {
-        boardState.selectedProjectPath = path
+        store.dispatch(.setSelectedProject(path))
         selectedProjectPersisted = path ?? ""
     }
 
-    /// Select project by index: 0 = All Projects, 1+ = configured projects by order.
     private func selectProject(at index: Int) {
         if index == 0 {
             setSelectedProject(nil)
             return
         }
-        let visibleProjects = boardState.configuredProjects.filter(\.visible)
+        let visibleProjects = store.state.configuredProjects.filter(\.visible)
         let projectIndex = index - 1
         guard projectIndex < visibleProjects.count else { return }
         setSelectedProject(visibleProjects[projectIndex].path)
@@ -780,7 +772,7 @@ struct ContentView: View {
         let project = Project(path: path)
         Task {
             try? await settingsStore.addProject(project)
-            await boardState.refresh()
+            await store.reconcile()
             setSelectedProject(path)
         }
     }
@@ -789,7 +781,7 @@ struct ContentView: View {
         let project = Project(path: path)
         Task {
             try? await settingsStore.addProject(project)
-            await boardState.refresh()
+            await store.reconcile()
             setSelectedProject(path)
         }
     }
@@ -817,7 +809,7 @@ struct ContentView: View {
                     let project = Project(path: path)
                     Task {
                         try? await settingsStore.addProject(project)
-                        await boardState.refresh()
+                        await store.reconcile()
                         setSelectedProject(path)
                     }
                     showAddFromPath = false
@@ -856,19 +848,14 @@ struct ContentView: View {
             promptBody: trimmed
         )
 
-        // Immediately add to board (synchronous — user sees card instantly)
-        boardState.addCard(link: link)
+        store.dispatch(.createManualTask(link))
         KanbanLog.info("manual-task", "Created manual task card=\(link.id.prefix(12)) name='\(name)' project=\(projectPath ?? "nil") startImmediately=\(startImmediately)")
-
-        // Persist in background (won't be overwritten thanks to atomic modifyLinks)
-        Task { try? await coordinationStore.upsertLink(link) }
 
         if startImmediately {
             startCard(cardId: link.id)
         }
     }
 
-    /// Create a manual task and launch it directly, bypassing the LaunchConfirmationDialog.
     private func createManualTaskAndLaunch(prompt: String, projectPath: String?, title: String? = nil, createWorktree: Bool, runRemotely: Bool, commandOverride: String? = nil) {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let name: String
@@ -887,14 +874,9 @@ struct ContentView: View {
         )
         let effectivePath = projectPath ?? NSHomeDirectory()
 
-        // Immediately add to board (synchronous)
-        boardState.addCard(link: link)
+        store.dispatch(.createManualTask(link))
         KanbanLog.info("manual-task", "Created & launching task card=\(link.id.prefix(12)) name='\(name)' project=\(effectivePath)")
 
-        // Persist in background
-        Task { try? await coordinationStore.upsertLink(link) }
-
-        // Build prompt and launch
         Task {
             let settings = try? await settingsStore.read()
             let project = settings?.projects.first(where: { $0.path == effectivePath })
@@ -908,8 +890,7 @@ struct ContentView: View {
     // MARK: - Start / Resume
 
     private func startCard(cardId: String) {
-        guard let card = boardState.cards.first(where: { $0.id == cardId }) else { return }
-        // If card has an existing worktree, launch from there instead of project root
+        guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
         let effectivePath: String
         if let worktreePath = card.link.worktreeLink?.path, !worktreePath.isEmpty {
             effectivePath = worktreePath
@@ -917,20 +898,16 @@ struct ContentView: View {
             effectivePath = card.link.projectPath ?? NSHomeDirectory()
         }
 
-        // Build prompt using PromptBuilder
         Task {
             let settings = try? await settingsStore.read()
             let project = settings?.projects.first(where: { $0.path == (card.link.projectPath ?? effectivePath) })
             var prompt = PromptBuilder.buildPrompt(card: card.link, project: project, settings: settings)
-            // Fallback: if builder returns empty, use promptBody or card name directly
             if prompt.isEmpty {
                 prompt = card.link.promptBody ?? card.link.name ?? ""
             }
 
-            // Determine worktree name
             let worktreeName: String?
             if card.link.worktreeLink != nil {
-                // Already has a worktree — don't create another
                 worktreeName = nil
             } else if let issueNum = card.link.issueLink?.number {
                 worktreeName = "issue-\(issueNum)"
@@ -938,12 +915,10 @@ struct ContentView: View {
                 worktreeName = nil
             }
 
-            // Detect git repo and remote config for dialog
             let isGitRepo = FileManager.default.fileExists(
                 atPath: (effectivePath as NSString).appendingPathComponent(".git")
             )
 
-            // Show launch confirmation dialog with all params bundled atomically
             launchConfig = LaunchConfig(
                 cardId: cardId,
                 projectPath: effectivePath,
@@ -958,24 +933,13 @@ struct ContentView: View {
     }
 
     private func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, commandOverride: String? = nil) {
-        // IMMEDIATE feedback: update in-memory card with tmuxLink + column + open drawer
-        // This is synchronous — user sees the card move to In Progress and drawer opens on Terminal tab.
-        // NOTE: We do NOT call setCardColumn() which fires a racy async upsertLink.
+        // IMMEDIATE state update via reducer — no more dual memory+disk writes
+        store.dispatch(.launchCard(cardId: cardId, prompt: prompt, projectPath: projectPath, worktreeName: worktreeName, runRemotely: runRemotely, commandOverride: commandOverride))
         let predictedTmuxName = LaunchSession.tmuxSessionName(project: projectPath, worktree: worktreeName)
-        boardState.updateCardForLaunch(cardId: cardId, tmuxName: predictedTmuxName)
-        boardState.selectedCardId = cardId
         KanbanLog.info("launch", "Starting launch for card=\(cardId.prefix(12)) tmux=\(predictedTmuxName) project=\(projectPath)")
 
         Task {
             do {
-                // Persist tmuxLink + column to disk BEFORE launching
-                try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
-                    link.tmuxLink = TmuxLink(sessionName: predictedTmuxName)
-                    link.column = .inProgress
-                }
-                KanbanLog.info("launch", "Persisted tmuxLink for card=\(cardId.prefix(12))")
-
-                // Resolve remote config from project settings
                 let settings = try? await settingsStore.read()
                 let project = settings?.projects.first(where: { $0.path == projectPath })
 
@@ -1004,7 +968,7 @@ struct ContentView: View {
                     isRemote = false
                 }
 
-                // Snapshot existing .jsonl files before launch for session detection
+                // Snapshot existing .jsonl files for session detection
                 let claudeProjectsDir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/projects")
                 let encodedProject = projectPath.replacingOccurrences(of: "/", with: "-")
                 let sessionDir = (claudeProjectsDir as NSString).appendingPathComponent(encodedProject)
@@ -1012,7 +976,6 @@ struct ContentView: View {
                     ((try? FileManager.default.contentsOfDirectory(atPath: sessionDir)) ?? [])
                         .filter { $0.hasSuffix(".jsonl") }
                 )
-                KanbanLog.info("launch", "Launching tmux session tmux=\(predictedTmuxName)")
 
                 let tmuxName = try await launcher.launch(
                     projectPath: projectPath,
@@ -1024,16 +987,8 @@ struct ContentView: View {
                 )
                 KanbanLog.info("launch", "Tmux session created: \(tmuxName)")
 
-                // Update with actual name + remote flag
-                let remoteFlag = isRemote
-                try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
-                    link.tmuxLink = TmuxLink(sessionName: tmuxName)
-                    link.column = .inProgress
-                    link.isRemote = remoteFlag
-                }
-
-                // Detect new Claude session by polling for new .jsonl file (up to 3 seconds)
-                var foundSession = false
+                // Detect new Claude session by polling for new .jsonl file
+                var sessionLink: SessionLink?
                 for attempt in 0..<6 {
                     try? await Task.sleep(for: .milliseconds(500))
                     let currentFiles = Set(
@@ -1044,27 +999,15 @@ struct ContentView: View {
                         let sessionId = (newFile as NSString).deletingPathExtension
                         let sessionPath = (sessionDir as NSString).appendingPathComponent(newFile)
                         KanbanLog.info("launch", "Detected session file after \(attempt+1) attempts: \(sessionId.prefix(8))")
-                        try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
-                            link.sessionLink = SessionLink(sessionId: sessionId, sessionPath: sessionPath)
-                        }
-                        foundSession = true
+                        sessionLink = SessionLink(sessionId: sessionId, sessionPath: sessionPath)
                         break
                     }
                 }
-                if !foundSession {
-                    KanbanLog.warn("launch", "Session file not detected after 3s for card=\(cardId.prefix(12))")
-                }
 
-                KanbanLog.info("launch", "Refreshing board after launch for card=\(cardId.prefix(12))")
-                await boardState.refresh()
+                store.dispatch(.launchCompleted(cardId: cardId, tmuxName: tmuxName, sessionLink: sessionLink, isRemote: isRemote))
             } catch {
                 KanbanLog.error("launch", "Launch failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
-                // Revert: clear tmuxLink on failure
-                try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
-                    link.tmuxLink = nil
-                }
-                boardState.error = "Launch failed: \(error.localizedDescription)"
-                await boardState.refresh()
+                store.dispatch(.launchFailed(cardId: cardId, error: error.localizedDescription))
             }
         }
     }
@@ -1081,19 +1024,15 @@ struct ContentView: View {
     }
 
     private func cleanupWorktree(cardId: String) async {
-        guard let card = boardState.cards.first(where: { $0.id == cardId }),
+        guard let card = store.state.cards.first(where: { $0.id == cardId }),
               let worktreePath = card.link.worktreeLink?.path,
               !worktreePath.isEmpty else { return }
 
         let adapter = GitWorktreeAdapter()
         do {
             try await adapter.removeWorktree(path: worktreePath, force: false)
-            try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
-                link.worktreeLink = nil
-            }
-            await boardState.refresh()
+            store.dispatch(.unlinkFromCard(cardId: cardId, linkType: .worktree))
         } catch {
-            // Check if this is a remote worktree path we can translate
             if let localPath = translateRemoteWorktreePath(worktreePath, projectPath: card.link.projectPath) {
                 pendingWorktreeCleanup = WorktreeCleanupInfo(
                     cardId: cardId,
@@ -1102,23 +1041,19 @@ struct ContentView: View {
                     errorMessage: error.localizedDescription
                 )
             } else {
-                boardState.setError("Worktree cleanup failed: \(error.localizedDescription)")
+                store.dispatch(.setError("Worktree cleanup failed: \(error.localizedDescription)"))
             }
         }
     }
 
-    /// Translate a remote worktree path to a local one using remote config.
-    /// Checks per-project remote config first, then falls back to global settings.remote.
     private func translateRemoteWorktreePath(_ worktreePath: String, projectPath: String?) -> String? {
-        // Try per-project remote config first
         var remote: RemoteSettings?
         if let projectPath {
-            let project = boardState.configuredProjects.first(where: {
+            let project = store.state.configuredProjects.first(where: {
                 $0.path == projectPath || $0.effectiveRepoRoot == projectPath
             })
             remote = project?.remoteConfig
         }
-        // Fall back to global remote config
         if remote == nil {
             remote = (try? settingsStore.read())?.remote
         }
@@ -1129,15 +1064,9 @@ struct ContentView: View {
     }
 
     private func executeLocalWorktreeCleanup(_ info: WorktreeCleanupInfo) async {
-        // For remote worktrees synced locally via mutagen:
-        // 1. SSH to remote and run proper git worktree remove
-        // 2. Delete the local synced directory
-
         let remote = try? await settingsStore.read().remote
 
-        // Step 1: SSH to remote for proper git worktree removal
         if let remote {
-            // Derive repo root from worktree path (before .claude/worktrees/)
             let repoRoot: String
             if let range = info.remotePath.range(of: "/.claude/worktrees/") {
                 repoRoot = String(info.remotePath[..<range.lowerBound])
@@ -1150,50 +1079,35 @@ struct ContentView: View {
                 let result = try await ShellCommand.run("/usr/bin/ssh", arguments: [remote.host, sshCmd])
                 if !result.succeeded {
                     KanbanLog.warn("cleanup", "Remote git worktree remove failed: \(result.stderr)")
-                } else {
-                    KanbanLog.info("cleanup", "Remote worktree removed: \(info.remotePath)")
                 }
             } catch {
                 KanbanLog.warn("cleanup", "SSH cleanup failed: \(error)")
             }
         }
 
-        // Step 2: Remove local synced copy
         let fm = FileManager.default
         if fm.fileExists(atPath: info.localPath) {
             do {
                 try fm.removeItem(atPath: info.localPath)
-                KanbanLog.info("cleanup", "Removed local copy: \(info.localPath)")
             } catch {
-                boardState.setError("Failed to remove local copy: \(error.localizedDescription)")
+                store.dispatch(.setError("Failed to remove local copy: \(error.localizedDescription)"))
                 return
             }
         }
 
-        // Step 3: Remove card if it has no session, otherwise just clear worktree link
-        let card = boardState.cards.first(where: { $0.id == info.cardId })
+        // Remove card if it has no session, otherwise just clear worktree link
+        let card = store.state.cards.first(where: { $0.id == info.cardId })
         if card?.link.sessionLink == nil {
-            try? await coordinationStore.removeLink(id: info.cardId)
+            store.dispatch(.deleteCard(cardId: info.cardId))
         } else {
-            try? await coordinationStore.updateLink(id: info.cardId) { @Sendable link in
-                link.worktreeLink = nil
-            }
+            store.dispatch(.unlinkFromCard(cardId: info.cardId, linkType: .worktree))
         }
-        await boardState.refresh()
     }
 
     // MARK: - Extra Terminals
 
     private func createExtraTerminal(cardId: String) {
-        guard let card = boardState.cards.first(where: { $0.id == cardId }) else { return }
-
-        // Working directory: worktree > projectPath > home
-        let workDir: String
-        if let wtPath = card.link.worktreeLink?.path, !wtPath.isEmpty {
-            workDir = wtPath
-        } else {
-            workDir = card.link.projectPath ?? NSHomeDirectory()
-        }
+        guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
 
         if let tmux = card.link.tmuxLink {
             // Has existing tmux — add an extra shell session
@@ -1202,111 +1116,24 @@ struct ContentView: View {
             var n = 1
             while existing.contains("\(baseName)-sh\(n)") { n += 1 }
             let newName = "\(baseName)-sh\(n)"
-
-            Task {
-                do {
-                    let tmuxAdapter = TmuxAdapter()
-                    try await tmuxAdapter.createSession(name: newName, path: workDir, command: nil)
-
-                    try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
-                        var sessions = link.tmuxLink?.extraSessions ?? []
-                        sessions.append(newName)
-                        link.tmuxLink?.extraSessions = sessions
-                    }
-                    await boardState.refresh()
-                } catch {
-                    boardState.setError("Failed to create terminal: \(error.localizedDescription)")
-                }
-            }
+            store.dispatch(.addExtraTerminal(cardId: cardId, sessionName: newName))
         } else {
             // No tmux at all — create a primary terminal session (plain shell, no Claude)
-            let projectPath = card.link.projectPath ?? NSHomeDirectory()
-            let tmuxName = LaunchSession.tmuxSessionName(project: projectPath, worktree: card.link.worktreeLink?.branch)
-            KanbanLog.info("terminal", "Creating standalone shell terminal for card=\(cardId.prefix(12)) tmux=\(tmuxName)")
-
-            // Immediate UI feedback — mark as shell-only so tab shows "Shell" not "Claude"
-            boardState.updateCardForLaunch(cardId: cardId, tmuxName: tmuxName, isShellOnly: true)
-
-            Task {
-                do {
-                    let tmuxAdapter = TmuxAdapter()
-                    try await tmuxAdapter.createSession(name: tmuxName, path: workDir, command: nil)
-
-                    try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
-                        link.tmuxLink = TmuxLink(sessionName: tmuxName, isShellOnly: true)
-                    }
-                    await boardState.refresh()
-                } catch {
-                    boardState.setError("Failed to create terminal: \(error.localizedDescription)")
-                    // Revert on failure
-                    try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
-                        link.tmuxLink = nil
-                    }
-                    await boardState.refresh()
-                }
-            }
-        }
-    }
-
-    private func killExtraTerminal(cardId: String, sessionName: String) {
-        Task {
-            let tmuxAdapter = TmuxAdapter()
-            try? await tmuxAdapter.killSession(name: sessionName)
-
-            try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
-                link.tmuxLink?.extraSessions?.removeAll { $0 == sessionName }
-                if link.tmuxLink?.extraSessions?.isEmpty == true {
-                    link.tmuxLink?.extraSessions = nil
-                }
-            }
-            await boardState.refresh()
-        }
-    }
-
-    private func deleteCardWithCleanup(cardId: String) {
-        guard let link = boardState.deleteCard(cardId: cardId) else { return }
-        // Clean up terminal cache entries
-        if let tmux = link.tmuxLink {
-            for name in tmux.allSessionNames {
-                TerminalCache.shared.remove(name)
-            }
-        }
-        Task {
-            let tmuxAdapter = TmuxAdapter()
-            // Kill all tmux sessions (primary + extras)
-            if let tmux = link.tmuxLink {
-                for name in tmux.allSessionNames {
-                    try? await tmuxAdapter.killSession(name: name)
-                }
-            }
-            // Delete the .jsonl session file
-            if let sessionPath = link.sessionLink?.sessionPath {
-                try? FileManager.default.removeItem(atPath: sessionPath)
-            }
+            store.dispatch(.createTerminal(cardId: cardId))
         }
     }
 
     private func resumeCard(cardId: String) {
-        guard let card = boardState.cards.first(where: { $0.id == cardId }) else { return }
+        guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
         let sessionId = card.link.sessionLink?.sessionId ?? card.link.id
         let projectPath = card.link.projectPath ?? NSHomeDirectory()
 
-        // IMMEDIATE feedback: predict tmux name and update in-memory state synchronously.
-        // This prevents the card from bouncing between states while async work completes.
-        let predictedTmuxName = "claude-\(String(sessionId.prefix(8)))"
-        boardState.updateCardForLaunch(cardId: cardId, tmuxName: predictedTmuxName)
-        boardState.selectedCardId = cardId
-        KanbanLog.info("resume", "Starting resume for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8)) tmux=\(predictedTmuxName)")
+        // IMMEDIATE state update via reducer — isLaunching prevents background override
+        store.dispatch(.resumeCard(cardId: cardId))
+        KanbanLog.info("resume", "Starting resume for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8))")
 
         Task {
             do {
-                // Persist tmuxLink + column to disk BEFORE launching
-                try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
-                    link.tmuxLink = TmuxLink(sessionName: predictedTmuxName)
-                    link.column = .inProgress
-                }
-
-                // Resolve remote config from project settings
                 let settings = try? await settingsStore.read()
                 let project = settings?.projects.first(where: { $0.path == projectPath })
 
@@ -1318,7 +1145,6 @@ struct ContentView: View {
                     shellOverride = RemoteShellManager.shellOverridePath(for: project)
                     extraEnv = RemoteShellManager.setupEnvironment(for: project)
 
-                    // Start Mutagen sync before resuming
                     if let remote = project.remoteConfig {
                         let syncName = "kanban-\((project.path as NSString).lastPathComponent)"
                         let remoteDest = "\(remote.host):\(remote.remotePath)"
@@ -1341,25 +1167,10 @@ struct ContentView: View {
                 )
                 KanbanLog.info("resume", "Resume launched for card=\(cardId.prefix(12)) actualTmux=\(actualTmuxName)")
 
-                // If the actual tmux name differs from prediction (e.g. reused existing session),
-                // update the link with the real name
-                if actualTmuxName != predictedTmuxName {
-                    KanbanLog.info("resume", "Tmux name changed: predicted=\(predictedTmuxName) actual=\(actualTmuxName)")
-                    try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
-                        link.tmuxLink = TmuxLink(sessionName: actualTmuxName)
-                    }
-                    boardState.updateCardForLaunch(cardId: cardId, tmuxName: actualTmuxName)
-                }
-
-                await boardState.refresh()
+                store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: actualTmuxName))
             } catch {
                 KanbanLog.info("resume", "Resume failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
-                // Revert on failure
-                try? await coordinationStore.updateLink(id: cardId) { @Sendable link in
-                    link.tmuxLink = nil
-                }
-                boardState.setError("Resume failed: \(error.localizedDescription)")
-                await boardState.refresh()
+                store.dispatch(.resumeFailed(cardId: cardId, error: error.localizedDescription))
             }
         }
     }

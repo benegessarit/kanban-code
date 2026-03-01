@@ -263,10 +263,10 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
         )
     }
 
-    /// Slow background tick: activity states + column updates + PRs.
+    /// Slow background tick: poll activity states for sessions without hook events.
+    /// Column updates and PR tracking are now handled by BoardStore.reconcile().
     private func backgroundTick() async {
         await updateActivityStates()
-        await updateColumns()
     }
 
     private func updateActivityStates() async {
@@ -282,165 +282,7 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
             )
 
             // Poll activity for sessions without hook events
-            let _  = await activityDetector.pollActivity(sessionPaths: sessionPaths)
-        } catch {
-            // Continue on error
-        }
-    }
-
-    private func updateColumns() async {
-        do {
-            // Read a snapshot of links for computing changes.
-            // We process this snapshot asynchronously, then apply changes atomically
-            // via modifyLinks() to avoid overwriting concurrent additions.
-            var links = try await coordinationStore.readLinks()
-            var changedIds: Set<String> = []
-
-            // Get PR data if tracker available — keyed by "repo:branch" for multi-repo
-            var prsByRepoBranch: [String: PullRequest] = [:]
-            if let prTracker {
-                // Collect all repo paths: projectPaths + discoveredRepos values
-                var allRepos = Set(links.compactMap(\.projectPath))
-                for link in links {
-                    if let repos = link.discoveredRepos {
-                        for repo in repos.values { allRepos.insert(repo) }
-                    }
-                }
-                for repo in allRepos {
-                    if var prs = try? await prTracker.fetchPRs(repoRoot: repo) {
-                        try? await prTracker.enrichPRDetails(repoRoot: repo, prs: &prs)
-                        for (branch, pr) in prs {
-                            prsByRepoBranch["\(repo):\(branch)"] = pr
-                        }
-                    }
-                }
-            }
-
-            // Get tmux sessions
-            let tmuxSessions = (try? await tmux?.listSessions()) ?? []
-            let tmuxNames = Set(tmuxSessions.map(\.name))
-
-            for i in links.indices {
-                guard let sessionId = links[i].sessionLink?.sessionId else { continue }
-                let activityState = await activityDetector.activityState(for: sessionId)
-                let hasWorktree = links[i].worktreeLink?.branch != nil
-                let hasTmux = links[i].tmuxLink.map { tmux in
-                    tmux.allSessionNames.contains(where: { tmuxNames.contains($0) })
-                } ?? false
-
-                // Sync PR enrichment data to prLinks (multi-branch, multi-repo)
-                let projectPath = links[i].projectPath ?? ""
-                let discoveredRepos = links[i].discoveredRepos ?? [:]
-                var branchRepoPairs: [(String, String)] = [] // (branch, repoPath)
-                if let branch = links[i].worktreeLink?.branch {
-                    branchRepoPairs.append((branch, projectPath))
-                }
-                for branch in links[i].discoveredBranches ?? [] {
-                    let repo = discoveredRepos[branch] ?? projectPath
-                    branchRepoPairs.append((branch, repo))
-                }
-                let matchedPRs = branchRepoPairs.compactMap { prsByRepoBranch["\($0.1):\($0.0)"] }
-                for pr in matchedPRs {
-                    if let idx = links[i].prLinks.firstIndex(where: { $0.number == pr.number }) {
-                        // Update existing
-                        links[i].prLinks[idx].url = pr.url
-                        links[i].prLinks[idx].status = pr.status
-                        links[i].prLinks[idx].title = pr.title
-                        links[i].prLinks[idx].unresolvedThreads = pr.unresolvedThreads > 0 ? pr.unresolvedThreads : nil
-                        links[i].prLinks[idx].approvalCount = pr.approvalCount > 0 ? pr.approvalCount : nil
-                        links[i].prLinks[idx].checkRuns = pr.checkRuns.isEmpty ? nil : pr.checkRuns
-                    } else {
-                        // Add new
-                        links[i].prLinks.append(PRLink(
-                            number: pr.number,
-                            url: pr.url,
-                            status: pr.status,
-                            title: pr.title,
-                            approvalCount: pr.approvalCount > 0 ? pr.approvalCount : nil,
-                            checkRuns: pr.checkRuns.isEmpty ? nil : pr.checkRuns
-                        ))
-                    }
-                    // body is NOT synced here — lazy-loaded on demand via fetchPRBody
-                    changedIds.insert(links[i].id)
-                }
-
-                // Conversation branch scan for recent sessions without discoveredBranches
-                if links[i].discoveredBranches == nil,
-                   let path = links[i].sessionLink?.sessionPath {
-                    let activity = links[i].lastActivity ?? links[i].updatedAt
-                    let isRecent = activity.timeIntervalSinceNow > -86400 // 24h
-                    if isRecent {
-                        let scanned = (try? await JsonlParser.extractPushedBranches(from: path)) ?? []
-                        links[i].discoveredBranches = scanned.map(\.branch)
-                        // Store repo paths for branches in different repos
-                        var repos: [String: String] = [:]
-                        for db in scanned {
-                            if let repo = db.repoPath, repo != links[i].projectPath {
-                                repos[db.branch] = repo
-                            }
-                        }
-                        links[i].discoveredRepos = repos.isEmpty ? nil : repos
-                        if !scanned.isEmpty {
-                            // Re-match PRs with newly discovered branches
-                            for db in scanned {
-                                let repo = db.repoPath ?? projectPath
-                                let key = "\(repo):\(db.branch)"
-                                if let pr = prsByRepoBranch[key],
-                                   !links[i].prLinks.contains(where: { $0.number == pr.number }) {
-                                    links[i].prLinks.append(PRLink(
-                                        number: pr.number, url: pr.url,
-                                        status: pr.status, title: pr.title
-                                    ))
-                                }
-                            }
-                        }
-                        changedIds.insert(links[i].id)
-                    }
-                }
-
-                // Clear manual column override when we have definitive activity data
-                // (hooks fired, or tmux session gone). Manual override is only for user drags.
-                if links[i].manualOverrides.column {
-                    if activityState != .stale {
-                        // Hooks provided real data — let auto-assignment take over
-                        links[i].manualOverrides.column = false
-                        changedIds.insert(links[i].id)
-                    } else if links[i].tmuxLink != nil && !hasTmux {
-                        // Had a tmux session but it's gone now
-                        links[i].tmuxLink = nil
-                        links[i].manualOverrides.column = false
-                        changedIds.insert(links[i].id)
-                    }
-                }
-
-                let oldColumn = links[i].column
-
-                UpdateCardColumn.update(
-                    link: &links[i],
-                    activityState: activityState,
-                    hasWorktree: hasWorktree || hasTmux
-                )
-
-                if links[i].column != oldColumn {
-                    changedIds.insert(links[i].id)
-                }
-            }
-
-            // Apply changes atomically — re-reads fresh data so we don't overwrite
-            // concurrent additions (e.g. manual tasks created between our read and write)
-            if !changedIds.isEmpty {
-                let updatedById = Dictionary(
-                    links.filter { changedIds.contains($0.id) }.map { ($0.id, $0) },
-                    uniquingKeysWith: { a, _ in a }
-                )
-                try await coordinationStore.modifyLinks { freshLinks in
-                    for i in freshLinks.indices {
-                        if let updated = updatedById[freshLinks[i].id] {
-                            freshLinks[i] = updated
-                        }
-                    }
-                }
-            }
+            let _ = await activityDetector.pollActivity(sessionPaths: sessionPaths)
         } catch {
             // Continue on error
         }

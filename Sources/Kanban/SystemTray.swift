@@ -9,7 +9,7 @@ import KanbanCore
 final class SystemTray: @unchecked Sendable {
     private var statusItem: NSStatusItem?
     private var menu: NSMenu?
-    private weak var boardState: BoardState?
+    private weak var store: BoardStore?
     private var clawdProcess: Process?
     /// Time when In Progress last had sessions (for linger timeout).
     private var lastActiveTime: Date?
@@ -21,8 +21,8 @@ final class SystemTray: @unchecked Sendable {
         return stored > 0 ? stored : 60
     }
 
-    func setup(boardState: BoardState) {
-        self.boardState = boardState
+    func setup(store: BoardStore) {
+        self.store = store
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         // Build icon with 1x + 2x representations for crisp rendering at 22x22pt
@@ -62,9 +62,9 @@ final class SystemTray: @unchecked Sendable {
     private func updateMenu() {
         let menu = NSMenu()
 
-        if let state = boardState {
-            let activeCards = state.cards(in: .inProgress)
-            let attentionCards = state.cards(in: .waiting)
+        if let store {
+            let activeCards = store.state.cards(in: .inProgress)
+            let attentionCards = store.state.cards(in: .waiting)
 
             if !activeCards.isEmpty {
                 menu.addItem(NSMenuItem.sectionHeader(title: "In Progress"))
@@ -119,8 +119,8 @@ final class SystemTray: @unchecked Sendable {
     /// Show tray icon when there are In Progress sessions, or within linger timeout.
     /// Also manages the "clawd" helper process for Amphetamine integration.
     private func updateVisibility() {
-        guard let state = boardState else { return }
-        let hasActive = state.cardCount(in: .inProgress) > 0
+        guard let store else { return }
+        let hasActive = store.state.cardCount(in: .inProgress) > 0
 
         if hasActive {
             lastActiveTime = Date()

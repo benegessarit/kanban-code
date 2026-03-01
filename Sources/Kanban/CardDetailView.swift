@@ -12,7 +12,7 @@ struct CardDetailView: View {
     var onRename: (String) -> Void = { _ in }
     var onFork: () -> Void = {}
     var onDismiss: () -> Void = {}
-    var onUnlink: (BoardState.LinkType) -> Void = { _ in }
+    var onUnlink: (Action.LinkType) -> Void = { _ in }
     var onAddBranch: (String) -> Void = { _ in }
     var onAddIssue: (Int) -> Void = { _ in }
     var onCleanupWorktree: () -> Void = {}
@@ -61,7 +61,7 @@ struct CardDetailView: View {
 
     let sessionStore: SessionStore
 
-    init(card: KanbanCard, sessionStore: SessionStore = ClaudeCodeSessionStore(), onResume: @escaping () -> Void = {}, onRename: @escaping (String) -> Void = { _ in }, onFork: @escaping () -> Void = {}, onDismiss: @escaping () -> Void = {}, onUnlink: @escaping (BoardState.LinkType) -> Void = { _ in }, onAddBranch: @escaping (String) -> Void = { _ in }, onAddIssue: @escaping (Int) -> Void = { _ in }, onCleanupWorktree: @escaping () -> Void = {}, onDeleteCard: @escaping () -> Void = {}, onCreateTerminal: @escaping () -> Void = {}, onKillTerminal: @escaping (String) -> Void = { _ in }, onDiscover: @escaping () -> Void = {}) {
+    init(card: KanbanCard, sessionStore: SessionStore = ClaudeCodeSessionStore(), onResume: @escaping () -> Void = {}, onRename: @escaping (String) -> Void = { _ in }, onFork: @escaping () -> Void = {}, onDismiss: @escaping () -> Void = {}, onUnlink: @escaping (Action.LinkType) -> Void = { _ in }, onAddBranch: @escaping (String) -> Void = { _ in }, onAddIssue: @escaping (Int) -> Void = { _ in }, onCleanupWorktree: @escaping () -> Void = {}, onDeleteCard: @escaping () -> Void = {}, onCreateTerminal: @escaping () -> Void = {}, onKillTerminal: @escaping (String) -> Void = { _ in }, onDiscover: @escaping () -> Void = {}) {
         self.card = card
         self.sessionStore = sessionStore
         self.onResume = onResume

@@ -144,6 +144,10 @@ public struct Link: Identifiable, Codable, Sendable {
     /// Whether this card's project is configured for remote execution.
     public var isRemote: Bool
 
+    /// Launch lock — true while an async launch/resume is in progress.
+    /// Prevents background reconciliation from overriding card state mid-launch.
+    public var isLaunching: Bool?
+
     // MARK: - Display
 
     /// Best display title from link data alone: name → promptBody → branch → PR title → session ID.
@@ -215,6 +219,7 @@ public struct Link: Identifiable, Codable, Sendable {
         prLinks: [PRLink] = [],
         issueLink: IssueLink? = nil,
         isRemote: Bool = false,
+        isLaunching: Bool? = nil,
         discoveredBranches: [String]? = nil,
         discoveredRepos: [String: String]? = nil
     ) {
@@ -235,6 +240,7 @@ public struct Link: Identifiable, Codable, Sendable {
         self.prLinks = prLinks
         self.issueLink = issueLink
         self.isRemote = isRemote
+        self.isLaunching = isLaunching
         self.discoveredBranches = discoveredBranches
         self.discoveredRepos = discoveredRepos
     }
@@ -244,7 +250,7 @@ public struct Link: Identifiable, Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         // Card-level
         case id, name, projectPath, column, createdAt, updatedAt, lastActivity
-        case manualOverrides, manuallyArchived, source, promptBody, isRemote
+        case manualOverrides, manuallyArchived, source, promptBody, isRemote, isLaunching
         case discoveredBranches, discoveredRepos
         // Typed links (new nested format)
         case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink
@@ -269,6 +275,7 @@ public struct Link: Identifiable, Codable, Sendable {
         source = try c.decodeIfPresent(LinkSource.self, forKey: .source) ?? .discovered
         promptBody = try c.decodeIfPresent(String.self, forKey: .promptBody)
         isRemote = try c.decodeIfPresent(Bool.self, forKey: .isRemote) ?? false
+        isLaunching = try c.decodeIfPresent(Bool.self, forKey: .isLaunching)
         discoveredBranches = try c.decodeIfPresent([String].self, forKey: .discoveredBranches)
         discoveredRepos = try c.decodeIfPresent([String: String].self, forKey: .discoveredRepos)
 
@@ -347,6 +354,7 @@ public struct Link: Identifiable, Codable, Sendable {
         try c.encode(source, forKey: .source)
         try c.encodeIfPresent(promptBody, forKey: .promptBody)
         try c.encode(isRemote, forKey: .isRemote)
+        try c.encodeIfPresent(isLaunching, forKey: .isLaunching)
         try c.encodeIfPresent(discoveredBranches, forKey: .discoveredBranches)
         try c.encodeIfPresent(discoveredRepos, forKey: .discoveredRepos)
 

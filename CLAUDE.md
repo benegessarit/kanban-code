@@ -13,6 +13,11 @@ make run-app         # build + launch the app
 - **KanbanCore** (`Sources/KanbanCore/`) — pure Swift library, no UI. Domain entities, use cases, adapters.
 - **Kanban** (`Sources/Kanban/`) — SwiftUI + AppKit macOS app. Views, toolbar, system tray.
 - Deployment target: **macOS 26** (swift-tools-version 6.2). No need for `#available` checks.
+- **Elm-like unidirectional state** — see [`docs/architecture.md`](docs/architecture.md) for full details.
+  - All state lives in `AppState` struct (single source of truth).
+  - All mutations go through `store.dispatch(action)` → pure `Reducer` → async `Effect`s.
+  - `isLaunching` flag on `Link` prevents background reconciliation from overriding cards mid-launch/resume.
+  - Never mutate state directly or write to `CoordinationStore` from views — always dispatch an action.
 
 ## Critical: DispatchSource + @MainActor Crashes
 

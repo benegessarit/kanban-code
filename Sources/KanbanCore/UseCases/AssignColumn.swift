@@ -63,9 +63,9 @@ public enum AssignColumn {
         }
 
         // Manual task without a session yet → backlog
-        // BUT if tmuxLink is set, it's being actively launched → stay in progress
+        // BUT if tmuxLink is set and NOT shell-only, it's being actively launched → stay in progress
         if link.source == .manual && link.sessionLink == nil {
-            if link.tmuxLink != nil {
+            if link.tmuxLink != nil && link.tmuxLink?.isShellOnly != true {
                 KanbanLog.info("assign-column", "Manual card \(link.id.prefix(12)) has tmuxLink → inProgress (launching)")
                 return .inProgress
             }

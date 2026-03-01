@@ -2,7 +2,7 @@ import SwiftUI
 import KanbanCore
 
 struct BoardView: View {
-    @Bindable var state: BoardState
+    var store: BoardStore
     var onStartCard: (String) -> Void = { _ in }
     var onResumeCard: (String) -> Void = { _ in }
     var onForkCard: (String) -> Void = { _ in }
@@ -20,20 +20,23 @@ struct BoardView: View {
     private var boardContent: some View {
         ScrollView(.horizontal, showsIndicators: true) {
             HStack(alignment: .top, spacing: 6) {
-                ForEach(state.visibleColumns, id: \.self) { column in
+                ForEach(store.state.visibleColumns, id: \.self) { column in
                     DroppableColumnView(
                         column: column,
-                        cards: state.cards(in: column),
-                        selectedCardId: $state.selectedCardId,
-                        isRefreshingBacklog: state.isRefreshingBacklog,
+                        cards: store.state.cards(in: column),
+                        selectedCardId: Binding(
+                            get: { store.state.selectedCardId },
+                            set: { store.dispatch(.selectCard(cardId: $0)) }
+                        ),
+                        isRefreshingBacklog: store.state.isRefreshingBacklog,
                         onMoveCard: { cardId, targetColumn in
-                            state.moveCard(cardId: cardId, to: targetColumn)
+                            store.dispatch(.moveCard(cardId: cardId, to: targetColumn))
                         },
                         onRenameCard: { cardId, name in
-                            state.renameCard(cardId: cardId, name: name)
+                            store.dispatch(.renameCard(cardId: cardId, name: name))
                         },
                         onArchiveCard: { cardId in
-                            state.archiveCard(cardId: cardId)
+                            store.dispatch(.archiveCard(cardId: cardId))
                         },
                         onStartCard: onStartCard,
                         onResumeCard: onResumeCard,
@@ -51,7 +54,7 @@ struct BoardView: View {
         }
         // Error banner at bottom
         .overlay(alignment: .bottom) {
-            if let error = state.error {
+            if let error = store.state.error {
                 HStack {
                     Image(systemName: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
@@ -59,7 +62,7 @@ struct BoardView: View {
                         .font(.caption)
                         .lineLimit(2)
                     Spacer()
-                    Button("Dismiss") { state.error = nil }
+                    Button("Dismiss") { store.dispatch(.setError(nil)) }
                         .buttonStyle(.borderless)
                         .font(.caption)
                 }
@@ -69,13 +72,13 @@ struct BoardView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: state.error != nil)
+        .animation(.easeInOut(duration: 0.2), value: store.state.error != nil)
         // Empty board hint
         .overlay {
-            if state.filteredCards.isEmpty && !state.isLoading {
+            if store.state.filteredCards.isEmpty && !store.state.isLoading {
                 VStack(spacing: 12) {
-                    if let projectPath = state.selectedProjectPath {
-                        let name = state.configuredProjects.first(where: { $0.path == projectPath })?.name
+                    if let projectPath = store.state.selectedProjectPath {
+                        let name = store.state.configuredProjects.first(where: { $0.path == projectPath })?.name
                             ?? (projectPath as NSString).lastPathComponent
                         Text("No sessions yet for \(name)")
                             .font(.title3)
