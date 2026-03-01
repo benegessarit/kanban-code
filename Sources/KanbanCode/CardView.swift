@@ -227,8 +227,8 @@ struct CardView: View {
 /// Loads the clawd mascot PNG from the SPM bundle resource.
 struct ClawdIcon: View {
     private let image: NSImage? = {
-        guard let url = Bundle.module.url(forResource: "clawd@2x", withExtension: "png", subdirectory: "Resources")
-                ?? Bundle.module.url(forResource: "clawd", withExtension: "png", subdirectory: "Resources") else {
+        guard let url = Bundle.appResources.url(forResource: "clawd@2x", withExtension: "png", subdirectory: "Resources")
+                ?? Bundle.appResources.url(forResource: "clawd", withExtension: "png", subdirectory: "Resources") else {
             return nil
         }
         return NSImage(contentsOf: url)

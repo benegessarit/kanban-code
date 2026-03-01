@@ -36,13 +36,13 @@ final class SystemTray: @unchecked Sendable {
         let icon = NSImage(size: NSSize(width: 22, height: 22))
         var hasReps = false
 
-        if let url = Bundle.module.url(forResource: "clawd", withExtension: "png", subdirectory: "Resources"),
+        if let url = Bundle.appResources.url(forResource: "clawd", withExtension: "png", subdirectory: "Resources"),
            let rep = NSImageRep(contentsOf: url) {
             rep.size = NSSize(width: 22, height: 22)
             icon.addRepresentation(rep)
             hasReps = true
         }
-        if let url = Bundle.module.url(forResource: "clawd@2x", withExtension: "png", subdirectory: "Resources"),
+        if let url = Bundle.appResources.url(forResource: "clawd@2x", withExtension: "png", subdirectory: "Resources"),
            let rep = NSImageRep(contentsOf: url) {
             rep.size = NSSize(width: 22, height: 22) // same logical size; 44px used on retina
             icon.addRepresentation(rep)
