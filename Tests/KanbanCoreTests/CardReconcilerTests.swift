@@ -254,7 +254,7 @@ struct CardReconcilerTests {
 
     // MARK: - Dead link cleanup
 
-    @Test("Dead tmux link is cleared")
+    @Test("Dead tmux link is cleared when tmux was scanned")
     func deadTmuxCleared() {
         let existing = [
             Link(
@@ -265,13 +265,32 @@ struct CardReconcilerTests {
         ]
         let snapshot = CardReconciler.DiscoverySnapshot(
             sessions: [Session(id: "s1", messageCount: 1, modifiedTime: .now)],
-            tmuxSessions: [] // No tmux sessions alive
+            tmuxSessions: [TmuxSession(name: "other-alive", path: "/tmp")] // Tmux scanned, but "dead-session" not in list
         )
 
         let result = CardReconciler.reconcile(existing: existing, snapshot: snapshot)
         #expect(result.count == 1)
         #expect(result[0].tmuxLink == nil) // Cleared
         #expect(result[0].sessionLink?.sessionId == "s1") // Session still there
+    }
+
+    @Test("Tmux link preserved when tmux not scanned")
+    func tmuxLinkPreservedWithoutScan() {
+        let existing = [
+            Link(
+                column: .inProgress,
+                sessionLink: SessionLink(sessionId: "s1"),
+                tmuxLink: TmuxLink(sessionName: "my-session")
+            )
+        ]
+        // Snapshot with no tmux data = tmux not scanned (e.g. BoardState.refresh())
+        let snapshot = CardReconciler.DiscoverySnapshot(
+            sessions: [Session(id: "s1", messageCount: 1, modifiedTime: .now)]
+        )
+
+        let result = CardReconciler.reconcile(existing: existing, snapshot: snapshot)
+        #expect(result.count == 1)
+        #expect(result[0].tmuxLink?.sessionName == "my-session") // NOT cleared
     }
 
     @Test("Dead worktree link is cleared when worktrees were scanned")

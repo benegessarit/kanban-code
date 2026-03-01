@@ -65,30 +65,60 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
 
             // Force rescan by clearing cached value
             links[idx].discoveredBranches = nil
+            links[idx].discoveredRepos = nil
             let scanned = (try? await JsonlParser.extractPushedBranches(from: sessionPath)) ?? []
-            links[idx].discoveredBranches = scanned
+            links[idx].discoveredBranches = scanned.map(\.branch)
+            // Store repo paths for branches that differ from projectPath
+            var repos: [String: String] = [:]
+            for db in scanned {
+                if let repo = db.repoPath, repo != links[idx].projectPath {
+                    repos[db.branch] = repo
+                }
+            }
+            links[idx].discoveredRepos = repos.isEmpty ? nil : repos
 
-            // Re-fetch PRs to match newly discovered branches
-            if let prTracker, let projectPath = links[idx].projectPath {
-                var allPRs: [String: PullRequest] = [:]
-                if var prs = try? await prTracker.fetchPRs(repoRoot: projectPath) {
-                    try? await prTracker.enrichPRDetails(repoRoot: projectPath, prs: &prs)
-                    allPRs = prs
+            // Re-fetch PRs — group branches by repo for batch fetching
+            if let prTracker {
+                let projectPath = links[idx].projectPath
+                // Collect all branches with their effective repo paths
+                var branchesByRepo: [String: [String]] = [:]
+                if let branch = links[idx].worktreeLink?.branch, let pp = projectPath {
+                    branchesByRepo[pp, default: []].append(branch)
+                }
+                for db in scanned {
+                    let repo = db.repoPath ?? projectPath ?? ""
+                    guard !repo.isEmpty else { continue }
+                    branchesByRepo[repo, default: []].append(db.branch)
                 }
 
-                let branches = [links[idx].worktreeLink?.branch].compactMap { $0 } + scanned
-                for branch in branches {
-                    if let pr = allPRs[branch],
-                       !links[idx].prLinks.contains(where: { $0.number == pr.number }) {
-                        links[idx].prLinks.append(PRLink(
-                            number: pr.number, url: pr.url,
-                            status: pr.status, title: pr.title,
-                            approvalCount: pr.approvalCount > 0 ? pr.approvalCount : nil,
-                            checkRuns: pr.checkRuns.isEmpty ? nil : pr.checkRuns
-                        ))
+                // Fetch PRs from each repo
+                for (repo, branches) in branchesByRepo {
+                    var allPRs: [String: PullRequest] = [:]
+                    if var prs = try? await prTracker.fetchPRs(repoRoot: repo) {
+                        try? await prTracker.enrichPRDetails(repoRoot: repo, prs: &prs)
+                        allPRs = prs
+                    }
+                    for branch in branches {
+                        if let pr = allPRs[branch],
+                           !links[idx].prLinks.contains(where: { $0.number == pr.number }) {
+                            links[idx].prLinks.append(PRLink(
+                                number: pr.number, url: pr.url,
+                                status: pr.status, title: pr.title,
+                                approvalCount: pr.approvalCount > 0 ? pr.approvalCount : nil,
+                                checkRuns: pr.checkRuns.isEmpty ? nil : pr.checkRuns
+                            ))
+                        }
                     }
                 }
             }
+
+            // Run column assignment after discovery
+            var activityState: ActivityState?
+            if let sessionId = links[idx].sessionLink?.sessionId {
+                activityState = await activityDetector.activityState(for: sessionId)
+            }
+            let hasWorktree = links[idx].worktreeLink?.branch != nil
+            UpdateCardColumn.update(link: &links[idx], activityState: activityState, hasWorktree: hasWorktree)
 
             links[idx].updatedAt = .now
             try await coordinationStore.writeLinks(links)
@@ -208,15 +238,22 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
             var links = try await coordinationStore.readLinks()
             var changed = false
 
-            // Get PR data if tracker available
-            var allPRs: [String: PullRequest] = [:]
+            // Get PR data if tracker available — keyed by "repo:branch" for multi-repo
+            var prsByRepoBranch: [String: PullRequest] = [:]
             if let prTracker {
-                // Group links by project for batch PR fetching
-                let projects = Set(links.compactMap(\.projectPath))
-                for project in projects {
-                    if var prs = try? await prTracker.fetchPRs(repoRoot: project) {
-                        try? await prTracker.enrichPRDetails(repoRoot: project, prs: &prs)
-                        allPRs.merge(prs) { a, _ in a }
+                // Collect all repo paths: projectPaths + discoveredRepos values
+                var allRepos = Set(links.compactMap(\.projectPath))
+                for link in links {
+                    if let repos = link.discoveredRepos {
+                        for repo in repos.values { allRepos.insert(repo) }
+                    }
+                }
+                for repo in allRepos {
+                    if var prs = try? await prTracker.fetchPRs(repoRoot: repo) {
+                        try? await prTracker.enrichPRDetails(repoRoot: repo, prs: &prs)
+                        for (branch, pr) in prs {
+                            prsByRepoBranch["\(repo):\(branch)"] = pr
+                        }
                     }
                 }
             }
@@ -233,10 +270,18 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                     tmux.allSessionNames.contains(where: { tmuxNames.contains($0) })
                 } ?? false
 
-                // Sync PR enrichment data to prLinks (multi-branch)
-                let branches = [links[i].worktreeLink?.branch].compactMap { $0 }
-                    + (links[i].discoveredBranches ?? [])
-                let matchedPRs = branches.compactMap { allPRs[$0] }
+                // Sync PR enrichment data to prLinks (multi-branch, multi-repo)
+                let projectPath = links[i].projectPath ?? ""
+                let discoveredRepos = links[i].discoveredRepos ?? [:]
+                var branchRepoPairs: [(String, String)] = [] // (branch, repoPath)
+                if let branch = links[i].worktreeLink?.branch {
+                    branchRepoPairs.append((branch, projectPath))
+                }
+                for branch in links[i].discoveredBranches ?? [] {
+                    let repo = discoveredRepos[branch] ?? projectPath
+                    branchRepoPairs.append((branch, repo))
+                }
+                let matchedPRs = branchRepoPairs.compactMap { prsByRepoBranch["\($0.1):\($0.0)"] }
                 for pr in matchedPRs {
                     if let idx = links[i].prLinks.firstIndex(where: { $0.number == pr.number }) {
                         // Update existing
@@ -268,11 +313,21 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                     let isRecent = activity.timeIntervalSinceNow > -86400 // 24h
                     if isRecent {
                         let scanned = (try? await JsonlParser.extractPushedBranches(from: path)) ?? []
-                        links[i].discoveredBranches = scanned
+                        links[i].discoveredBranches = scanned.map(\.branch)
+                        // Store repo paths for branches in different repos
+                        var repos: [String: String] = [:]
+                        for db in scanned {
+                            if let repo = db.repoPath, repo != links[i].projectPath {
+                                repos[db.branch] = repo
+                            }
+                        }
+                        links[i].discoveredRepos = repos.isEmpty ? nil : repos
                         if !scanned.isEmpty {
                             // Re-match PRs with newly discovered branches
-                            for branch in scanned {
-                                if let pr = allPRs[branch],
+                            for db in scanned {
+                                let repo = db.repoPath ?? projectPath
+                                let key = "\(repo):\(db.branch)"
+                                if let pr = prsByRepoBranch[key],
                                    !links[i].prLinks.contains(where: { $0.number == pr.number }) {
                                     links[i].prLinks.append(PRLink(
                                         number: pr.number, url: pr.url,

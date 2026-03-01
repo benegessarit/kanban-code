@@ -135,6 +135,10 @@ public struct Link: Identifiable, Codable, Sendable {
     /// nil = not yet scanned; empty = scanned but no branches found.
     public var discoveredBranches: [String]?
 
+    /// Repo paths for discovered branches that differ from the card's projectPath.
+    /// Key = branch name, value = git repo root path.
+    public var discoveredRepos: [String: String]?
+
     /// Whether this card's project is configured for remote execution.
     public var isRemote: Bool
 
@@ -197,7 +201,8 @@ public struct Link: Identifiable, Codable, Sendable {
         prLinks: [PRLink] = [],
         issueLink: IssueLink? = nil,
         isRemote: Bool = false,
-        discoveredBranches: [String]? = nil
+        discoveredBranches: [String]? = nil,
+        discoveredRepos: [String: String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -217,6 +222,7 @@ public struct Link: Identifiable, Codable, Sendable {
         self.issueLink = issueLink
         self.isRemote = isRemote
         self.discoveredBranches = discoveredBranches
+        self.discoveredRepos = discoveredRepos
     }
 
     // MARK: - Backward-compatible Codable
@@ -225,7 +231,7 @@ public struct Link: Identifiable, Codable, Sendable {
         // Card-level
         case id, name, projectPath, column, createdAt, updatedAt, lastActivity
         case manualOverrides, manuallyArchived, source, promptBody, isRemote
-        case discoveredBranches
+        case discoveredBranches, discoveredRepos
         // Typed links (new nested format)
         case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink
         // Old format keys (for reading legacy format)
@@ -250,6 +256,7 @@ public struct Link: Identifiable, Codable, Sendable {
         promptBody = try c.decodeIfPresent(String.self, forKey: .promptBody)
         isRemote = try c.decodeIfPresent(Bool.self, forKey: .isRemote) ?? false
         discoveredBranches = try c.decodeIfPresent([String].self, forKey: .discoveredBranches)
+        discoveredRepos = try c.decodeIfPresent([String: String].self, forKey: .discoveredRepos)
 
         // Session link: try nested first, fallback to flat
         if let sl = try c.decodeIfPresent(SessionLink.self, forKey: .sessionLink) {
@@ -327,6 +334,7 @@ public struct Link: Identifiable, Codable, Sendable {
         try c.encodeIfPresent(promptBody, forKey: .promptBody)
         try c.encode(isRemote, forKey: .isRemote)
         try c.encodeIfPresent(discoveredBranches, forKey: .discoveredBranches)
+        try c.encodeIfPresent(discoveredRepos, forKey: .discoveredRepos)
 
         // Always write new nested format
         try c.encodeIfPresent(sessionLink, forKey: .sessionLink)

@@ -60,6 +60,7 @@ struct ContentView: View {
             coordinationStore: coordination,
             activityDetector: activityDetector,
             tmux: TmuxAdapter(),
+            prTracker: GhCliAdapter(),
             notifier: notifier
         )
 

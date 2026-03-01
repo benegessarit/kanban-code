@@ -109,10 +109,17 @@ public enum JsonlParser {
         return nil
     }
 
+    /// A branch discovered from scanning a conversation, with the repo it was pushed from.
+    public struct DiscoveredBranch: Sendable, Equatable, Hashable {
+        public let branch: String
+        /// Git repo root where the push happened. nil = same as session's projectPath.
+        public let repoPath: String?
+    }
+
     /// Scan a session JSONL for branches that were pushed to a remote.
-    /// Looks for `git push` commands in Bash tool_use blocks and `gh pr create` output.
-    /// Returns deduplicated branch names (excluding main/master).
-    public static func extractPushedBranches(from filePath: String) async throws -> [String] {
+    /// Looks for `git push` commands in Bash tool_use blocks.
+    /// Returns deduplicated branches with their repo paths (excluding main/master).
+    public static func extractPushedBranches(from filePath: String) async throws -> [DiscoveredBranch] {
         guard FileManager.default.fileExists(atPath: filePath) else { return [] }
 
         let url = URL(fileURLWithPath: filePath)
@@ -121,13 +128,15 @@ public enum JsonlParser {
 
         // Regex: git push [flags...] origin|upstream <branch>
         let pushRegex = /git\s+push\s+(?:-[^\s]+\s+)*(?:origin|upstream)\s+(\S+)/
-        var branches = Set<String>()
+        // Regex: cd <path> && ... (extract the directory before && chains containing git push)
+        let cdRegex = /cd\s+([^\s;&]+)\s*&&/
+        var branches = Set<DiscoveredBranch>()
 
         for try await line in handle.bytes.lines {
             guard !line.isEmpty else { continue }
 
-            // Only parse lines that might contain tool_use (Bash commands) or tool_result
-            guard line.contains("\"tool_use\"") || line.contains("\"tool_result\"") else { continue }
+            // Only parse lines that might contain tool_use (Bash commands)
+            guard line.contains("\"tool_use\"") else { continue }
 
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -137,37 +146,39 @@ public enum JsonlParser {
             }
 
             for block in content {
-                let blockType = block["type"] as? String
+                guard block["type"] as? String == "tool_use",
+                      block["name"] as? String == "Bash",
+                      let input = block["input"] as? [String: Any],
+                      let command = input["command"] as? String else { continue }
 
-                // Check Bash tool_use for git push commands
-                if blockType == "tool_use",
-                   block["name"] as? String == "Bash",
-                   let input = block["input"] as? [String: Any],
-                   let command = input["command"] as? String {
-                    for match in command.matches(of: pushRegex) {
-                        let branch = String(match.output.1)
-                        if branch != "main" && branch != "master" && !branch.hasPrefix("-") {
-                            branches.insert(branch)
-                        }
-                    }
+                // Extract cd path if present (e.g. "cd /path/to/repo && git push ...")
+                var repoPath: String?
+                if let cdMatch = command.firstMatch(of: cdRegex) {
+                    let path = String(cdMatch.output.1)
+                    // Resolve to git root: strip .claude/worktrees/<name> suffix
+                    repoPath = resolveGitRoot(path)
                 }
 
-                // Check tool_result for gh pr create output (GitHub PR URLs)
-                // These appear as text in tool_result content after gh pr create
-                if blockType == "tool_result",
-                   let resultContent = block["content"] as? [[String: Any]] {
-                    for sub in resultContent {
-                        if let text = sub["text"] as? String,
-                           text.contains("github.com/") && text.contains("/pull/") {
-                            // Already have the PR URL — branch will be matched via gh pr list
-                            // No action needed here, the PR is discovered via batch fetch
-                        }
+                for match in command.matches(of: pushRegex) {
+                    let branch = String(match.output.1)
+                    if branch != "main" && branch != "master" && !branch.hasPrefix("-") {
+                        branches.insert(DiscoveredBranch(branch: branch, repoPath: repoPath))
                     }
                 }
             }
         }
 
-        return Array(branches).sorted()
+        return Array(branches).sorted { $0.branch < $1.branch }
+    }
+
+    /// Resolve a path to its likely git root.
+    /// Strips `.claude/worktrees/<name>` suffix since worktrees are inside the repo.
+    private static func resolveGitRoot(_ path: String) -> String {
+        // Pattern: /repo/.claude/worktrees/<name> → /repo
+        if let range = path.range(of: "/.claude/worktrees/") {
+            return String(path[path.startIndex..<range.lowerBound])
+        }
+        return path
     }
 
     /// Decode a Claude projects directory name to a filesystem path.
