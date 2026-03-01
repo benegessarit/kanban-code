@@ -147,6 +147,17 @@ struct CardDetailView: View {
                     }
                 }
 
+                if card.link.isRemote {
+                    HStack(spacing: 2) {
+                        Image(systemName: "cloud")
+                            .font(.caption)
+                            .foregroundStyle(.teal)
+                        Text("Remote")
+                            .font(.caption)
+                            .foregroundStyle(.teal)
+                    }
+                }
+
                 // Property rows — one per link type
                 VStack(alignment: .leading, spacing: 2) {
                     if let branch = card.link.worktreeLink?.branch, !branch.isEmpty {
@@ -466,6 +477,11 @@ struct CardDetailView: View {
                     grabFocus: terminalGrabFocus
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onAppear {
+                    // Reset after the view is created so the next tab switch
+                    // produces a fresh true → false → true state change.
+                    DispatchQueue.main.async { terminalGrabFocus = false }
+                }
             }
             .onChange(of: card.link.tmuxLink) {
                 guard let tmux = card.link.tmuxLink else { return }

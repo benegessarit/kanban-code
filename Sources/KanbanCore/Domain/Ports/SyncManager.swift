@@ -23,6 +23,9 @@ public protocol SyncManagerPort: Sendable {
     /// Get current sync status.
     func status() async throws -> [String: SyncStatus]
 
+    /// Get raw human-readable sync status output.
+    func rawStatus() async throws -> String
+
     /// Check if sync tool is available.
     func isAvailable() async -> Bool
 }

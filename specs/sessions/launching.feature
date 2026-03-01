@@ -16,7 +16,7 @@ Feature: Session Launching
       | Project path     | Text              | no       |                                          |
       | Prompt           | TextEditor        | yes      |                                          |
       | Create worktree  | Checkbox          | yes      | Hidden if card has existing worktreeLink  |
-      | Run remotely     | Checkbox          | yes      | Disabled if no remoteConfig              |
+      | Run remotely     | Checkbox          | yes      | Disabled if no global remote or project not under localPath |
       | Command preview  | Monospaced text   | no       | Updates live as toggles change           |
     And the prompt should be pre-filled from prompt templates
     And I can edit the prompt before clicking "Launch"
@@ -50,7 +50,7 @@ Feature: Session Launching
     Because creating a second worktree would be confusing
 
   Scenario: Run remotely checkbox defaults and persists
-    Given the project has remoteConfig configured
+    Given global remote settings are configured and the project is under localPath
     When the launch confirmation dialog first appears
     Then "Run remotely" should be checked by default
     When I uncheck "Run remotely" and launch
@@ -58,13 +58,13 @@ Feature: Session Launching
     Because the preference is saved via @AppStorage("runRemotely")
 
   Scenario: Run remotely checkbox disabled without remote config
-    Given the project does NOT have remoteConfig configured
+    Given global remote settings are NOT configured
     When the launch confirmation dialog appears
     Then "Run remotely" should be disabled (grayed out)
-    And an inline label should say "Configure remote execution in project settings" with an info icon
+    And an inline label should say "Configure remote execution in Settings > Remote" with an info icon
 
   Scenario: Launching locally when Run remotely is unchecked
-    Given the project has remoteConfig configured
+    Given global remote settings are configured and the project is under localPath
     And "Run remotely" is unchecked in the dialog
     When I click "Launch"
     Then Claude should be started WITHOUT the remote shell wrapper
@@ -74,7 +74,7 @@ Feature: Session Launching
   # ── Command Preview ──
 
   Scenario: Command preview shows basic command
-    Given a project without remote config
+    Given global remote settings are not configured
     And "Create worktree" is unchecked
     When the launch confirmation dialog appears
     Then the command preview should show: claude '<prompt>'
@@ -87,7 +87,7 @@ Feature: Session Launching
     Then the command preview should update to remove --worktree
 
   Scenario: Command preview shows remote env vars
-    Given a project with remoteConfig (host: ubuntu@server.com)
+    Given global remote settings with host ubuntu@server.com and project under localPath
     And "Run remotely" is checked
     Then the command preview should show:
       SHELL=~/.kanban/remote/zsh KANBAN_REMOTE_HOST=ubuntu@server.com ... claude '...'

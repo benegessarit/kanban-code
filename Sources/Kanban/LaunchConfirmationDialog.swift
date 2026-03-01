@@ -107,7 +107,7 @@ struct LaunchConfirmationDialog: View {
                     .font(.callout)
                     .disabled(!hasRemoteConfig)
                 if !hasRemoteConfig {
-                    Label("Configure remote execution in project settings", systemImage: "info.circle")
+                    Label("Configure remote execution in Settings > Remote", systemImage: "info.circle")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .padding(.leading, 20)
@@ -119,9 +119,12 @@ struct LaunchConfirmationDialog: View {
                 Text("Command")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField("", text: $command)
+                TextEditor(text: $command)
                     .font(.caption.monospaced())
-                    .textFieldStyle(.roundedBorder)
+                    .frame(minHeight: 36, maxHeight: 80)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(4)
+                    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
                     .onChange(of: command) {
                         // Track if user manually edited the command
                         if command != commandPreview {
@@ -150,6 +153,12 @@ struct LaunchConfirmationDialog: View {
             command = commandPreview
         }
         .onChange(of: prompt) {
+            if !commandEdited { command = commandPreview }
+        }
+        .onChange(of: runRemotely) {
+            if !commandEdited { command = commandPreview }
+        }
+        .onChange(of: createWorktree) {
             if !commandEdited { command = commandPreview }
         }
     }

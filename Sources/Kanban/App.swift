@@ -78,7 +78,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if let cardId = response.notification.request.content.userInfo["cardId"] as? String {
             NotificationCenter.default.post(name: .kanbanSelectCard, object: nil, userInfo: ["cardId": cardId])
         }
-        NSApp.activate(ignoringOtherApps: true)
+        MainActor.assumeIsolated {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         completionHandler()
     }
 }

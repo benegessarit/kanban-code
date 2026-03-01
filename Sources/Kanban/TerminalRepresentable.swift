@@ -12,6 +12,8 @@ import SwiftTerm
 final class TerminalCache {
     static let shared = TerminalCache()
     private var terminals: [String: LocalProcessTerminalView] = [:]
+    /// Tracks which terminals have had their process started.
+    private var startedSessions: Set<String> = []
 
     /// Resolved tmux binary path — checked once, reused for all terminals.
     private static let tmuxPath: String = {
@@ -23,7 +25,9 @@ final class TerminalCache {
         return "tmux"
     }()
 
-    /// Get or create a terminal for the given tmux session name.
+    /// Get or create a terminal view for the given tmux session name.
+    /// The process is NOT started here — call `startProcessIfNeeded` after layout
+    /// so the terminal has a non-zero frame (avoids tmux SIGWINCH clear on resize from 0x0).
     func terminal(for sessionName: String, frame: NSRect) -> LocalProcessTerminalView {
         if let existing = terminals[sessionName] {
             return existing
@@ -60,11 +64,17 @@ final class TerminalCache {
 
         terminal.autoresizingMask = [.width, .height]
         terminal.isHidden = true
-        // Wait for the tmux session to exist before attaching.
-        // The .createTmuxSession effect runs async — the session may not
-        // exist yet when the UI renders the terminal tab.
-        // Use user's login shell for their env, plus full tmux path since
-        // GUI apps don't inherit Homebrew PATH.
+        terminals[sessionName] = terminal
+        return terminal
+    }
+
+    /// Start the tmux attach process if the terminal has a non-zero frame and hasn't started yet.
+    func startProcessIfNeeded(for sessionName: String) {
+        guard let terminal = terminals[sessionName] else { return }
+        guard !startedSessions.contains(sessionName) else { return }
+        guard terminal.frame.width > 0, terminal.frame.height > 0 else { return }
+        startedSessions.insert(sessionName)
+
         let escaped = sessionName.replacingOccurrences(of: "'", with: "'\\''")
         let tmux = Self.tmuxPath
         let userShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
@@ -75,12 +85,11 @@ final class TerminalCache {
             execName: nil,
             currentDirectory: nil
         )
-        terminals[sessionName] = terminal
-        return terminal
     }
 
     /// Remove and terminate a specific terminal (e.g., when user kills a session).
     func remove(_ sessionName: String) {
+        startedSessions.remove(sessionName)
         if let terminal = terminals.removeValue(forKey: sessionName) {
             terminal.removeFromSuperview()
             terminal.terminate()
@@ -178,7 +187,11 @@ final class TerminalContainerNSView: NSView {
             let isActive = (name == sessionName)
             terminal.isHidden = !isActive
             if isActive, grabFocus {
-                window?.makeFirstResponder(terminal)
+                // Defer focus grab — at makeNSView time the view may not
+                // be in the window hierarchy yet, so window is nil.
+                DispatchQueue.main.async { [weak self] in
+                    self?.window?.makeFirstResponder(terminal)
+                }
             }
         }
     }
@@ -208,6 +221,12 @@ final class TerminalContainerNSView: NSView {
         let inset = bounds.insetBy(dx: Self.terminalPadding, dy: Self.terminalPadding)
         for sub in subviews {
             sub.frame = inset
+        }
+        // Start tmux attach for any terminals that were waiting for non-zero bounds.
+        // This ensures tmux sees the correct terminal size on first attach,
+        // avoiding a 0x0 → real-size SIGWINCH that clears the pane.
+        for name in managedSessions {
+            TerminalCache.shared.startProcessIfNeeded(for: name)
         }
     }
 }

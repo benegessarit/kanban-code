@@ -132,7 +132,8 @@ Feature: Remote Execution
 
   Scenario: New task dialog also shows Run remotely
     Given "Start immediately" is checked in the new task dialog
-    And the selected project has remoteConfig
+    And global remote settings are configured
+    And the selected project path is under the remote localPath
     Then the "Run remotely" checkbox should be enabled
     And the command preview should show remote env vars
     And clicking "Create & Start" launches with remote shell directly

@@ -28,6 +28,8 @@ struct ContentView: View {
     @State private var launchConfig: LaunchConfig?
     @State private var syncStatuses: [String: SyncStatus] = [:]
     @State private var isSyncRefreshing = false
+    @State private var showSyncPopover = false
+    @State private var rawSyncOutput = ""
     @AppStorage("selectedProject") private var selectedProjectPersisted: String = ""
     private let settingsStore: SettingsStore
     private let launcher: LaunchSession
@@ -181,8 +183,10 @@ struct ContentView: View {
                         },
                         onDiscover: {
                             Task {
+                                store.dispatch(.setBusy(cardId: card.id, busy: true))
                                 await orchestrator.discoverBranchesForCard(cardId: card.id)
                                 await store.reconcile()
+                                store.dispatch(.setBusy(cardId: card.id, busy: false))
                             }
                         }
                     )
@@ -222,6 +226,7 @@ struct ContentView: View {
                     isPresented: $showNewTask,
                     projects: store.state.configuredProjects,
                     defaultProjectPath: store.state.selectedProjectPath,
+                    globalRemoteSettings: store.state.globalRemoteSettings,
                     onCreate: { prompt, projectPath, title, startImmediately in
                         createManualTask(prompt: prompt, projectPath: projectPath, title: title, startImmediately: startImmediately)
                     },
@@ -669,10 +674,7 @@ struct ContentView: View {
     }
 
     private var currentProjectHasRemote: Bool {
-        guard let path = store.state.selectedProjectPath else {
-            return store.state.configuredProjects.contains { $0.remoteConfig != nil }
-        }
-        return store.state.configuredProjects.first(where: { $0.path == path })?.remoteConfig != nil
+        store.state.globalRemoteSettings != nil
     }
 
     private var currentSyncStatus: SyncStatus {
@@ -686,82 +688,132 @@ struct ContentView: View {
 
     @ViewBuilder
     private var syncStatusView: some View {
-        Menu {
-            let status = currentSyncStatus
-            Text("Mutagen Sync: \(syncStatusLabel(status))")
+        Button { showSyncPopover.toggle() } label: {
+            HStack(spacing: 4) {
+                Image(systemName: syncStatusIcon(currentSyncStatus))
+                    .foregroundStyle(syncStatusColor(currentSyncStatus))
+                Text("Sync Status")
+                    .font(.headline)
+            }
+            .padding(.horizontal, 4)
+        }
+        .buttonStyle(.plain)
+        .help("Mutagen file sync status")
+        .task { await refreshSyncStatus() }
+        .popover(isPresented: $showSyncPopover) {
+            syncStatusPopover
+        }
+    }
 
-            if !syncStatuses.isEmpty {
-                Divider()
-                ForEach(Array(syncStatuses.keys.sorted()), id: \.self) { name in
-                    if let st = syncStatuses[name] {
-                        Label("\(name): \(syncStatusLabel(st))", systemImage: syncStatusIcon(st))
-                    }
+    @ViewBuilder
+    private var syncStatusPopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("File sync for remote Claude Code sessions, configured in Settings > Remote.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ScrollView {
+                Text(rawSyncOutput)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+            }
+            .frame(maxHeight: 250)
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+
+            HStack(spacing: 4) {
+                Text("mutagen sync list")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString("mutagen sync list", forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption)
                 }
+                .buttonStyle(.borderless)
+                .help("Copy command")
             }
 
-            Divider()
-
-            Button {
-                Task {
-                    try? await mutagenAdapter.flushSync()
-                    await refreshSyncStatus()
-                }
-            } label: {
-                Label("Flush Sync", systemImage: "arrow.triangle.2.circlepath")
-            }
-
-            if currentSyncStatus == .error || currentSyncStatus == .paused {
+            HStack {
                 Button {
                     Task {
-                        for name in syncStatuses.keys {
-                            try? await mutagenAdapter.resetSync(name: name)
-                        }
+                        try? await mutagenAdapter.flushSync()
                         await refreshSyncStatus()
                     }
                 } label: {
-                    Label("Reset Sync", systemImage: "arrow.counterclockwise")
+                    Label("Flush", systemImage: "arrow.triangle.2.circlepath")
                 }
-            }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
 
-            Button {
-                Task { await refreshSyncStatus() }
-            } label: {
-                Label("Refresh Status", systemImage: "arrow.clockwise")
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: syncStatusIcon(currentSyncStatus))
-                    .font(.caption)
-                    .foregroundStyle(syncStatusColor(currentSyncStatus))
-                Text("Sync")
-                    .font(.caption)
+                if currentSyncStatus == .error || currentSyncStatus == .paused {
+                    Button {
+                        Task {
+                            for name in syncStatuses.keys {
+                                try? await mutagenAdapter.resetSync(name: name)
+                            }
+                            await refreshSyncStatus()
+                        }
+                    } label: {
+                        Label("Restart", systemImage: "arrow.counterclockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                if !syncStatuses.isEmpty {
+                    Button {
+                        Task {
+                            for name in syncStatuses.keys {
+                                try? await mutagenAdapter.stopSync(name: name)
+                            }
+                            await refreshSyncStatus()
+                        }
+                    } label: {
+                        Label("Stop", systemImage: "stop.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                Spacer()
+
+                Button {
+                    Task { await refreshSyncStatus() }
+                } label: {
+                    if isSyncRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(isSyncRefreshing)
+                .help("Refresh status")
             }
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Mutagen file sync status")
-        .task { await refreshSyncStatus() }
+        .padding(16)
+        .frame(width: 420)
     }
 
     private func refreshSyncStatus() async {
         guard await mutagenAdapter.isAvailable() else {
             syncStatuses = [:]
+            rawSyncOutput = "Mutagen is not installed."
             return
         }
         isSyncRefreshing = true
         defer { isSyncRefreshing = false }
         syncStatuses = (try? await mutagenAdapter.status()) ?? [:]
-    }
-
-    private func syncStatusLabel(_ status: SyncStatus) -> String {
-        switch status {
-        case .watching: "Watching"
-        case .staging: "Syncing..."
-        case .paused: "Paused"
-        case .error: "Error"
-        case .notRunning: "Not Running"
-        }
+        rawSyncOutput = (try? await mutagenAdapter.rawStatus()) ?? "Failed to fetch status."
     }
 
     private func syncStatusIcon(_ status: SyncStatus) -> String {
@@ -1103,6 +1155,8 @@ struct ContentView: View {
                 atPath: (effectivePath as NSString).appendingPathComponent(".git")
             )
 
+            let globalRemote = store.state.globalRemoteSettings
+            let projectIsUnderRemote = globalRemote.map { effectivePath.hasPrefix($0.localPath) } ?? false
             launchConfig = LaunchConfig(
                 cardId: cardId,
                 projectPath: effectivePath,
@@ -1110,8 +1164,8 @@ struct ContentView: View {
                 worktreeName: worktreeName,
                 hasExistingWorktree: card.link.worktreeLink != nil,
                 isGitRepo: isGitRepo,
-                hasRemoteConfig: project?.remoteConfig != nil,
-                remoteHost: project?.remoteConfig?.host
+                hasRemoteConfig: projectIsUnderRemote,
+                remoteHost: globalRemote?.host
             )
         }
     }
@@ -1126,27 +1180,25 @@ struct ContentView: View {
         Task {
             do {
                 let settings = try? await settingsStore.read()
-                let project = settings?.projects.first(where: { $0.path == projectPath })
 
                 let shellOverride: String?
                 let extraEnv: [String: String]
                 let isRemote: Bool
 
-                if runRemotely, let project, project.remoteConfig != nil {
+                let globalRemote = settings?.remote
+                if runRemotely, let remote = globalRemote, projectPath.hasPrefix(remote.localPath) {
                     try? RemoteShellManager.deploy()
-                    shellOverride = RemoteShellManager.shellOverridePath(for: project)
-                    extraEnv = RemoteShellManager.setupEnvironment(for: project)
+                    shellOverride = RemoteShellManager.shellOverridePath()
+                    extraEnv = RemoteShellManager.setupEnvironment(remote: remote, projectPath: projectPath)
                     isRemote = true
 
-                    if let remote = project.remoteConfig {
-                        let syncName = "kanban-\((project.path as NSString).lastPathComponent)"
-                        let remoteDest = "\(remote.host):\(remote.remotePath)"
-                        try? await mutagenAdapter.startSync(
-                            localPath: remote.localPath,
-                            remotePath: remoteDest,
-                            name: syncName
-                        )
-                    }
+                    let syncName = "kanban-\((projectPath as NSString).lastPathComponent)"
+                    let remoteDest = "\(remote.host):\(remote.remotePath)"
+                    try? await mutagenAdapter.startSync(
+                        localPath: remote.localPath,
+                        remotePath: remoteDest,
+                        name: syncName
+                    )
                 } else {
                     shellOverride = nil
                     extraEnv = [:]
@@ -1215,11 +1267,14 @@ struct ContentView: View {
               let worktreePath = card.link.worktreeLink?.path,
               !worktreePath.isEmpty else { return }
 
+        store.dispatch(.setBusy(cardId: cardId, busy: true))
         let adapter = GitWorktreeAdapter()
         do {
             try await adapter.removeWorktree(path: worktreePath, force: false)
+            store.dispatch(.setBusy(cardId: cardId, busy: false))
             store.dispatch(.unlinkFromCard(cardId: cardId, linkType: .worktree))
         } catch {
+            store.dispatch(.setBusy(cardId: cardId, busy: false))
             if let localPath = translateRemoteWorktreePath(worktreePath, projectPath: card.link.projectPath) {
                 pendingWorktreeCleanup = WorktreeCleanupInfo(
                     cardId: cardId,
@@ -1234,16 +1289,7 @@ struct ContentView: View {
     }
 
     private func translateRemoteWorktreePath(_ worktreePath: String, projectPath: String?) -> String? {
-        var remote: RemoteSettings?
-        if let projectPath {
-            let project = store.state.configuredProjects.first(where: {
-                $0.path == projectPath || $0.effectiveRepoRoot == projectPath
-            })
-            remote = project?.remoteConfig
-        }
-        if remote == nil {
-            remote = (try? settingsStore.read())?.remote
-        }
+        let remote = store.state.globalRemoteSettings
         guard let remote else { return nil }
         guard worktreePath.hasPrefix(remote.remotePath) else { return nil }
         let suffix = String(worktreePath.dropFirst(remote.remotePath.count))
@@ -1322,25 +1368,23 @@ struct ContentView: View {
         Task {
             do {
                 let settings = try? await settingsStore.read()
-                let project = settings?.projects.first(where: { $0.path == projectPath })
 
                 let shellOverride: String?
                 let extraEnv: [String: String]
 
-                if let project, project.remoteConfig != nil {
+                let globalRemote = settings?.remote
+                if let remote = globalRemote, projectPath.hasPrefix(remote.localPath) {
                     try? RemoteShellManager.deploy()
-                    shellOverride = RemoteShellManager.shellOverridePath(for: project)
-                    extraEnv = RemoteShellManager.setupEnvironment(for: project)
+                    shellOverride = RemoteShellManager.shellOverridePath()
+                    extraEnv = RemoteShellManager.setupEnvironment(remote: remote, projectPath: projectPath)
 
-                    if let remote = project.remoteConfig {
-                        let syncName = "kanban-\((project.path as NSString).lastPathComponent)"
-                        let remoteDest = "\(remote.host):\(remote.remotePath)"
-                        try? await mutagenAdapter.startSync(
-                            localPath: remote.localPath,
-                            remotePath: remoteDest,
-                            name: syncName
-                        )
-                    }
+                    let syncName = "kanban-\((projectPath as NSString).lastPathComponent)"
+                    let remoteDest = "\(remote.host):\(remote.remotePath)"
+                    try? await mutagenAdapter.startSync(
+                        localPath: remote.localPath,
+                        remotePath: remoteDest,
+                        name: syncName
+                    )
                 } else {
                     shellOverride = nil
                     extraEnv = [:]

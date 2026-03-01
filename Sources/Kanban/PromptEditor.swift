@@ -55,7 +55,7 @@ struct PromptEditor: NSViewRepresentable {
         context.coordinator.updatePlaceholder(textView)
     }
 
-    class Coordinator: NSObject, NSTextViewDelegate {
+    @MainActor class Coordinator: NSObject, NSTextViewDelegate {
         var parent: PromptEditor
         var placeholder: String = ""
 

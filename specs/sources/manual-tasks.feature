@@ -67,7 +67,7 @@ Feature: Manual Task Creation
     When "Start immediately" is checked, additional options appear inline:
       | Option           | Condition                                    |
       | Create worktree  | Enabled if project folder is a git repo      |
-      | Run remotely     | Enabled if project has remoteConfig           |
+      | Run remotely     | Enabled if global remote configured & project under localPath |
       | Command preview  | Shows the command that will be executed       |
     And clicking "Create & Start" launches directly (no second dialog)
     And the card gains tmuxLink + sessionLink

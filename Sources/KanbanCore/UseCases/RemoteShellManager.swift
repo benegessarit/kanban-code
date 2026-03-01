@@ -27,22 +27,18 @@ public enum RemoteShellManager {
         // Ensure the symlink target is executable (already set above, but belt-and-suspenders)
     }
 
-    /// Returns the path to use as SHELL override if the project has remote config.
-    /// Returns `nil` if the project has no remote configuration.
-    public static func shellOverridePath(for project: Project) -> String? {
-        guard project.remoteConfig != nil else { return nil }
-        return symlinkPath()
+    /// Returns the path to use as SHELL override for remote execution.
+    public static func shellOverridePath() -> String {
+        symlinkPath()
     }
 
     /// Returns environment variables needed for remote execution.
-    /// Returns an empty dictionary if the project has no remote configuration.
-    public static func setupEnvironment(for project: Project) -> [String: String] {
-        guard let remote = project.remoteConfig else { return [:] }
-        return [
+    public static func setupEnvironment(remote: RemoteSettings, projectPath: String) -> [String: String] {
+        [
             "KANBAN_REMOTE_HOST": remote.host,
             "KANBAN_REMOTE_PATH": remote.remotePath,
             "KANBAN_LOCAL_PATH": remote.localPath,
-            "KANBAN_MUTAGEN_LABEL": "kanban-\(sanitizeLabel(project.path))",
+            "KANBAN_MUTAGEN_LABEL": "kanban-\(sanitizeLabel(projectPath))",
         ]
     }
 

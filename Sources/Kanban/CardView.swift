@@ -112,7 +112,7 @@ struct CardView: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .topTrailing) {
-            if card.isActivelyWorking {
+            if card.showSpinner {
                 ProgressView()
                     .controlSize(.small)
                     .padding(6)

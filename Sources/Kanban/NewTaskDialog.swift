@@ -5,6 +5,7 @@ struct NewTaskDialog: View {
     @Binding var isPresented: Bool
     var projects: [Project] = []
     var defaultProjectPath: String?
+    var globalRemoteSettings: RemoteSettings?
     /// (prompt, projectPath, title, startImmediately) — creates task, optionally starts via LaunchConfirmation
     var onCreate: (String, String?, String?, Bool) -> Void = { _, _, _, _ in }
     /// (prompt, projectPath, title, createWorktree, runRemotely, commandOverride) — creates and launches directly (skips LaunchConfirmation)
@@ -91,7 +92,12 @@ struct NewTaskDialog: View {
                         .font(.callout)
                         .disabled(!hasRemoteConfig)
                     if !hasRemoteConfig {
-                        Label("Configure remote execution in project settings", systemImage: "info.circle")
+                        Label(
+                            globalRemoteSettings != nil
+                                ? "Project not under remote sync path"
+                                : "Configure remote execution in Settings > Remote",
+                            systemImage: "info.circle"
+                        )
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .padding(.leading, 20)
@@ -103,9 +109,12 @@ struct NewTaskDialog: View {
                     Text("Command")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    TextField("", text: $command)
+                    TextEditor(text: $command)
                         .font(.caption.monospaced())
-                        .textFieldStyle(.roundedBorder)
+                        .frame(minHeight: 36, maxHeight: 80)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(4)
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
                         .onChange(of: command) {
                             if command != commandPreview {
                                 commandEdited = true
@@ -143,6 +152,12 @@ struct NewTaskDialog: View {
             if !commandEdited { command = commandPreview }
         }
         .onChange(of: createWorktree) {
+            if !commandEdited { command = commandPreview }
+        }
+        .onChange(of: runRemotely) {
+            if !commandEdited { command = commandPreview }
+        }
+        .onChange(of: selectedProjectPath) {
             if !commandEdited { command = commandPreview }
         }
     }
@@ -192,11 +207,13 @@ struct NewTaskDialog: View {
     }
 
     private var hasRemoteConfig: Bool {
-        selectedProject?.remoteConfig != nil
+        guard let remote = globalRemoteSettings else { return false }
+        guard let path = resolvedProjectPath else { return false }
+        return path.hasPrefix(remote.localPath)
     }
 
     private var remoteHost: String? {
-        selectedProject?.remoteConfig?.host
+        globalRemoteSettings?.host
     }
 
     private var commandPreview: String {

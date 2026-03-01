@@ -6,17 +6,26 @@ public struct KanbanCard: Identifiable, Sendable {
     public let link: Link
     public let session: Session?
     public let activityState: ActivityState?
+    /// True when an async operation is in progress on this card
+    /// (terminal creating, worktree cleanup, PR discovery).
+    public let isBusy: Bool
 
-    public init(link: Link, session: Session? = nil, activityState: ActivityState? = nil) {
+    public init(link: Link, session: Session? = nil, activityState: ActivityState? = nil, isBusy: Bool = false) {
         self.id = link.id
         self.link = link
         self.session = session
         self.activityState = activityState
+        self.isBusy = isBusy
     }
 
     /// Whether Claude is confirmed actively working right now (not just waiting).
     public var isActivelyWorking: Bool {
         activityState == .activelyWorking
+    }
+
+    /// Whether to show a spinner on the card.
+    public var showSpinner: Bool {
+        isActivelyWorking || link.isLaunching == true || isBusy
     }
 
     /// Best display title: link name → session display title → link fallback chain.

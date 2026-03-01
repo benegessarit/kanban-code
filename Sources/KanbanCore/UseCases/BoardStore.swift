@@ -31,6 +31,10 @@ public struct AppState: Sendable {
     /// Prevents the reconciler from recreating cards for these sessions.
     public var deletedSessionIds: Set<String> = []
 
+    /// Cards with an async operation in progress (terminal creating, worktree cleanup, PR discovery).
+    /// Transient — not persisted. Used to show a spinner on the card.
+    public var busyCards: Set<String> = []
+
     /// Global remote execution settings (from Settings.remote).
     public var globalRemoteSettings: RemoteSettings?
 
@@ -41,7 +45,7 @@ public struct AppState: Sendable {
         links.values.map { link in
             let session = link.sessionLink.flatMap { sessions[$0.sessionId] }
             let activity = link.sessionLink.flatMap { activityMap[$0.sessionId] }
-            return KanbanCard(link: link, session: session, activityState: activity)
+            return KanbanCard(link: link, session: session, activityState: activity, isBusy: busyCards.contains(link.id))
         }
     }
 
@@ -137,6 +141,9 @@ public enum Action: Sendable {
     case reconciled(ReconciliationResult)
     case gitHubIssuesUpdated(links: [Link])
 
+    // Busy state (transient spinners)
+    case setBusy(cardId: String, busy: Bool)
+
     // Settings / misc
     case setError(String?)
     case setSelectedProject(String?)
@@ -157,6 +164,7 @@ public struct ReconciliationResult: Sendable {
     public let configuredProjects: [Project]
     public let excludedPaths: [String]
     public let discoveredProjectPaths: [String]
+    public let globalRemoteSettings: RemoteSettings?
 
     public init(
         links: [Link],
@@ -165,7 +173,8 @@ public struct ReconciliationResult: Sendable {
         tmuxSessions: Set<String>,
         configuredProjects: [Project] = [],
         excludedPaths: [String] = [],
-        discoveredProjectPaths: [String] = []
+        discoveredProjectPaths: [String] = [],
+        globalRemoteSettings: RemoteSettings? = nil
     ) {
         self.links = links
         self.sessions = sessions
@@ -174,6 +183,7 @@ public struct ReconciliationResult: Sendable {
         self.configuredProjects = configuredProjects
         self.excludedPaths = excludedPaths
         self.discoveredProjectPaths = discoveredProjectPaths
+        self.globalRemoteSettings = globalRemoteSettings
     }
 }
 
@@ -216,6 +226,7 @@ public enum Reducer {
             // Do NOT change column. Terminal ≠ in progress.
             link.updatedAt = .now
             state.links[cardId] = link
+            state.busyCards.insert(cardId)
             let workDir = link.worktreeLink?.path.isEmpty == false
                 ? link.worktreeLink!.path
                 : (link.projectPath ?? NSHomeDirectory())
@@ -232,6 +243,7 @@ public enum Reducer {
             link.tmuxLink?.extraSessions = extras
             link.updatedAt = .now
             state.links[cardId] = link
+            state.busyCards.insert(cardId)
             return [.createTmuxSession(cardId: cardId, name: sessionName, path: workDir), .upsertLink(link)]
 
         case .launchCard(let cardId, _, let projectPath, let worktreeName, _, _):
@@ -447,8 +459,8 @@ public enum Reducer {
             state.error = "Resume failed: \(error)"
             return [.upsertLink(link)]
 
-        case .terminalCreated:
-            // Terminal was created successfully — link already updated in createTerminal/addExtraTerminal
+        case .terminalCreated(let cardId, _):
+            state.busyCards.remove(cardId)
             return []
 
         case .terminalFailed(let cardId, let error):
@@ -456,11 +468,12 @@ public enum Reducer {
             link.tmuxLink = nil
             link.updatedAt = .now
             state.links[cardId] = link
+            state.busyCards.remove(cardId)
             state.error = "Terminal failed: \(error)"
             return [.upsertLink(link)]
 
-        case .extraTerminalCreated:
-            // Extra terminal was created — link already updated in addExtraTerminal
+        case .extraTerminalCreated(let cardId, _):
+            state.busyCards.remove(cardId)
             return []
 
         // MARK: Background Reconciliation
@@ -470,6 +483,7 @@ public enum Reducer {
             state.configuredProjects = result.configuredProjects
             state.excludedPaths = result.excludedPaths
             state.discoveredProjectPaths = result.discoveredProjectPaths
+            state.globalRemoteSettings = result.globalRemoteSettings
 
             // Rebuild sessions map
             state.sessions = Dictionary(
@@ -597,6 +611,16 @@ public enum Reducer {
             state.lastGitHubRefresh = Date()
             return [.persistLinks(Array(state.links.values))]
 
+        // MARK: Busy State
+
+        case .setBusy(let cardId, let busy):
+            if busy {
+                state.busyCards.insert(cardId)
+            } else {
+                state.busyCards.remove(cardId)
+            }
+            return []
+
         // MARK: Settings / Misc
 
         case .setError(let message):
@@ -710,10 +734,12 @@ public final class BoardStore: @unchecked Sendable {
             // Load settings for project filtering
             var configuredProjects: [Project] = []
             var excludedPaths: [String] = []
+            var globalRemoteSettings: RemoteSettings?
             if let store = settingsStore {
                 let settings = try await store.read()
                 configuredProjects = settings.projects
                 excludedPaths = settings.globalView.excludedPaths
+                globalRemoteSettings = settings.remote
             }
 
             // Show cached data immediately while discovery runs
@@ -841,7 +867,8 @@ public final class BoardStore: @unchecked Sendable {
                 tmuxSessions: Set(tmuxSessions.map(\.name)),
                 configuredProjects: configuredProjects,
                 excludedPaths: excludedPaths,
-                discoveredProjectPaths: discoveredProjectPaths
+                discoveredProjectPaths: discoveredProjectPaths,
+                globalRemoteSettings: globalRemoteSettings
             )
             dispatch(.reconciled(result))
 

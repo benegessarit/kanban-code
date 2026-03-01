@@ -103,6 +103,18 @@ public final class MutagenAdapter: SyncManagerPort, @unchecked Sendable {
         return statuses
     }
 
+    public func rawStatus() async throws -> String {
+        let result = try await ShellCommand.run(
+            "/usr/bin/env",
+            arguments: ["mutagen", "sync", "list"]
+        )
+        let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if output.isEmpty {
+            return "No sync sessions running."
+        }
+        return output
+    }
+
     public func isAvailable() async -> Bool {
         await ShellCommand.isAvailable("mutagen")
     }

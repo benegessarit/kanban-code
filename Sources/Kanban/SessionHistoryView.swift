@@ -580,7 +580,7 @@ private struct ScrollBottomDetector: NSViewRepresentable {
         Coordinator(isAtBottom: $isAtBottom)
     }
 
-    class Coordinator: NSObject {
+    @MainActor class Coordinator: NSObject {
         private var isAtBottom: Binding<Bool>
 
         init(isAtBottom: Binding<Bool>) {

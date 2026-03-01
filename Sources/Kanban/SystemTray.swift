@@ -2,6 +2,12 @@ import SwiftUI
 import AppKit
 import KanbanCore
 
+private let systemTrayLogDir: String = {
+    let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban/logs")
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    return dir
+}()
+
 /// Manages the menu bar status item (system tray).
 /// Shows clawd icon when Claude sessions are actively working.
 /// Spawns a separate "clawd" helper process so Amphetamine can detect it.
@@ -180,16 +186,10 @@ final class SystemTray: @unchecked Sendable {
 
     // MARK: - Logging
 
-    private nonisolated(unsafe) static let logDir: String = {
-        let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban/logs")
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        return dir
-    }()
-
     nonisolated static func log(_ message: String) {
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let line = "[\(timestamp)] \(message)\n"
-        let logPath = (logDir as NSString).appendingPathComponent("kanban.log")
+        let logPath = (systemTrayLogDir as NSString).appendingPathComponent("kanban.log")
         if let handle = FileHandle(forWritingAtPath: logPath) {
             handle.seekToEndOfFile()
             handle.write(line.data(using: .utf8) ?? Data())
