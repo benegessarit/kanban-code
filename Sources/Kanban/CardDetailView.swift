@@ -60,6 +60,7 @@ struct CardDetailView: View {
 
     // Multi-terminal
     @State private var selectedTerminalSession: String?
+    @State private var knownTerminalCount: Int = 0
 
     let sessionStore: SessionStore
 
@@ -90,6 +91,12 @@ struct CardDetailView: View {
                         .font(.headline)
                         .textCase(nil)
                         .lineLimit(2)
+
+                    if card.link.cardLabel == .session {
+                        Text(card.relativeTime)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
 
                     Spacer()
 
@@ -126,13 +133,15 @@ struct CardDetailView: View {
                     }
                 }
 
-                // Badge + timestamp row
-                HStack(spacing: 6) {
-                    CardLabelBadge(label: card.link.cardLabel)
-                    Spacer()
-                    Text(card.relativeTime)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                // Badge row (only when not a session — sessions show clawd icon on the ID row)
+                if card.link.cardLabel != .session {
+                    HStack(spacing: 6) {
+                        CardLabelBadge(label: card.link.cardLabel)
+                        Spacer()
+                        Text(card.relativeTime)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
 
                 // Property rows — one per link type
@@ -150,7 +159,7 @@ struct CardDetailView: View {
                         let detail = pr.status.map { " · \($0.rawValue)" } ?? ""
                         let prURL = pr.url ?? githubBaseURL.map { GitRemoteResolver.prURL(base: $0, number: pr.number) }
                         linkPropertyRow(
-                            icon: "arrow.triangle.pull", label: "PR", value: "#\(pr.number)\(detail)",
+                            icon: "arrow.triangle.pull", label: "PR", value: "#\(String(pr.number))\(detail)",
                             url: prURL,
                             onUnlink: { onUnlink(.pr) }
                         )
@@ -158,7 +167,7 @@ struct CardDetailView: View {
                     if let issue = card.link.issueLink {
                         let issueURL = issue.url ?? githubBaseURL.map { GitRemoteResolver.issueURL(base: $0, number: issue.number) }
                         linkPropertyRow(
-                            icon: "circle.circle", label: "Issue", value: "#\(issue.number)",
+                            icon: "circle.circle", label: "Issue", value: "#\(String(issue.number))",
                             url: issueURL,
                             onUnlink: { onUnlink(.issue) }
                         )
@@ -167,7 +176,7 @@ struct CardDetailView: View {
                         copyableRow(icon: "folder.badge.gearshape", text: projectPath)
                     }
                     if let sessionId = card.link.sessionLink?.sessionId {
-                        copyableRow(icon: "number", text: sessionId)
+                        SessionIdRow(sessionId: sessionId)
                     }
 
                     // Add link button
@@ -201,11 +210,9 @@ struct CardDetailView: View {
 
             Divider()
 
-            // Tab bar — only show tabs relevant to this card
-            Picker("Tab", selection: $selectedTab) {
-                if card.link.tmuxLink != nil {
-                    Text("Terminal").tag(DetailTab.terminal)
-                }
+            // Tab bar — always show Terminal, plus other relevant tabs
+            Picker("", selection: $selectedTab) {
+                Text("Terminal").tag(DetailTab.terminal)
                 Text("History").tag(DetailTab.history)
                 if card.link.issueLink != nil {
                     Text("Issue").tag(DetailTab.issue)
@@ -218,6 +225,7 @@ struct CardDetailView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
 
@@ -337,24 +345,32 @@ struct CardDetailView: View {
             let currentSession = selectedTerminalSession ?? tmux.sessionName
 
             VStack(spacing: 0) {
-                // Terminal picker bar (only show if multiple terminals or to offer "+")
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        ForEach(allSessions, id: \.self) { sessionName in
-                            let isPrimary = sessionName == tmux.sessionName
-                            let isSelected = sessionName == currentSession
+                // Terminal tab bar: [tabs] [+]  ···spacer···  [copy tmux attach]
+                HStack(spacing: 4) {
+                    // Scrollable tabs area
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            ForEach(allSessions, id: \.self) { sessionName in
+                                let isPrimary = sessionName == tmux.sessionName
+                                let isSelected = sessionName == currentSession
 
-                            Button {
-                                selectedTerminalSession = sessionName
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: isPrimary ? "brain" : "terminal")
-                                        .font(.caption2)
-                                    Text(isPrimary ? "Claude" : sessionName.replacingOccurrences(
-                                        of: "\(tmux.sessionName)-", with: ""
-                                    ))
-                                    .font(.caption)
-                                    .lineLimit(1)
+                                HStack(spacing: 0) {
+                                    Button {
+                                        selectedTerminalSession = sessionName
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: isPrimary ? "brain" : "terminal")
+                                                .font(.caption2)
+                                            Text(isPrimary ? "Claude" : sessionName.replacingOccurrences(
+                                                of: "\(tmux.sessionName)-", with: ""
+                                            ))
+                                            .font(.caption)
+                                            .lineLimit(1)
+                                        }
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                    }
+                                    .buttonStyle(.plain)
 
                                     if !isPrimary {
                                         Button {
@@ -366,46 +382,86 @@ struct CardDetailView: View {
                                             Image(systemName: "xmark")
                                                 .font(.system(size: 8, weight: .bold))
                                                 .foregroundStyle(.secondary)
+                                                .padding(.horizontal, 4)
+                                                .padding(.vertical, 4)
+                                                .contentShape(Rectangle())
                                         }
                                         .buttonStyle(.borderless)
+                                        .help("Close terminal")
                                     }
                                 }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
                                 .background(
                                     isSelected ? Color.accentColor.opacity(0.15) : Color.clear,
                                     in: RoundedRectangle(cornerRadius: 6)
                                 )
                             }
-                            .buttonStyle(.plain)
-                        }
 
-                        Button(action: onCreateTerminal) {
-                            Image(systemName: "plus")
-                                .font(.caption)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 4)
+                            Button(action: onCreateTerminal) {
+                                Image(systemName: "plus")
+                                    .font(.caption)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 4)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Open new terminal")
                         }
-                        .buttonStyle(.plain)
-                        .help("Open new terminal")
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+
+                    Spacer()
+
+                    // Copy tmux attach command — right-aligned
+                    Button {
+                        let cmd = "tmux attach -t \(currentSession)"
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(cmd, forType: .string)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "doc.on.doc")
+                                .font(.caption2)
+                            Text("tmux attach")
+                                .font(.caption)
+                        }
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy: tmux attach -t \(currentSession)")
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
 
                 Divider()
 
-                TerminalRepresentable.tmuxAttach(sessionName: currentSession)
-                    .id(currentSession)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // ZStack keeps all terminals alive — no recreation on tab switch.
+                // Each session gets one TerminalRepresentable that persists as long as
+                // the card is displayed. Switching tabs only toggles visibility.
+                ZStack {
+                    ForEach(allSessions, id: \.self) { sessionName in
+                        TerminalRepresentable.tmuxAttach(sessionName: sessionName)
+                            .opacity(sessionName == currentSession ? 1 : 0)
+                            .allowsHitTesting(sessionName == currentSession)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .onChange(of: card.link.tmuxLink) {
-                // Validate selection when terminals are added/killed
-                if let selected = selectedTerminalSession,
-                   let tmux = card.link.tmuxLink,
-                   !tmux.allSessionNames.contains(selected) {
+                guard let tmux = card.link.tmuxLink else { return }
+                let allSessions = tmux.allSessionNames
+                let newCount = allSessions.count
+
+                if let selected = selectedTerminalSession, !allSessions.contains(selected) {
+                    // Selected session was killed — go back to primary
                     selectedTerminalSession = tmux.sessionName
+                } else if newCount > knownTerminalCount, let last = allSessions.last {
+                    // New terminal was added — auto-switch to it
+                    selectedTerminalSession = last
                 }
+
+                knownTerminalCount = newCount
+            }
+            .onAppear {
+                knownTerminalCount = card.link.tmuxLink?.allSessionNames.count ?? 0
             }
         } else {
             VStack(spacing: 12) {
@@ -415,8 +471,11 @@ struct CardDetailView: View {
                 Text("No tmux session attached")
                     .font(.body)
                     .foregroundStyle(.secondary)
+                Text("Start a session to see the terminal here.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
                 Button(action: onResume) {
-                    Label("Launch Terminal", systemImage: "play.fill")
+                    Label("Launch Session", systemImage: "play.fill")
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -450,7 +509,7 @@ struct CardDetailView: View {
                             Text(issue.title ?? card.displayTitle)
                                 .font(.headline)
                                 .textSelection(.enabled)
-                            Text("#\(issue.number)")
+                            Text(verbatim: "#\(issue.number)")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
@@ -500,14 +559,7 @@ struct CardDetailView: View {
                             Text(pr.title ?? "Pull Request")
                                 .font(.headline)
                                 .textSelection(.enabled)
-                            HStack(spacing: 6) {
-                                Text("#\(pr.number)")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                if let status = pr.status {
-                                    PRBadge(status: status, prNumber: pr.number)
-                                }
-                            }
+                            PRBadge(status: pr.status, prNumber: pr.number)
                         }
                         Spacer()
                         if let url = resolvedPRURL(pr) {
@@ -710,7 +762,7 @@ struct CardDetailView: View {
                     }
                 }
             }
-            if card.link.sessionLink != nil {
+            if card.link.sessionLink != nil || card.link.worktreeLink != nil {
                 Divider()
                 Button(action: onDiscover) {
                     Label("Discover PRs", systemImage: "arrow.triangle.pull")
@@ -729,7 +781,7 @@ struct CardDetailView: View {
             if card.link.worktreeLink != nil {
                 Divider()
                 Button(role: .destructive, action: onCleanupWorktree) {
-                    Label("Remove Worktree", systemImage: "trash")
+                    Label("Cleanup Worktree", systemImage: "trash")
                 }
             }
 
@@ -927,6 +979,43 @@ struct CardDetailView: View {
 
     private func copyableRow(icon: String, text: String) -> some View {
         CopyableRow(icon: icon, text: text)
+    }
+}
+
+private struct SessionIdRow: View {
+    let sessionId: String
+    @State private var copied = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            HStack(spacing: 4) {
+                ClawdIcon()
+                    .frame(width: 12, height: 12)
+                    .opacity(0.5)
+                Text(sessionId)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(sessionId, forType: .string)
+                copied = true
+                Task {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    copied = false
+                }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12, height: 12)
+            }
+            .buttonStyle(.borderless)
+            .help("Copy to clipboard")
+        }
     }
 }
 

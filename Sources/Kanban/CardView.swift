@@ -68,17 +68,7 @@ struct CardView: View {
 
                 // PR badge(s) — worst status across all PRs
                 if let primary = card.link.prLink {
-                    if let status = card.link.worstPRStatus {
-                        PRBadge(status: status, prNumber: primary.number)
-                    } else {
-                        HStack(spacing: 2) {
-                            Image(systemName: "arrow.triangle.pull")
-                                .font(.caption2)
-                            Text(verbatim: "#\(primary.number)")
-                                .font(.caption2)
-                        }
-                        .foregroundStyle(.purple)
-                    }
+                    PRBadge(status: card.link.worstPRStatus, prNumber: primary.number)
                     if card.link.prLinks.count > 1 {
                         Text(verbatim: "+\(card.link.prLinks.count - 1)")
                             .font(.system(size: 9, weight: .medium))
@@ -194,7 +184,7 @@ struct CardView: View {
 // MARK: - Clawd Icon
 
 /// Loads the clawd mascot PNG from the SPM bundle resource.
-private struct ClawdIcon: View {
+struct ClawdIcon: View {
     private let image: NSImage? = {
         guard let url = Bundle.module.url(forResource: "clawd@2x", withExtension: "png", subdirectory: "Resources")
                 ?? Bundle.module.url(forResource: "clawd", withExtension: "png", subdirectory: "Resources") else {

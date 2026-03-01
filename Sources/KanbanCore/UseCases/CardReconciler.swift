@@ -174,7 +174,7 @@ public enum CardReconciler {
             for cardId in cardIds {
                 if var link = linksById[cardId] {
                     if !link.prLinks.contains(where: { $0.number == pr.number }) {
-                        link.prLinks.append(PRLink(number: pr.number, url: pr.url))
+                        link.prLinks.append(PRLink(number: pr.number, url: pr.url, status: pr.status, title: pr.title))
                     }
                     linksById[cardId] = link
                 }
