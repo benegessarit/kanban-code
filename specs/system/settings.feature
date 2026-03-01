@@ -1,21 +1,21 @@
 Feature: Settings Management
-  As a developer using Kanban
+  As a developer using Kanban Code
   I want clear, file-based settings
   So that I can configure the app and inspect/edit settings manually
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   # ── Settings File ──
 
   Scenario: Settings file location and format
-    Then settings should be stored at ~/.kanban/settings.json
+    Then settings should be stored at ~/.kanban-code/settings.json
     And the file should be human-readable JSON
     And it should be editable with any text editor
 
   Scenario: Default settings on first run
-    Given ~/.kanban/settings.json does not exist
-    When I open Kanban for the first time
+    Given ~/.kanban-code/settings.json does not exist
+    When I open Kanban Code for the first time
     Then a default settings file should be created:
       """json
       {
@@ -49,13 +49,13 @@ Feature: Settings Management
 
   Scenario: Open settings externally
     When I click "Open in editor"
-    Then ~/.kanban/settings.json should open in $EDITOR or the default JSON app
-    And changes should be detected and reloaded when I switch back to Kanban
+    Then ~/.kanban-code/settings.json should open in $EDITOR or the default JSON app
+    And changes should be detected and reloaded when I switch back to Kanban Code
 
   Scenario: Settings hot-reload
-    Given I edit ~/.kanban/settings.json externally
+    Given I edit ~/.kanban-code/settings.json externally
     When I save the file
-    Then Kanban should detect the change via fs.watch
+    Then Kanban Code should detect the change via fs.watch
     And reload the settings without restarting
     And the UI should update to reflect new settings
 
@@ -78,7 +78,7 @@ Feature: Settings Management
 
   Scenario: Everything works without any optional tools
     Given gh, tmux, mutagen, and Pushover are all unconfigured
-    Then the core Kanban board should work
+    Then the core Kanban Code board should work
     And session discovery should work (from .jsonl files)
     And card lifecycle should work (based on .jsonl polling)
     And the app should not crash or show errors

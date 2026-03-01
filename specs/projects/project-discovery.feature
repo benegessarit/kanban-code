@@ -1,10 +1,10 @@
 Feature: Project Auto-Discovery
   As a developer who may not have configured all projects
-  I want Kanban to detect unconfigured project paths from my sessions
+  I want Kanban Code to detect unconfigured project paths from my sessions
   So that I can easily add them to my project list
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
     And I have configured projects:
       | Name       | Path                              |
       | LangWatch  | ~/Projects/remote/langwatch-saas  |
@@ -17,21 +17,21 @@ Feature: Project Auto-Discovery
       | ~/Projects/remote/langwatch-saas  |
       | ~/Projects/remote/scenario        |
       | ~/Projects/remote/kanban          |
-    When Kanban refreshes the board
+    When Kanban Code refreshes the board
     Then it should detect 2 unconfigured paths:
       | Path                              |
       | ~/Projects/remote/scenario        |
       | ~/Projects/remote/kanban          |
 
-  Scenario: Discovered projects appear in Kanban menu
+  Scenario: Discovered projects appear in Kanban Code menu
     Given there are unconfigured project paths
-    When I open the Kanban project menu
+    When I open the Kanban Code project menu
     Then a "Discovered" section should appear after configured projects
     And it should list the unconfigured paths by folder name
     And each item should have a folder-badge-plus icon
 
   Scenario: Adding a discovered project from the menu
-    When I click a discovered project in the Kanban menu
+    When I click a discovered project in the Kanban Code menu
     Then it should be added to configured projects with default name from folder
     And the view should immediately switch to that project
     And it should disappear from the "Discovered" section
@@ -62,7 +62,7 @@ Feature: Project Auto-Discovery
 
   Scenario: Discovery section limits to 8 items
     Given there are 12 unconfigured project paths
-    When I open the Kanban menu
+    When I open the Kanban Code menu
     Then the "Discovered" section should show at most 8 items
 
   # ── Edge Cases ──

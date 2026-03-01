@@ -1,17 +1,17 @@
 Feature: Coordination File
-  As a developer debugging Kanban's card linking
+  As a developer debugging Kanban Code's card linking
   I want a clear, human-readable coordination file
   So that I can inspect and manually fix cards and their links when needed
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   # ── File Structure ──
 
   Scenario: Coordination file location and format
-    Then the coordination file should be at ~/.kanban/links.json
+    Then the coordination file should be at ~/.kanban-code/links.json
     And it should be valid JSON, pretty-printed for readability
-    And it should be inspectable with `cat ~/.kanban/links.json | jq`
+    And it should be inspectable with `cat ~/.kanban-code/links.json | jq`
 
   Scenario: Card entry with all links attached
     Given a card has a session, worktree, tmux, PR, and GitHub issue linked
@@ -93,7 +93,7 @@ Feature: Coordination File
       """
 
   Scenario: Card with only a session (discovered externally)
-    Given a Claude session was started from the terminal (not via Kanban)
+    Given a Claude session was started from the terminal (not via Kanban Code)
     Then a card should be created with only a sessionLink:
       """json
       {
@@ -147,7 +147,7 @@ Feature: Coordination File
         "source": "discovered"
       }
       """
-    When Kanban reads the file
+    When Kanban Code reads the file
     Then it should decode the flat fields into typed link sub-structs
     And the next write should output the new nested format
     And no data should be lost
@@ -158,7 +158,7 @@ Feature: Coordination File
     When the coordination file is updated
     Then it should be written atomically:
       | Step | Action                                    |
-      | 1    | Write to ~/.kanban/links.json.tmp         |
+      | 1    | Write to ~/.kanban-code/links.json.tmp         |
       | 2    | Rename links.json.tmp to links.json       |
     And this prevents partial writes on crash
 
@@ -166,11 +166,11 @@ Feature: Coordination File
     Given multiple processes might read/write the file
     Then updates should use file locking
     And reads should not require locks (eventual consistency is OK)
-    And the lock file should be ~/.kanban/links.json.lock
+    And the lock file should be ~/.kanban-code/links.json.lock
 
   Scenario: File corruption recovery
     Given the coordination file is corrupted
-    When Kanban tries to read it
+    When Kanban Code tries to read it
     Then it should:
       | Step | Action                                    |
       | 1    | Detect invalid JSON                       |
@@ -211,16 +211,16 @@ Feature: Coordination File
   # ── Manual Editing ──
 
   Scenario: User edits the file directly
-    Given I open ~/.kanban/links.json in a text editor
+    Given I open ~/.kanban-code/links.json in a text editor
     When I add a worktreeLink to a card that didn't have one
     And save the file
-    Then Kanban should detect the change
+    Then Kanban Code should detect the change
     And the UI should update to reflect the new link
     And the manual change should be treated as a manual override
 
   Scenario: User adds a manual card entry
     Given I add a new JSON entry to the links array
-    When Kanban reloads the file
+    When Kanban Code reloads the file
     Then the new entry should appear on the board
     And it should be treated as a manually created card
 
@@ -228,7 +228,7 @@ Feature: Coordination File
 
   Scenario: Card file is useful for debugging
     Given I'm debugging why a session isn't linked to its worktree
-    When I run `cat ~/.kanban/links.json | jq '.links[] | select(.sessionLink.sessionId == "abc-123")'`
+    When I run `cat ~/.kanban-code/links.json | jq '.links[] | select(.sessionLink.sessionId == "abc-123")'`
     Then I should see all the card data including all typed links
     And I should be able to identify what's missing or wrong
     And manually fix it if needed

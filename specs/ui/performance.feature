@@ -1,15 +1,15 @@
 Feature: Performance and Virtualization
   As a developer with many sessions and projects
-  I want Kanban to be blazing fast at all times
+  I want Kanban Code to be blazing fast at all times
   So that it never feels sluggish or wasteful
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   # ── Startup Performance ──
 
   Scenario: Cold start time
-    When I launch Kanban from a cold start
+    When I launch Kanban Code from a cold start
     Then the window should appear within 500ms
     And the board should render with cached data within 1 second
     And live data should populate within 3 seconds

@@ -4,7 +4,7 @@ Feature: Per-Project GitHub Integration
   So that each project's backlog shows only relevant issues
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
     And `gh` CLI is installed and authenticated
     And I have configured projects:
       | Name       | Path                              | githubFilter                                        |

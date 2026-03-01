@@ -4,14 +4,14 @@ Feature: Adapter Pattern and Clean Architecture
   So that we could potentially support Gemini CLI or others in the future
 
   Background:
-    Given the Kanban application architecture follows clean architecture principles
+    Given the Kanban Code application architecture follows clean architecture principles
 
   # ── Core Domain (no external dependencies) ──
 
   Scenario: Domain entities are framework-agnostic
     Then the following domain entities should exist independently of any AI CLI:
       | Entity             | Fields                                              |
-      | KanbanCard         | id, title, description, column, project, timestamps  |
+      | Kanban CodeCard         | id, title, description, column, project, timestamps  |
       | Session            | id, metadata, activityState, links                   |
       | Worktree           | path, branch, repoRoot                               |
       | TmuxSession        | name, path, attached                                 |

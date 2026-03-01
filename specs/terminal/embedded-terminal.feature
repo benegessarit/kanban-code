@@ -1,10 +1,10 @@
 Feature: Embedded Terminal Emulator
-  As a developer viewing sessions on the Kanban board
+  As a developer viewing sessions on the Kanban Code board
   I want a native terminal emulator embedded in each card's detail view
   So that I can interact with Claude Code without leaving the app
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   # ── Terminal Display ──
 
@@ -40,7 +40,7 @@ Feature: Embedded Terminal Emulator
 
   Scenario: Terminal shows tmux session attached elsewhere indicator
     Given a tmux session is already attached in another terminal
-    When I view it in Kanban
+    When I view it in Kanban Code
     Then it should still show the output (tmux allows multiple clients)
     Or it should show "Session attached elsewhere" with option to force-attach
 

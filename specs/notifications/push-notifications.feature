@@ -4,7 +4,7 @@ Feature: Push Notifications
   So that I can respond promptly without watching the screen
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   # ── Pushover Integration ──
   # (Learned from claude-pushover: token+user, image rendering, dedup)
@@ -12,7 +12,7 @@ Feature: Push Notifications
   Scenario: Configuring Pushover
     Given I open settings
     When I enter my Pushover token and user key
-    Then they should be saved to ~/.kanban/settings.json
+    Then they should be saved to ~/.kanban-code/settings.json
     And a test notification should be sent to verify the keys work
 
   Scenario: Notification when Claude needs attention
@@ -99,6 +99,6 @@ Feature: Push Notifications
   @future
   Scenario: Notification includes clickable action
     Given a Pushover notification is sent
-    Then it should include a URL that opens the Kanban app
+    Then it should include a URL that opens the Kanban Code app
     And ideally deep-links to the specific session
     # Requires adding a kanban:// URL scheme to the app bundle

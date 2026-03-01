@@ -1,10 +1,10 @@
 Feature: Project Management (CRUD)
   As a developer working across multiple repositories
-  I want to add, edit, and remove projects in Kanban
+  I want to add, edit, and remove projects in Kanban Code
   So that I can organize my Claude Code sessions by project
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   # ── Adding Projects ──
 
@@ -21,19 +21,19 @@ Feature: Project Management (CRUD)
       | githubFilter | (empty)                          |
     And I can configure the name, GitHub filter, etc. before saving
     When I click "Add"
-    Then the project should be saved to ~/.kanban/settings.json
-    And it should appear in the Kanban menu project list
+    Then the project should be saved to ~/.kanban-code/settings.json
+    And it should appear in the Kanban Code menu project list
 
-  Scenario: Adding a project via Kanban menu folder picker
-    When I click the Kanban menu in the toolbar
+  Scenario: Adding a project via Kanban Code menu folder picker
+    When I click the Kanban Code menu in the toolbar
     And I click "Add from folder..."
     Then a folder picker should appear
     When I select a folder
     Then the project should be added
     And the view should immediately switch to that project
 
-  Scenario: Adding a project via Kanban menu text input
-    When I click the Kanban menu in the toolbar
+  Scenario: Adding a project via Kanban Code menu text input
+    When I click the Kanban Code menu in the toolbar
     And I click "Add from path..."
     Then a text input sheet should appear
     When I type "~/Projects/my-repo" and click "Add"
@@ -44,7 +44,7 @@ Feature: Project Management (CRUD)
     Given I am viewing "All Projects"
     When I add a new project via any method
     Then the board should immediately switch to show that project
-    And the Kanban menu should show the new project as selected
+    And the Kanban Code menu should show the new project as selected
 
   Scenario: Project auto-names from folder
     When I add a project at ~/Projects/remote/scenario
@@ -56,7 +56,7 @@ Feature: Project Management (CRUD)
   Scenario: Renaming a project
     Given a project "langwatch-saas" exists
     When I edit its name to "LangWatch"
-    Then the Kanban menu should show "LangWatch"
+    Then the Kanban Code menu should show "LangWatch"
     And the settings file should be updated
 
   Scenario: Setting repoRoot override
@@ -73,7 +73,7 @@ Feature: Project Management (CRUD)
   Scenario: Toggling project visibility
     Given a project "SideProject" exists with visible=true
     When I toggle its visibility to false
-    Then it should not appear in the Kanban menu project list
+    Then it should not appear in the Kanban Code menu project list
     But it should still appear in Settings for management
     And its sessions should still appear in the global view
 
@@ -83,7 +83,7 @@ Feature: Project Management (CRUD)
     Given a project "OldProject" exists
     When I click the delete button on it in Settings
     Then the project should be removed from settings
-    And it should disappear from the Kanban menu
+    And it should disappear from the Kanban Code menu
     And its sessions should still appear in the global view
 
   # ── Validation ──

@@ -1,10 +1,10 @@
 Feature: Remote Execution
   As a developer with a powerful remote server
-  I want Kanban to support running Claude Code remotely
+  I want Kanban Code to support running Claude Code remotely
   So that my local machine stays fast while heavy work runs on the server
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
     And remote execution is configured
 
   # ── Shell Interception ──

@@ -4,7 +4,7 @@ Feature: System Tray and Amphetamine Integration
   So that long-running tasks don't get interrupted by sleep
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   # ── Secondary App Pattern ──
   # (Learned from cc-amphetamine: Electron as secondary app, Amphetamine trigger)
@@ -13,7 +13,7 @@ Feature: System Tray and Amphetamine Integration
     Given at least one Claude session is in "In Progress"
     When the background process detects active work
     Then a secondary system tray app should be spawned
-    And it should appear in the menu bar with the Kanban icon
+    And it should appear in the menu bar with the Kanban Code icon
     And Amphetamine should detect it as a running application
 
   Scenario: Tray app process name for Amphetamine
@@ -32,7 +32,7 @@ Feature: System Tray and Amphetamine Integration
       | Session #2: <name> (project)  |
       | Session #3: <name> (project)  |
       | ---                           |
-      | Open Kanban                   |
+      | Open Kanban Code                   |
       | Exit                          |
 
   Scenario: Tray app disappears when no sessions active
@@ -83,13 +83,13 @@ Feature: System Tray and Amphetamine Integration
 
   # ── Integration with Main App ──
 
-  Scenario: Tray app can open main Kanban window
+  Scenario: Tray app can open main Kanban Code window
     Given the tray app is running and the main app is minimized
-    When I click "Open Kanban" in the tray menu
-    Then the main Kanban window should come to the foreground
+    When I click "Open Kanban Code" in the tray menu
+    Then the main Kanban Code window should come to the foreground
 
   Scenario: Tray app runs independently of main window
-    Given the main Kanban window is closed
+    Given the main Kanban Code window is closed
     And Claude sessions are still active
     Then the tray app should continue running
     And the menu bar icon should remain visible

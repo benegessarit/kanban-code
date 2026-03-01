@@ -1,10 +1,10 @@
 Feature: Review Actions
   As a developer with PRs in review
-  I want to take action on review feedback from the Kanban board
+  I want to take action on review feedback from the Kanban Code board
   So that I can quickly address comments and keep work flowing
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
     And a card is in "In Review" for PR #42
 
   Scenario: Address review comments via terminal

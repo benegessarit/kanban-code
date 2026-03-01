@@ -15,7 +15,7 @@
 #   KANBAN_REMOTE_PATH     - Remote base path (required)
 #   KANBAN_LOCAL_PATH      - Local base path (required)
 #   KANBAN_MUTAGEN_LABEL   - Mutagen sync label (optional)
-#   KANBAN_STATE_DIR       - State directory (default: ~/.kanban/remote)
+#   KANBAN_CODE_STATE_DIR       - State directory (default: ~/.kanban-code/remote)
 
 set -euo pipefail
 
@@ -24,7 +24,7 @@ REMOTE_HOST="${KANBAN_REMOTE_HOST:-}"
 REMOTE_PATH="${KANBAN_REMOTE_PATH:-}"
 LOCAL_PATH="${KANBAN_LOCAL_PATH:-}"
 MUTAGEN_LABEL="${KANBAN_MUTAGEN_LABEL:-}"
-STATE_DIR="${KANBAN_STATE_DIR:-${HOME}/.kanban/remote}"
+STATE_DIR="${KANBAN_CODE_STATE_DIR:-${HOME}/.kanban-code/remote}"
 MARKER="__KANBAN_CWD_MARKER__"
 
 # SSH ControlMaster settings
@@ -37,7 +37,7 @@ mkdir -p "$STATE_DIR" "$SSH_CONTROL_DIR"
 # ---------- Helpers ----------
 
 log() {
-    echo "[kanban-remote] $*" >&2
+    echo "[kanban-code-remote] $*" >&2
 }
 
 replace_paths_to_remote() {

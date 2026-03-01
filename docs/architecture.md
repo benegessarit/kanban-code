@@ -65,14 +65,14 @@ Also has `reconcile()` — async method that does full discovery (sessions, tmux
 
 | File | Role |
 |------|------|
-| `KanbanCore/UseCases/BoardStore.swift` | AppState, Action, Reducer, BoardStore |
-| `KanbanCore/UseCases/EffectHandler.swift` | Async effect execution |
-| `KanbanCore/Domain/Entities/Link.swift` | Card entity (has `isLaunching: Bool?`) |
+| `KanbanCodeCore/UseCases/BoardStore.swift` | AppState, Action, Reducer, BoardStore |
+| `KanbanCodeCore/UseCases/EffectHandler.swift` | Async effect execution |
+| `KanbanCodeCore/Domain/Entities/Link.swift` | Card entity (has `isLaunching: Bool?`) |
 | `Kanban/ContentView.swift` | Main view — dispatches actions, runs async launch/resume flows |
 | `Kanban/BoardView.swift` | Board columns — reads from `store.state`, dispatches move/rename/archive |
 | `Kanban/CardDetailView.swift` | Card detail panel — reads card data, dispatches via callbacks |
-| `KanbanCore/UseCases/BackgroundOrchestrator.swift` | Notifications + activity polling only (no more column updates) |
-| `Tests/KanbanCoreTests/ReducerTests.swift` | Pure reducer tests |
+| `KanbanCodeCore/UseCases/BackgroundOrchestrator.swift` | Notifications + activity polling only (no more column updates) |
+| `Tests/KanbanCodeCoreTests/ReducerTests.swift` | Pure reducer tests |
 
 ## Data Flow
 

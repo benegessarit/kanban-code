@@ -1,10 +1,10 @@
 Feature: Liquid Glass Native Design
   As a macOS user
-  I want Kanban to use Apple's liquid glass design language
+  I want Kanban Code to use Apple's liquid glass design language
   So that it feels like a premium native app, not an Electron wrapper
 
   Background:
-    Given the Kanban application is running on macOS
+    Given the Kanban Code application is running on macOS
 
   # ── Window and Chrome ──
 

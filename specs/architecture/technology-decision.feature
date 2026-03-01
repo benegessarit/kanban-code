@@ -1,5 +1,5 @@
 Feature: Technology Decisions
-  As the architect of Kanban
+  As the architect of Kanban Code
   I want to document the technology choices and their rationale
   So that implementation proceeds with a clear technical vision
 

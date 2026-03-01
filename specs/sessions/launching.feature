@@ -1,10 +1,10 @@
 Feature: Session Launching
-  As a developer using Kanban
+  As a developer using Kanban Code
   I want to launch Claude Code sessions from the board with a confirmation dialog
   So that I can review and edit prompts before starting work
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
     And tmux is installed
 
   # ── Launch Confirmation Dialog ──
@@ -90,7 +90,7 @@ Feature: Session Launching
     Given global remote settings with host ubuntu@server.com and project under localPath
     And "Run remotely" is checked
     Then the command preview should show:
-      SHELL=~/.kanban/remote/zsh KANBAN_REMOTE_HOST=ubuntu@server.com ... claude '...'
+      SHELL=~/.kanban-code/remote/zsh KANBAN_REMOTE_HOST=ubuntu@server.com ... claude '...'
 
   Scenario: Command preview truncates long prompts
     Given a prompt longer than 60 characters

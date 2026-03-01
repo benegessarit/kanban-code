@@ -1,10 +1,10 @@
 Feature: PR Tracking
   As a developer with Claude Code creating PRs
-  I want to see PR status on the Kanban board
+  I want to see PR status on the Kanban Code board
   So that I know which PRs need attention
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
     And `gh` CLI is installed and authenticated
 
   # ── PR Discovery (Multi-Branch) ──
@@ -185,4 +185,4 @@ Feature: PR Tracking
     Given `gh` is not installed
     Then PR tracking should be disabled gracefully
     And cards should show "Install gh for PR tracking"
-    And all other Kanban features should work normally
+    And all other Kanban Code features should work normally

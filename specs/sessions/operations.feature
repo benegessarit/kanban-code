@@ -1,10 +1,10 @@
 Feature: Session Operations (Fork, Checkpoint, Rename)
   As a developer managing Claude Code sessions
-  I want to fork, checkpoint, and rename sessions from the Kanban UI
+  I want to fork, checkpoint, and rename sessions from the Kanban Code UI
   So that I can branch conversations and manage session history
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   # ── Fork ──
   # (Learned from claude-resume: copy .jsonl with new UUID)

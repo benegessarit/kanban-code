@@ -1,17 +1,17 @@
 Feature: Activity Detection
   As a developer managing multiple Claude sessions
-  I want Kanban to accurately detect session activity state
+  I want Kanban Code to accurately detect session activity state
   So that cards are in the right column at all times
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
     And Claude Code hooks are installed
 
   # ── Hook-Based Detection ──
   # (Learned from cc-amphetamine: hooks fire on every tool use)
 
   Scenario: Detecting active session via hooks
-    Given Claude Code hooks are configured for Kanban
+    Given Claude Code hooks are configured for Kanban Code
     When a UserPromptSubmit hook fires for session "abc-123"
     Then the session's last_activity timestamp should update
     And the session should be considered "active"

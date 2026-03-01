@@ -4,7 +4,7 @@ Feature: All Sessions Archive
   So that I can pick up old work or reference past solutions
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   Scenario: All Sessions contains unlinked past sessions
     Given sessions exist that are not in any other column

@@ -1,10 +1,10 @@
 Feature: Manual Task Creation
   As a developer
-  I want to add tasks manually to the Kanban backlog
+  I want to add tasks manually to the Kanban Code backlog
   So that I can track work not tied to GitHub issues
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   # ── Task Creation ──
 

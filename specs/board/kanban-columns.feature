@@ -1,16 +1,16 @@
-Feature: Kanban Board Columns
+Feature: Kanban Code Board Columns
   As a developer managing multiple Claude Code sessions
   I want a native macOS kanban board with liquid glass design
   So that I can visualize and control all my AI coding work at a glance
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
     And I have configured at least one project
 
   # ── Column Definitions ──
 
   Scenario: Default column layout
-    When I open the Kanban board
+    When I open the Kanban Code board
     Then I should see the following columns in order:
       | Column             | Description                                      |
       | Backlog            | Tasks waiting to be started                       |
@@ -21,7 +21,7 @@ Feature: Kanban Board Columns
       | All Sessions       | Archive of all past sessions (hideable)           |
 
   Scenario: All Sessions column is hidden by default
-    When I open the Kanban board for the first time
+    When I open the Kanban Code board for the first time
     Then the "All Sessions" column should be collapsed
     And I should see a toggle button to show/hide it
 

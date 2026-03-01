@@ -4,7 +4,7 @@ Feature: Session Search
   So that I can find and resume any conversation
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   # ── Search Interface ──
   # (Learned from claude-resume: live filter + BM25 deep search)

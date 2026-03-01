@@ -1,10 +1,10 @@
 Feature: GitHub Issues as Backlog Source
   As a developer using GitHub Projects
-  I want my assigned issues to appear in the Kanban backlog
+  I want my assigned issues to appear in the Kanban Code backlog
   So that I can start working on them with Claude Code directly
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
     And the user has `gh` CLI installed and authenticated
     And the user has configured a GitHub filter
 
@@ -13,7 +13,7 @@ Feature: GitHub Issues as Backlog Source
   Scenario: Configuring GitHub issue source
     Given I open the settings
     When I set the GitHub filter to "assignee:@me is:open"
-    Then the filter should be saved to ~/.kanban/settings.json
+    Then the filter should be saved to ~/.kanban-code/settings.json
     And the backlog should refresh with matching issues
 
   Scenario: GitHub filter is a raw gh command input
@@ -55,7 +55,7 @@ Feature: GitHub Issues as Backlog Source
   # ── Fetching and Display ──
 
   Scenario: Initial backlog load
-    When the Kanban board opens
+    When the Kanban Code board opens
     Then GitHub issues should be fetched via `gh search issues`
     And each issue should appear as a card in "Backlog" with:
       | Field       | Source              |
@@ -147,14 +147,14 @@ Feature: GitHub Issues as Backlog Source
 
   Scenario: gh CLI not installed
     Given `gh` is not installed
-    When the Kanban board opens
+    When the Kanban Code board opens
     Then the Backlog should show a message: "Install GitHub CLI for issue integration"
     And a link to https://cli.github.com/
     And manual task creation should still work
 
   Scenario: gh CLI not authenticated
     Given `gh` is installed but not authenticated
-    When the Kanban board opens
+    When the Kanban Code board opens
     Then the Backlog should show: "Run `gh auth login` to connect GitHub"
     And manual task creation should still work
 

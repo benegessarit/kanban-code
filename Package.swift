@@ -2,14 +2,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "Kanban",
+    name: "KanbanCode",
     platforms: [
         .macOS(.v26),
     ],
     products: [
-        .executable(name: "Kanban", targets: ["Kanban"]),
+        .executable(name: "KanbanCode", targets: ["KanbanCode"]),
         .executable(name: "clawd", targets: ["Clawd"]),
-        .library(name: "KanbanCore", targets: ["KanbanCore"]),
+        .library(name: "KanbanCodeCore", targets: ["KanbanCodeCore"]),
     ],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.0.0"),
@@ -17,9 +17,9 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "Kanban",
-            dependencies: ["KanbanCore", "SwiftTerm", .product(name: "MarkdownUI", package: "swift-markdown-ui")],
-            path: "Sources/Kanban",
+            name: "KanbanCode",
+            dependencies: ["KanbanCodeCore", "SwiftTerm", .product(name: "MarkdownUI", package: "swift-markdown-ui")],
+            path: "Sources/KanbanCode",
             resources: [.copy("Resources")]
         ),
         .executableTarget(
@@ -27,13 +27,13 @@ let package = Package(
             path: "Sources/Clawd"
         ),
         .target(
-            name: "KanbanCore",
-            path: "Sources/KanbanCore"
+            name: "KanbanCodeCore",
+            path: "Sources/KanbanCodeCore"
         ),
         .testTarget(
-            name: "KanbanCoreTests",
-            dependencies: ["KanbanCore"],
-            path: "Tests/KanbanCoreTests"
+            name: "KanbanCodeCoreTests",
+            dependencies: ["KanbanCodeCore"],
+            path: "Tests/KanbanCodeCoreTests"
         ),
     ]
 )

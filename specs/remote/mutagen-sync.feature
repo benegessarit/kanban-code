@@ -1,10 +1,10 @@
 Feature: Mutagen File Sync
   As a developer running Claude Code remotely
-  I want Kanban to manage Mutagen sync sessions
+  I want Kanban Code to manage Mutagen sync sessions
   So that my local and remote files stay in sync
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
     And remote execution is configured in settings
 
   # ── Sync Configuration ──
@@ -17,7 +17,7 @@ Feature: Mutagen File Sync
       | host        | ubuntu@server.com                | SSH host                   |
       | remotePath  | /home/ubuntu/Projects            | Remote base directory      |
       | localPath   | ~/Projects/remote                | Local base directory       |
-    And these should be saved to ~/.kanban/settings.json
+    And these should be saved to ~/.kanban-code/settings.json
 
   Scenario: Starting sync for a project
     When I start work on a project at "~/Projects/remote/langwatch-saas"

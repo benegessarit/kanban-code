@@ -1,10 +1,10 @@
 Feature: Session Discovery
   As a developer with many Claude Code sessions across projects
-  I want Kanban to discover and display all my sessions
+  I want Kanban Code to discover and display all my sessions
   So that nothing falls through the cracks
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   # ── Discovery Sources ──
   # (Learned from claude-resume: sessions-index.json + .jsonl scanning)

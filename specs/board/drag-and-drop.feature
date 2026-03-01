@@ -1,10 +1,10 @@
 Feature: Drag and Drop
-  As a developer using Kanban
+  As a developer using Kanban Code
   I want to manually move cards between columns via drag and drop
   So that I can override automation when I know better
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   Scenario: Drag card between columns
     Given a card "Fix login bug" is in "In Progress"

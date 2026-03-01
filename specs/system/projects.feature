@@ -1,10 +1,10 @@
 Feature: Multi-Project Support
   As a developer working across multiple repositories
-  I want Kanban to manage sessions from all my projects
+  I want Kanban Code to manage sessions from all my projects
   So that I have a unified view of all my AI coding work
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   # ── Project Views ──
 
@@ -104,14 +104,14 @@ Feature: Multi-Project Support
     And I select a folder via the picker
     Then a new project should appear in the list
     And it should auto-name from the folder name
-    And it should be saved to ~/.kanban/settings.json
+    And it should be saved to ~/.kanban-code/settings.json
 
   Scenario: Editing project name and repoRoot
     Given a project "langwatch-saas" exists
     When I change its name to "LangWatch"
     And I set repoRoot to ~/Projects/remote/langwatch-saas
     Then both changes should persist to settings.json
-    And the Kanban menu should reflect the new name
+    And the Kanban Code menu should reflect the new name
 
   Scenario: Deleting a project
     Given a project "OldProject" exists
@@ -129,8 +129,8 @@ Feature: Multi-Project Support
 
   # ── Project Selector ──
 
-  Scenario: Kanban menu doubles as project selector
-    When I click the Kanban menu in the toolbar
+  Scenario: Kanban Code menu doubles as project selector
+    When I click the Kanban Code menu in the toolbar
     Then I should see All Projects, each configured project, Add New, and Settings
     And the current selection should be checked
 

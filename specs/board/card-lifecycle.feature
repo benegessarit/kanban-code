@@ -1,10 +1,10 @@
 Feature: Card Lifecycle and Automation
-  As a developer using Kanban to manage Claude Code sessions
+  As a developer using Kanban Code to manage Claude Code sessions
   I want cards to automatically move between columns based on their links and state
   So that my board always reflects the true state of work
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
     And the background reconciliation process is active
 
   # ── Card Labels ──
@@ -91,7 +91,7 @@ Feature: Card Lifecycle and Automation
 
   # ── Backlog → In Progress ──
 
-  Scenario: Starting a task from backlog via Kanban
+  Scenario: Starting a task from backlog via Kanban Code
     Given a task "Implement user auth" is in the Backlog column
     When I click the "Start" button on the card
     Then a launch confirmation dialog should appear with the prompt
@@ -155,7 +155,7 @@ Feature: Card Lifecycle and Automation
 
   # ── Requires Attention → In Progress ──
 
-  Scenario: User responds to Claude from Kanban terminal
+  Scenario: User responds to Claude from Kanban Code terminal
     Given a card is in "Requires Attention"
     When I open the card's terminal and send a message to Claude
     Then the card should move back to "In Progress"

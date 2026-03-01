@@ -1,6 +1,6 @@
-# Kanban — Specs
+# Kanban Code — Specs
 
-BDD specifications for a native macOS liquid glass Kanban board to control Claude Code.
+BDD specifications for a native macOS liquid glass Kanban Code board to control Claude Code.
 
 ## Core Concept: Card-Centric Architecture
 
@@ -21,14 +21,14 @@ The **reconciler** matches discovered resources (sessions, worktrees, PRs) to ex
 
 ```
 specs/
-├── board/                         # Kanban board layout and interaction
+├── board/                         # Kanban Code board layout and interaction
 │   ├── kanban-columns.feature     # Column definitions, card rendering, responsive layout
 │   ├── card-lifecycle.feature     # Automated card movement between columns
 │   └── drag-and-drop.feature     # Manual card reordering and column moves
 │
 ├── projects/                      # Multi-project management
 │   ├── project-management.feature # Project CRUD (add, edit, delete)
-│   ├── project-selector.feature  # Kanban menu project selector, keyboard shortcuts
+│   ├── project-selector.feature  # Kanban Code menu project selector, keyboard shortcuts
 │   ├── project-github.feature    # Per-project GitHub issue filters
 │   └── project-discovery.feature # Auto-discovery of unconfigured project paths
 │

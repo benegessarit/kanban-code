@@ -1,10 +1,10 @@
 Feature: Card Reconciliation and Link Management
   As a developer with sessions started from various places
-  I want Kanban to intelligently match sessions, worktrees, tmux sessions, and PRs to existing cards
+  I want Kanban Code to intelligently match sessions, worktrees, tmux sessions, and PRs to existing cards
   So that my board accurately represents the state of all work without duplicates
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
     And the background reconciliation process is active
 
   # ── Core Reconciliation: Session → Card Matching ──

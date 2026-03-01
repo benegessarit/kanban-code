@@ -1,4 +1,4 @@
-# Kanban – Claude Code Guidelines
+# Kanban Code – Claude Code Guidelines
 
 ## Build & Test
 
@@ -10,8 +10,8 @@ make run-app         # build + launch the app
 
 ## Architecture
 
-- **KanbanCore** (`Sources/KanbanCore/`) — pure Swift library, no UI. Domain entities, use cases, adapters.
-- **Kanban** (`Sources/Kanban/`) — SwiftUI + AppKit macOS app. Views, toolbar, system tray.
+- **KanbanCodeCore** (`Sources/KanbanCodeCore/`) — pure Swift library, no UI. Domain entities, use cases, adapters.
+- **KanbanCode** (`Sources/KanbanCode/`) — SwiftUI + AppKit macOS app. Views, toolbar, system tray.
 - Deployment target: **macOS 26** (swift-tools-version 6.2). No need for `#available` checks.
 - **Elm-like unidirectional state** — see [`docs/architecture.md`](docs/architecture.md) for full details.
   - All state lives in `AppState` struct (single source of truth).
@@ -74,5 +74,5 @@ Toolbar uses SwiftUI `.toolbar` with `ToolbarSpacer` (macOS 26+) for separate gl
 
 ## Crash Logs
 
-macOS crash reports: `~/Library/Logs/DiagnosticReports/Kanban-*.ips`
-App logs: `~/.kanban/logs/kanban.log`
+macOS crash reports: `~/Library/Logs/DiagnosticReports/KanbanCode-*.ips`
+App logs: `~/.kanban-code/logs/kanban-code.log`

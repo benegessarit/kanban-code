@@ -4,7 +4,7 @@ Feature: Session History View
   So that I can understand what happened and decide on next steps
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
 
   Scenario: Viewing session history
     Given a session "abc-123" exists

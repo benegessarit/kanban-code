@@ -1,8 +1,8 @@
 .PHONY: build test run app run-app clean
 
-BUNDLE_NAME = Kanban.app
+BUNDLE_NAME = KanbanCode.app
 BUNDLE_DIR = build/$(BUNDLE_NAME)
-BUNDLE_ID = com.kanban.app
+BUNDLE_ID = com.kanban-code.app
 VERSION = 0.1.0
 
 build:
@@ -12,19 +12,19 @@ test:
 	swift test
 
 run:
-	swift run Kanban
+	swift run KanbanCode
 
 app: build
 	@mkdir -p $(BUNDLE_DIR)/Contents/MacOS
 	@mkdir -p $(BUNDLE_DIR)/Contents/Resources
-	@cp .build/arm64-apple-macosx/debug/Kanban $(BUNDLE_DIR)/Contents/MacOS/Kanban
-	@cp Sources/Kanban/Resources/AppIcon.icns $(BUNDLE_DIR)/Contents/Resources/AppIcon.icns
+	@cp .build/arm64-apple-macosx/debug/KanbanCode $(BUNDLE_DIR)/Contents/MacOS/KanbanCode
+	@cp Sources/KanbanCode/Resources/AppIcon.icns $(BUNDLE_DIR)/Contents/Resources/AppIcon.icns
 	@echo '<?xml version="1.0" encoding="UTF-8"?>' > $(BUNDLE_DIR)/Contents/Info.plist
 	@echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' >> $(BUNDLE_DIR)/Contents/Info.plist
 	@echo '<plist version="1.0"><dict>' >> $(BUNDLE_DIR)/Contents/Info.plist
-	@echo '<key>CFBundleExecutable</key><string>Kanban</string>' >> $(BUNDLE_DIR)/Contents/Info.plist
+	@echo '<key>CFBundleExecutable</key><string>KanbanCode</string>' >> $(BUNDLE_DIR)/Contents/Info.plist
 	@echo '<key>CFBundleIdentifier</key><string>$(BUNDLE_ID)</string>' >> $(BUNDLE_DIR)/Contents/Info.plist
-	@echo '<key>CFBundleName</key><string>Kanban</string>' >> $(BUNDLE_DIR)/Contents/Info.plist
+	@echo '<key>CFBundleName</key><string>Kanban Code</string>' >> $(BUNDLE_DIR)/Contents/Info.plist
 	@echo '<key>CFBundleVersion</key><string>$(VERSION)</string>' >> $(BUNDLE_DIR)/Contents/Info.plist
 	@echo '<key>CFBundleShortVersionString</key><string>$(VERSION)</string>' >> $(BUNDLE_DIR)/Contents/Info.plist
 	@echo '<key>CFBundlePackageType</key><string>APPL</string>' >> $(BUNDLE_DIR)/Contents/Info.plist
@@ -35,8 +35,8 @@ app: build
 	@echo '<key>CFBundleIconName</key><string>AppIcon</string>' >> $(BUNDLE_DIR)/Contents/Info.plist
 	@echo '</dict></plist>' >> $(BUNDLE_DIR)/Contents/Info.plist
 	@# Copy SPM bundle resources (clawd icon, etc.)
-	@if [ -d .build/arm64-apple-macosx/debug/Kanban_Kanban.bundle ]; then \
-		cp -R .build/arm64-apple-macosx/debug/Kanban_Kanban.bundle $(BUNDLE_DIR)/Contents/Resources/; \
+	@if [ -d .build/arm64-apple-macosx/debug/KanbanCode_KanbanCode.bundle ]; then \
+		cp -R .build/arm64-apple-macosx/debug/KanbanCode_KanbanCode.bundle $(BUNDLE_DIR)/Contents/Resources/; \
 	fi
 	@# Code sign so macOS grants notification permissions
 	@codesign --force --sign - $(BUNDLE_DIR)

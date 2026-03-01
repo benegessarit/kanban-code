@@ -1,10 +1,10 @@
 Feature: Git Worktrees as Card Source
   As a developer using git worktrees for Claude Code sessions
-  I want every worktree to appear as a card on the Kanban board
+  I want every worktree to appear as a card on the Kanban Code board
   So that I can track the lifecycle of work branches (worktree → PR → merge → cleanup)
 
   Background:
-    Given the Kanban application is running
+    Given the Kanban Code application is running
     And the user has configured at least one project
     And the project has a git repository with worktrees
 
