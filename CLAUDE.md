@@ -72,6 +72,18 @@ Toolbar uses SwiftUI `.toolbar` with `ToolbarSpacer` (macOS 26+) for separate gl
 - **`.primaryAction`** placement = right side. `ToolbarSpacer(.fixed)` DOES create separate pills here.
 - Use `Menu` (not `Text`) for items that need their own pill within `.navigation` — menus map to `NSPopUpButton` which gets separate glass automatically.
 
+## Commits
+
+Use [Conventional Commits](https://www.conventionalcommits.org/) for all commit messages. Release-please uses these to generate changelogs automatically.
+
+- `feat: add dark mode` — new feature (minor version bump)
+- `fix: correct session dedup` — bug fix (patch version bump)
+- `perf: speed up branch discovery` — performance (patch)
+- `refactor: extract hook manager` — refactoring (hidden from changelog)
+- `docs: update README` — documentation (hidden)
+- `chore: bump deps` — maintenance (hidden)
+- `feat!: redesign board layout` — breaking change (major version bump)
+
 ## Crash Logs
 
 macOS crash reports: `~/Library/Logs/DiagnosticReports/KanbanCode-*.ips`

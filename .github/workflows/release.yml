@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PAT }}
+
+  build:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release binary
+        run: swift build -c release
+
+      - name: Create app bundle
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          ARCH=$(uname -m)
+          BUNDLE_DIR=build/KanbanCode.app
+
+          mkdir -p "$BUNDLE_DIR/Contents/MacOS"
+          mkdir -p "$BUNDLE_DIR/Contents/Resources"
+
+          cp ".build/${ARCH}-apple-macosx/release/KanbanCode" "$BUNDLE_DIR/Contents/MacOS/KanbanCode"
+          cp Sources/KanbanCode/Resources/AppIcon.icns "$BUNDLE_DIR/Contents/Resources/AppIcon.icns"
+
+          cat > "$BUNDLE_DIR/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>CFBundleExecutable</key><string>KanbanCode</string>
+          <key>CFBundleIdentifier</key><string>com.kanban-code.app</string>
+          <key>CFBundleName</key><string>Kanban Code</string>
+          <key>CFBundleVersion</key><string>VERSION_PLACEHOLDER</string>
+          <key>CFBundleShortVersionString</key><string>VERSION_PLACEHOLDER</string>
+          <key>CFBundlePackageType</key><string>APPL</string>
+          <key>LSMinimumSystemVersion</key><string>15.0</string>
+          <key>NSHighResolutionCapable</key><true/>
+          <key>LSUIElement</key><false/>
+          <key>CFBundleIconFile</key><string>AppIcon</string>
+          <key>CFBundleIconName</key><string>AppIcon</string>
+          </dict></plist>
+          PLIST
+
+          # Inject actual version
+          sed -i '' "s/VERSION_PLACEHOLDER/${VERSION}/g" "$BUNDLE_DIR/Contents/Info.plist"
+
+          # Copy SPM bundle resources
+          if [ -d ".build/${ARCH}-apple-macosx/release/KanbanCode_KanbanCode.bundle" ]; then
+            cp -R ".build/${ARCH}-apple-macosx/release/KanbanCode_KanbanCode.bundle" "$BUNDLE_DIR/Contents/Resources/"
+          fi
+
+          codesign --force --sign - "$BUNDLE_DIR"
+
+          cd build
+          zip -ry "KanbanCode-${VERSION}-macos.zip" KanbanCode.app
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.release-please.outputs.tag_name }}" \
+            "build/KanbanCode-${{ needs.release-please.outputs.version }}-macos.zip"
