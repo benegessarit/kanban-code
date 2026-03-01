@@ -87,6 +87,7 @@ public final class BoardState: @unchecked Sendable {
     private let activityDetector: ClaudeCodeActivityDetector?
     private let settingsStore: SettingsStore?
     private let ghAdapter: GhCliAdapter?
+    private let worktreeAdapter: GitWorktreeAdapter?
     public let sessionStore: SessionStore
 
     public init(
@@ -95,6 +96,7 @@ public final class BoardState: @unchecked Sendable {
         activityDetector: ClaudeCodeActivityDetector? = nil,
         settingsStore: SettingsStore? = nil,
         ghAdapter: GhCliAdapter? = nil,
+        worktreeAdapter: GitWorktreeAdapter? = nil,
         sessionStore: SessionStore = ClaudeCodeSessionStore()
     ) {
         self.discovery = discovery
@@ -102,6 +104,7 @@ public final class BoardState: @unchecked Sendable {
         self.activityDetector = activityDetector
         self.settingsStore = settingsStore
         self.ghAdapter = ghAdapter
+        self.worktreeAdapter = worktreeAdapter
         self.sessionStore = sessionStore
     }
 
@@ -340,8 +343,34 @@ public final class BoardState: @unchecked Sendable {
             let existingLinks = try await coordinationStore.readLinks()
             let sessionsById = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
 
+            // Scan worktrees for each configured project
+            var worktreesByRepo: [String: [Worktree]] = [:]
+            if let worktreeAdapter {
+                for project in configuredProjects {
+                    let repoRoot = project.effectiveRepoRoot
+                    if let worktrees = try? await worktreeAdapter.listWorktrees(repoRoot: repoRoot) {
+                        worktreesByRepo[repoRoot] = worktrees
+                    }
+                }
+            }
+
+            // Fetch PRs for each configured project (basic metadata for branch matching)
+            var pullRequests: [String: PullRequest] = [:]
+            if let ghAdapter {
+                for project in configuredProjects {
+                    let repoRoot = project.effectiveRepoRoot
+                    if let prs = try? await ghAdapter.fetchPRs(repoRoot: repoRoot) {
+                        pullRequests.merge(prs, uniquingKeysWith: { existing, _ in existing })
+                    }
+                }
+            }
+
             // Reconcile: match sessions/worktrees/PRs to existing cards
-            let snapshot = CardReconciler.DiscoverySnapshot(sessions: sessions)
+            let snapshot = CardReconciler.DiscoverySnapshot(
+                sessions: sessions,
+                worktrees: worktreesByRepo,
+                pullRequests: pullRequests
+            )
             var mergedLinks = CardReconciler.reconcile(existing: existingLinks, snapshot: snapshot)
 
             // Recalculate columns: f(state) = column

@@ -386,6 +386,73 @@ struct CardReconcilerTests {
         #expect(Set(first.map(\.id)) == Set(second.map(\.id)))
     }
 
+    @Test("Session gitBranch prevents orphan worktree creation")
+    func sessionBranchPreventsOrphanWorktree() {
+        // Session discovered on branch "feat-x" (no existing card)
+        // Worktree also discovered with branch "feat-x"
+        // Should produce ONE card with both sessionLink and worktreeLink
+        let snapshot = CardReconciler.DiscoverySnapshot(
+            sessions: [
+                Session(id: "s1", projectPath: "/project", gitBranch: "feat-x",
+                        messageCount: 5, modifiedTime: .now)
+            ],
+            worktrees: [
+                "/project": [
+                    Worktree(path: "/project/.worktrees/feat-x", branch: "feat-x", isBare: false)
+                ]
+            ]
+        )
+
+        let result = CardReconciler.reconcile(existing: [], snapshot: snapshot)
+        #expect(result.count == 1)
+        #expect(result[0].sessionLink?.sessionId == "s1")
+        #expect(result[0].worktreeLink?.branch == "feat-x")
+        #expect(result[0].worktreeLink?.path == "/project/.worktrees/feat-x")
+    }
+
+    @Test("Worktree creates worktreeLink on session card without existing worktreeLink")
+    func worktreeCreatesLinkOnSessionCard() {
+        // Existing card has session but no worktreeLink
+        let existing = [
+            Link(
+                projectPath: "/project",
+                column: .inProgress,
+                sessionLink: SessionLink(sessionId: "s1")
+            )
+        ]
+        // Session has gitBranch, worktree exists with same branch
+        let snapshot = CardReconciler.DiscoverySnapshot(
+            sessions: [
+                Session(id: "s1", gitBranch: "feat-x", messageCount: 5, modifiedTime: .now)
+            ],
+            worktrees: [
+                "/project": [
+                    Worktree(path: "/project/.worktrees/feat-x", branch: "feat-x", isBare: false)
+                ]
+            ]
+        )
+
+        let result = CardReconciler.reconcile(existing: existing, snapshot: snapshot)
+        #expect(result.count == 1)
+        #expect(result[0].worktreeLink?.branch == "feat-x")
+        #expect(result[0].worktreeLink?.path == "/project/.worktrees/feat-x")
+    }
+
+    @Test("Orphan worktree card gets projectPath from repoRoot")
+    func orphanWorktreeGetsProjectPath() {
+        let snapshot = CardReconciler.DiscoverySnapshot(
+            worktrees: [
+                "/Users/me/Projects/langwatch": [
+                    Worktree(path: "/Users/me/Projects/langwatch/.worktrees/feat-x", branch: "feat-x", isBare: false)
+                ]
+            ]
+        )
+
+        let result = CardReconciler.reconcile(existing: [], snapshot: snapshot)
+        #expect(result.count == 1)
+        #expect(result[0].projectPath == "/Users/me/Projects/langwatch")
+    }
+
     @Test("Project path filled from session when card has none")
     func projectPathFilledFromSession() {
         // Card has tmuxLink + matching project path context (same project)

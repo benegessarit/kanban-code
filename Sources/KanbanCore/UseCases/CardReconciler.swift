@@ -111,13 +111,27 @@ public enum CardReconciler {
             }
         }
 
+        // A2. Update branch index with session gitBranch data.
+        // This prevents Section B from creating orphan worktree cards when
+        // a session already exists on that branch.
+        for session in snapshot.sessions {
+            if let branch = session.gitBranch {
+                let baseName = branch.replacingOccurrences(of: "refs/heads/", with: "")
+                if baseName == "main" || baseName == "master" { continue }
+                if let cardId = cardIdBySessionId[session.id],
+                   !(cardIdsByBranch[baseName]?.contains(cardId) ?? false) {
+                    cardIdsByBranch[baseName, default: []].append(cardId)
+                }
+            }
+        }
+
         // B. Match worktrees to existing cards
         let liveTmuxNames = Set(snapshot.tmuxSessions.map(\.name))
         let didScanTmux = !snapshot.tmuxSessions.isEmpty
         var liveWorktreePaths: Set<String> = []
         let didScanWorktrees = !snapshot.worktrees.isEmpty
 
-        for (_, worktrees) in snapshot.worktrees {
+        for (repoRoot, worktrees) in snapshot.worktrees {
             for worktree in worktrees {
                 guard !worktree.isBare else { continue }
                 liveWorktreePaths.insert(worktree.path)
@@ -129,19 +143,24 @@ public enum CardReconciler {
 
                 let existingCardIds = cardIdsByBranch[baseName] ?? []
                 if existingCardIds.isEmpty {
-                    // Orphan worktree — create a new card in Waiting for user triage
+                    // Orphan worktree — create a new card
                     let newLink = Link(
-                        column: .waiting,
+                        projectPath: repoRoot,
                         source: .discovered,
                         worktreeLink: WorktreeLink(path: worktree.path, branch: baseName)
                     )
                     linksById[newLink.id] = newLink
                     cardIdsByBranch[baseName, default: []].append(newLink.id)
                 } else {
-                    // Update existing card's worktree path
+                    // Update existing card's worktree link
                     for cardId in existingCardIds {
                         if var link = linksById[cardId] {
-                            link.worktreeLink?.path = worktree.path
+                            if link.worktreeLink != nil {
+                                link.worktreeLink?.path = worktree.path
+                            } else {
+                                // Card matched by session gitBranch — set worktreeLink
+                                link.worktreeLink = WorktreeLink(path: worktree.path, branch: baseName)
+                            }
                             linksById[cardId] = link
                         }
                     }

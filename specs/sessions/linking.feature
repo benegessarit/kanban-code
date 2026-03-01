@@ -58,8 +58,9 @@ Feature: Card Reconciliation and Link Management
       | source               | discovered         |
       | worktreeLink.path    | .../feat-auth      |
       | worktreeLink.branch  | feat/auth          |
-      | column               | requires_attention |
+      | projectPath          | (repoRoot)         |
     And the card label should show "WORKTREE"
+    And the column should be assigned by f(state) like any other card
 
   Scenario: Skip bare and main branch worktrees
     Given the repo has a bare worktree and a main branch worktree
@@ -71,6 +72,21 @@ Feature: Card Reconciliation and Link Management
     When the reconciler finds a worktree with branch "feat/login"
     Then it should verify/update the worktreeLink.path if needed
     And not create a new card
+
+  Scenario: Session gitBranch prevents orphan worktree creation
+    Given a session is discovered with gitBranch = "feat/login"
+    And a worktree exists with branch "feat/login"
+    When the reconciler processes both in the same snapshot
+    Then only ONE card should be created
+    And it should have both sessionLink and worktreeLink
+    Because the reconciler updates cardIdsByBranch after session matching
+
+  Scenario: Session card gets worktreeLink when worktree is discovered later
+    Given a card exists with sessionLink (from a session with gitBranch = "feat/login")
+    And the card has NO worktreeLink yet
+    When the reconciler discovers a worktree with branch "feat/login"
+    Then the existing card should GAIN worktreeLink (path + branch)
+    And no orphan worktree card should be created
 
   # ── PR Matching (Multi-PR) ──
   #

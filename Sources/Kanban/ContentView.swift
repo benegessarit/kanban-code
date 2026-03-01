@@ -48,7 +48,8 @@ struct ContentView: View {
             coordinationStore: coordination,
             activityDetector: activityDetector,
             settingsStore: settings,
-            ghAdapter: GhCliAdapter()
+            ghAdapter: GhCliAdapter(),
+            worktreeAdapter: GitWorktreeAdapter()
         )
 
         // Load Pushover from settings.json, wrap in CompositeNotifier with macOS fallback
