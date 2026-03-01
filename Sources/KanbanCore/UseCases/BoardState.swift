@@ -443,7 +443,7 @@ public final class BoardState: @unchecked Sendable {
                             projectPath: project.path,
                             column: .backlog,
                             source: .githubIssue,
-                            issueLink: IssueLink(number: issue.number, url: issue.url, body: issue.body)
+                            issueLink: IssueLink(number: issue.number, url: issue.url, body: issue.body, title: issue.title)
                         )
                         links.append(link)
                         changed = true

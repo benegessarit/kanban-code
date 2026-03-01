@@ -26,11 +26,16 @@ Feature: PR Tracking
     Given basic PR info has been fetched
     When enrichment runs for open PRs
     Then a single GraphQL query should fetch for all open PRs:
-      | Field              | Purpose                          |
-      | reviewThreads      | Count unresolved review threads  |
-      | statusCheckRollup  | CI check status                  |
+      | Field                          | Purpose                          |
+      | body                           | PR description for markdown view |
+      | reviewThreads                  | Count unresolved review threads  |
+      | reviews(states: APPROVED)      | Count of approvals               |
+      | statusCheckRollup.state        | Aggregate CI check status        |
+      | statusCheckRollup.contexts     | Individual check run names + status + conclusion |
     And the query should use field aliases (pr0, pr1, pr2...)
     And this should be a non-blocking background operation
+    And results should be synced to PRLink (title, status, checkRuns, approvalCount, unresolvedThreads)
+    But PR body should NOT be synced via orchestrator (lazy-loaded on demand)
 
   # ── PR Status Display ──
 
@@ -58,23 +63,58 @@ Feature: PR Tracking
     Then the PR should open in the default browser
     And the URL should be the GitHub PR URL
 
-  # ── PR Comments ──
+  # ── PR Detail Tab ──
 
-  Scenario: Viewing pending review comments
-    Given a card is in "In Review" with PR #42
-    When I click "View comments"
-    Then pending review comments should be displayed
-    And they should be fetched via `gh api repos/{owner}/{repo}/pulls/42/comments`
-    And each comment should show author, file, line, and body
+  Scenario: PR tab header
+    Given a card has prLink with number 42, title "Fix login flow", and status "approved"
+    When I open the Pull Request tab
+    Then the header should show "Fix login flow" as title
+    And "#42" as the PR number
+    And a status badge (reusing PRBadge component)
+    And an "Open in Browser" button
 
-  Scenario: Unresolved thread count
+  Scenario: PR tab shows individual CI check runs
+    Given a PR has the following check runs:
+      | Name            | Status    | Conclusion |
+      | build           | completed | success    |
+      | lint            | completed | failure    |
+      | deploy-preview  | in_progress | (none)   |
+    When I view the PR tab
+    Then each check should display with:
+      | Check           | Icon                | Color  |
+      | build           | checkmark.circle    | green  |
+      | lint            | xmark.circle        | red    |
+      | deploy-preview  | clock               | yellow |
+
+  Scenario: PR tab shows approval and comment counts
+    Given a PR has 2 approvals and 3 unresolved review threads
+    When I view the PR tab
+    Then I should see "2 approvals" with a green checkmark icon
+    And "3 unresolved" with an orange comment icon
+
+  Scenario: PR body is lazy-loaded on tab open
+    Given a card has prLink but the PR body has not been fetched yet
+    When I switch to the Pull Request tab
+    Then the body should be fetched via `gh pr view {number} --json body`
+    And a spinner should show while loading
+    And the body should be rendered as GitHub-flavored markdown once loaded
+
+  Scenario: PR body is cached per card selection
+    Given I already viewed the PR body for card A
+    When I switch away from the PR tab and back
+    Then the body should display immediately without re-fetching
+    When I select a different card B
+    Then the PR body cache should reset for the new card
+
+  # ── PR Reviews ──
+
+  Scenario: Unresolved thread count on PR tab
     Given a PR has 3 unresolved review threads
-    Then the card should show "3 unresolved" indicator
-    And clicking it should show the thread summaries
+    Then the PR tab should show "3 unresolved" indicator with orange styling
 
-  # ── CI Checks ──
+  # ── CI Checks (Card Level) ──
 
-  Scenario: CI check status display
+  Scenario: CI check status badge on card
     Given a PR has GitHub Actions checks
     Then the card should show a CI indicator:
       | All passing     | Green checkmark  |

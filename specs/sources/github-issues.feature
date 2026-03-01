@@ -36,14 +36,21 @@ Feature: GitHub Issues as Backlog Source
       | issueLink.body     | (the issue body text)              |
       | issueLink.url      | https://github.com/.../issues/123  |
     And sessionLink, tmuxLink, worktreeLink, prLink should all be nil
-    And the card label should be "ISSUE" (orange)
+    And the card label should be "ISSUE" (blue)
 
-  Scenario: Issue card detail shows issue body
+  Scenario: Issue card detail shows Issue tab with markdown body
     Given an issue card "#123: Fix login bug" is selected
-    Then the detail view should have a "Context" tab
-    And it should show the full issue body as scrollable text
+    Then the detail view should have an "Issue" tab (not "Context")
+    And the tab header should show the issue title and "#123"
     And an "Open in Browser" button should link to the issue URL
-    And a "Start Work" button should be available
+    And the issue body should be rendered as GitHub-flavored markdown:
+      | Element        | Rendering                         |
+      | Headers        | Styled heading levels             |
+      | Code blocks    | Syntax-highlighted monospace      |
+      | Tables         | Proper table layout               |
+      | Links          | Clickable hyperlinks              |
+      | Task lists     | Checkbox items                    |
+    And a "Start Work" button should appear in the card header (not inside the tab)
 
   # ── Fetching and Display ──
 

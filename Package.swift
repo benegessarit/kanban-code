@@ -13,11 +13,12 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.0.0"),
+        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
     ],
     targets: [
         .executableTarget(
             name: "Kanban",
-            dependencies: ["KanbanCore", "SwiftTerm"],
+            dependencies: ["KanbanCore", "SwiftTerm", .product(name: "MarkdownUI", package: "swift-markdown-ui")],
             path: "Sources/Kanban",
             resources: [.copy("Resources")]
         ),

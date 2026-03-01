@@ -1,5 +1,10 @@
 import SwiftUI
 import KanbanCore
+import MarkdownUI
+
+private enum DetailTab: String {
+    case terminal, history, issue, pullRequest, prompt
+}
 
 struct CardDetailView: View {
     let card: KanbanCard
@@ -17,7 +22,7 @@ struct CardDetailView: View {
     @State private var isLoadingHistory = false
     @State private var hasMoreTurns = false
     @State private var isLoadingMore = false
-    @State private var selectedTab: String
+    @State private var selectedTab: DetailTab
     @State private var showRenameSheet = false
     @State private var renameText = ""
 
@@ -36,6 +41,10 @@ struct CardDetailView: View {
     // Resolved GitHub base URL for constructing issue/PR links
     @State private var githubBaseURL: String?
 
+    // Lazy PR body loading
+    @State private var prBody: String?
+    @State private var isLoadingPRBody = false
+
     // Delete confirmation
     @State private var showDeleteConfirm = false
     @State private var deleteConfirmText = ""
@@ -43,6 +52,7 @@ struct CardDetailView: View {
     // File watcher for real-time history
     @State private var historyWatcherFD: Int32 = -1
     @State private var historyWatcherSource: DispatchSourceFileSystemObject?
+    @State private var historyPollTask: Task<Void, Never>?
     @State private var lastReloadTime: Date = .distantPast
 
     let sessionStore: SessionStore
@@ -76,15 +86,28 @@ struct CardDetailView: View {
 
                     // Action pills
                     HStack(spacing: 8) {
-                        Button(action: onResume) {
-                            Image(systemName: "play.fill")
-                                .font(.system(size: 13))
-                                .frame(width: 36, height: 36)
+                        if card.column == .backlog {
+                            Button(action: onResume) {
+                                Label("Start", systemImage: "play.fill")
+                                    .font(.system(size: 13))
+                                    .padding(.horizontal, 12)
+                                    .frame(height: 36)
+                            }
+                            .buttonStyle(.plain)
+                            .glassEffect(.regular, in: .capsule)
+                            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+                            .help("Start work on this task")
+                        } else {
+                            Button(action: onResume) {
+                                Image(systemName: "play.fill")
+                                    .font(.system(size: 13))
+                                    .frame(width: 36, height: 36)
+                            }
+                            .buttonStyle(.plain)
+                            .glassEffect(.regular, in: .capsule)
+                            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+                            .help("Resume session")
                         }
-                        .buttonStyle(.plain)
-                        .glassEffect(.regular, in: .capsule)
-                        .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
-                        .help("Resume session")
 
                         actionsMenu
                             .frame(width: 36, height: 36)
@@ -172,11 +195,17 @@ struct CardDetailView: View {
             // Tab bar — only show tabs relevant to this card
             Picker("Tab", selection: $selectedTab) {
                 if card.link.tmuxLink != nil {
-                    Text("Terminal").tag("terminal")
+                    Text("Terminal").tag(DetailTab.terminal)
                 }
-                Text("History").tag("history")
-                if hasContextContent {
-                    Text("Context").tag("context")
+                Text("History").tag(DetailTab.history)
+                if card.link.issueLink != nil {
+                    Text("Issue").tag(DetailTab.issue)
+                }
+                if card.link.prLink != nil {
+                    Text("Pull Request").tag(DetailTab.pullRequest)
+                }
+                if card.link.promptBody != nil && card.link.issueLink == nil {
+                    Text("Prompt").tag(DetailTab.prompt)
                 }
             }
             .pickerStyle(.segmented)
@@ -185,9 +214,9 @@ struct CardDetailView: View {
 
             // Content
             switch selectedTab {
-            case "terminal":
+            case .terminal:
                 terminalView
-            case "history":
+            case .history:
                 SessionHistoryView(
                     turns: turns,
                     isLoading: isLoadingHistory,
@@ -201,10 +230,12 @@ struct CardDetailView: View {
                     },
                     onLoadMore: { Task { await loadMoreHistory() } }
                 )
-            case "context":
-                contextView
-            default:
-                EmptyView()
+            case .issue:
+                issueTabView
+            case .pullRequest:
+                prTabView
+            case .prompt:
+                promptTabView
             }
         }
         .frame(maxWidth: .infinity)
@@ -214,6 +245,8 @@ struct CardDetailView: View {
             isLoadingMore = false
             hasMoreTurns = false
             checkpointMode = false
+            prBody = nil
+            isLoadingPRBody = false
             // Reset tab to a valid one for this card
             selectedTab = defaultTab(for: card)
             // Resolve GitHub base URL for constructing issue/PR links
@@ -223,19 +256,22 @@ struct CardDetailView: View {
                 githubBaseURL = nil
             }
             await loadHistory()
-            if selectedTab == "history" {
+            if selectedTab == .history {
                 startHistoryWatcher()
             }
         }
         .onChange(of: selectedTab) {
-            if selectedTab == "history" {
+            if selectedTab == .history {
                 startHistoryWatcher()
             } else {
                 stopHistoryWatcher()
             }
+            if selectedTab == .pullRequest && prBody == nil && !isLoadingPRBody {
+                Task { await loadPRBody() }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .kanbanHistoryChanged)) { _ in
-            guard selectedTab == "history" else { return }
+            guard selectedTab == .history else { return }
             // Debounce: only reload if >0.5s since last reload
             let now = Date()
             guard now.timeIntervalSince(lastReloadTime) > 0.5 else { return }
@@ -306,33 +342,38 @@ struct CardDetailView: View {
         }
     }
 
-    private static func initialTab(for card: KanbanCard) -> String {
-        if card.link.tmuxLink != nil { return "terminal" }
-        if card.link.sessionLink != nil { return "history" }
-        if card.link.issueLink?.body != nil || card.link.promptBody != nil { return "context" }
-        return "history"
+    private static func initialTab(for card: KanbanCard) -> DetailTab {
+        if card.link.tmuxLink != nil { return .terminal }
+        if card.link.sessionLink != nil { return .history }
+        if card.link.issueLink != nil { return .issue }
+        if card.link.prLink != nil { return .pullRequest }
+        if card.link.promptBody != nil { return .prompt }
+        return .history
     }
 
-    private func defaultTab(for card: KanbanCard) -> String {
+    private func defaultTab(for card: KanbanCard) -> DetailTab {
         Self.initialTab(for: card)
     }
 
-    private var hasContextContent: Bool {
-        card.link.issueLink?.body != nil || card.link.promptBody != nil
-    }
+    // MARK: - Issue Tab
 
     @ViewBuilder
-    private var contextView: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                // Issue header with open button
-                if let issue = card.link.issueLink {
-                    HStack {
-                        Label("Issue #\(issue.number)", systemImage: "exclamationmark.circle")
-                            .font(.subheadline.bold())
-                            .foregroundStyle(.orange)
+    private var issueTabView: some View {
+        if let issue = card.link.issueLink {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    // Header: title + number + open button
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(issue.title ?? card.displayTitle)
+                                .font(.headline)
+                                .textSelection(.enabled)
+                            Text("#\(issue.number)")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
                         Spacer()
-                        if let url = issue.url.flatMap({ URL(string: $0) }) {
+                        if let url = resolvedIssueURL(issue) {
                             Button {
                                 NSWorkspace.shared.open(url)
                             } label: {
@@ -343,26 +384,201 @@ struct CardDetailView: View {
                             .controlSize(.small)
                         }
                     }
-                }
 
-                // Body text
-                if let body = card.link.issueLink?.body ?? card.link.promptBody {
-                    Text(body)
-                        .font(.body.monospaced())
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                    Divider()
 
-                // Start Work button for backlog cards
-                if card.column == .backlog {
-                    Button(action: onResume) {
-                        Label("Start Work", systemImage: "play.fill")
+                    // Markdown body
+                    if let body = issue.body, !body.isEmpty {
+                        Markdown(body)
+                            .markdownTheme(.gitHub)
+                            .textSelection(.enabled)
+                    } else {
+                        Text("No description provided.")
+                            .foregroundStyle(.tertiary)
+                            .italic()
                     }
-                    .buttonStyle(.borderedProminent)
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    // MARK: - Pull Request Tab
+
+    @ViewBuilder
+    private var prTabView: some View {
+        if let pr = card.link.prLink {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    // Header: title + number + badge + open button
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(pr.title ?? "Pull Request")
+                                .font(.headline)
+                                .textSelection(.enabled)
+                            HStack(spacing: 6) {
+                                Text("#\(pr.number)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                if let status = pr.status {
+                                    PRBadge(status: status, prNumber: pr.number)
+                                }
+                            }
+                        }
+                        Spacer()
+                        if let url = resolvedPRURL(pr) {
+                            Button {
+                                NSWorkspace.shared.open(url)
+                            } label: {
+                                Label("Open in Browser", systemImage: "arrow.up.right.square")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+
+                    Divider()
+
+                    // CI Check Runs
+                    if let checks = pr.checkRuns, !checks.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Checks")
+                                .font(.subheadline.bold())
+                                .foregroundStyle(.secondary)
+                            ForEach(checks, id: \.name) { check in
+                                HStack(spacing: 6) {
+                                    checkRunIcon(check)
+                                    Text(check.name)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                }
+                            }
+                        }
+                    }
+
+                    // Reviews summary
+                    if pr.approvalCount != nil || pr.unresolvedThreads != nil {
+                        HStack(spacing: 16) {
+                            if let approvals = pr.approvalCount, approvals > 0 {
+                                Label("\(approvals) approval\(approvals == 1 ? "" : "s")", systemImage: "checkmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            }
+                            if let unresolved = pr.unresolvedThreads, unresolved > 0 {
+                                Label("\(unresolved) unresolved", systemImage: "bubble.left.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
+
+                    if pr.checkRuns != nil || pr.approvalCount != nil || pr.unresolvedThreads != nil {
+                        Divider()
+                    }
+
+                    // PR Body (lazy loaded)
+                    if isLoadingPRBody {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Loading PR description...")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        .padding(.vertical, 8)
+                    } else if let body = prBody ?? pr.body, !body.isEmpty {
+                        Markdown(body)
+                            .markdownTheme(.gitHub)
+                            .textSelection(.enabled)
+                    } else {
+                        Text("No description provided.")
+                            .foregroundStyle(.tertiary)
+                            .italic()
+                    }
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    // MARK: - Prompt Tab
+
+    @ViewBuilder
+    private var promptTabView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Prompt")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.secondary)
+
+                if let body = card.link.promptBody {
+                    Markdown(body)
+                        .markdownTheme(.gitHub)
+                        .textSelection(.enabled)
                 }
             }
             .padding(16)
         }
+    }
+
+    // MARK: - PR helpers
+
+    private func checkRunIcon(_ check: CheckRun) -> some View {
+        Group {
+            switch check.status {
+            case .completed:
+                switch check.conclusion {
+                case .success:
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                case .failure:
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.red)
+                case .neutral, .skipped:
+                    Image(systemName: "minus.circle.fill")
+                        .foregroundStyle(.secondary)
+                case .cancelled, .timedOut, .actionRequired:
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(.orange)
+                case nil:
+                    Image(systemName: "questionmark.circle")
+                        .foregroundStyle(.secondary)
+                }
+            case .inProgress:
+                Image(systemName: "clock.fill")
+                    .foregroundStyle(.yellow)
+            case .queued:
+                Image(systemName: "clock")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption)
+    }
+
+    private func resolvedIssueURL(_ issue: IssueLink) -> URL? {
+        let urlString = issue.url ?? githubBaseURL.map { GitRemoteResolver.issueURL(base: $0, number: issue.number) }
+        return urlString.flatMap { URL(string: $0) }
+    }
+
+    private func resolvedPRURL(_ pr: PRLink) -> URL? {
+        let urlString = pr.url ?? githubBaseURL.map { GitRemoteResolver.prURL(base: $0, number: pr.number) }
+        return urlString.flatMap { URL(string: $0) }
+    }
+
+    private func loadPRBody() async {
+        guard let pr = card.link.prLink,
+              let projectPath = card.link.projectPath else { return }
+        isLoadingPRBody = true
+        do {
+            let body = try await GhCliAdapter().fetchPRBody(repoRoot: projectPath, prNumber: pr.number)
+            prBody = body
+        } catch {
+            // Silently fail — body is optional
+        }
+        isLoadingPRBody = false
     }
 
     private var actionsMenu: some View {
@@ -378,7 +594,7 @@ struct CardDetailView: View {
 
             Button {
                 checkpointMode = true
-                selectedTab = "history"
+                selectedTab = .history
             } label: {
                 Label("Checkpoint / Restore", systemImage: "clock.arrow.circlepath")
             }
@@ -492,17 +708,28 @@ struct CardDetailView: View {
 
         let source = Self.makeHistorySource(fd: fd)
         historyWatcherSource = source
+
+        // Periodic poll as fallback (every 3s) in case DispatchSource misses events
+        historyPollTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled, selectedTab == .history else { break }
+                await loadHistory()
+            }
+        }
     }
 
     /// Must be nonisolated so GCD closures don't inherit @MainActor isolation (causes crash).
     private nonisolated static func makeHistorySource(fd: Int32) -> DispatchSourceFileSystemObject {
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd,
-            eventMask: [.write, .extend],
+            eventMask: [.write, .extend, .attrib],
             queue: .global(qos: .userInitiated)
         )
         source.setEventHandler {
-            NotificationCenter.default.post(name: .kanbanHistoryChanged, object: nil)
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .kanbanHistoryChanged, object: nil)
+            }
         }
         source.setCancelHandler {
             close(fd)
@@ -515,6 +742,8 @@ struct CardDetailView: View {
         historyWatcherSource?.cancel()
         historyWatcherSource = nil
         historyWatcherFD = -1
+        historyPollTask?.cancel()
+        historyPollTask = nil
     }
 
     // MARK: - Fork

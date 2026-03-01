@@ -41,12 +41,29 @@ public struct PRLink: Codable, Sendable, Equatable {
     public var url: String?
     public var status: PRStatus?
     public var unresolvedThreads: Int?
+    public var title: String?
+    public var body: String?
+    public var approvalCount: Int?
+    public var checkRuns: [CheckRun]?
 
-    public init(number: Int, url: String? = nil, status: PRStatus? = nil, unresolvedThreads: Int? = nil) {
+    public init(
+        number: Int,
+        url: String? = nil,
+        status: PRStatus? = nil,
+        unresolvedThreads: Int? = nil,
+        title: String? = nil,
+        body: String? = nil,
+        approvalCount: Int? = nil,
+        checkRuns: [CheckRun]? = nil
+    ) {
         self.number = number
         self.url = url
         self.status = status
         self.unresolvedThreads = unresolvedThreads
+        self.title = title
+        self.body = body
+        self.approvalCount = approvalCount
+        self.checkRuns = checkRuns
     }
 }
 
@@ -55,11 +72,13 @@ public struct IssueLink: Codable, Sendable, Equatable {
     public var number: Int
     public var url: String?
     public var body: String?
+    public var title: String?
 
-    public init(number: Int, url: String? = nil, body: String? = nil) {
+    public init(number: Int, url: String? = nil, body: String? = nil, title: String? = nil) {
         self.number = number
         self.url = url
         self.body = body
+        self.title = title
     }
 }
 

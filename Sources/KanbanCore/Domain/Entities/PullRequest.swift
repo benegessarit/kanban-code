@@ -11,6 +11,9 @@ public struct PullRequest: Identifiable, Sendable {
     public var reviewDecision: String? // "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", ""
     public var checksStatus: ChecksStatus
     public var unresolvedThreads: Int
+    public var body: String?
+    public var approvalCount: Int
+    public var checkRuns: [CheckRun]
 
     public init(
         number: Int,
@@ -20,7 +23,10 @@ public struct PullRequest: Identifiable, Sendable {
         headRefName: String,
         reviewDecision: String? = nil,
         checksStatus: ChecksStatus = .none,
-        unresolvedThreads: Int = 0
+        unresolvedThreads: Int = 0,
+        body: String? = nil,
+        approvalCount: Int = 0,
+        checkRuns: [CheckRun] = []
     ) {
         self.number = number
         self.title = title
@@ -30,6 +36,9 @@ public struct PullRequest: Identifiable, Sendable {
         self.reviewDecision = reviewDecision
         self.checksStatus = checksStatus
         self.unresolvedThreads = unresolvedThreads
+        self.body = body
+        self.approvalCount = approvalCount
+        self.checkRuns = checkRuns
     }
 
     /// Derive unified PR status with priority ordering.

@@ -172,7 +172,8 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 // Group links by project for batch PR fetching
                 let projects = Set(links.compactMap(\.projectPath))
                 for project in projects {
-                    if let prs = try? await prTracker.fetchPRs(repoRoot: project) {
+                    if var prs = try? await prTracker.fetchPRs(repoRoot: project) {
+                        try? await prTracker.enrichPRDetails(repoRoot: project, prs: &prs)
                         allPRs.merge(prs) { a, _ in a }
                     }
                 }
@@ -196,7 +197,11 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                     }
                     links[i].prLink?.url = pr.url
                     links[i].prLink?.status = pr.status
+                    links[i].prLink?.title = pr.title
                     links[i].prLink?.unresolvedThreads = pr.unresolvedThreads > 0 ? pr.unresolvedThreads : nil
+                    links[i].prLink?.approvalCount = pr.approvalCount > 0 ? pr.approvalCount : nil
+                    links[i].prLink?.checkRuns = pr.checkRuns.isEmpty ? nil : pr.checkRuns
+                    // body is NOT synced here — lazy-loaded on demand via fetchPRBody
                     changed = true
                 }
 

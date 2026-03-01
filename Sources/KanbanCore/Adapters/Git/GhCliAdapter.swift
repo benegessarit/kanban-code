@@ -67,9 +67,17 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
             aliasMap[alias] = pr.headRefName
             queryParts.append("""
             \(alias): pullRequest(number: \(pr.number)) {
+              body
               reviewDecision
               reviewThreads(first: 100) { nodes { isResolved } }
-              commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+              reviews(states: APPROVED) { totalCount }
+              commits(last: 1) { nodes { commit { statusCheckRollup {
+                state
+                contexts(first: 50) { nodes {
+                  ... on CheckRun { name status conclusion }
+                  ... on StatusContext { context state }
+                } }
+              } } } }
             }
             """)
         }
@@ -117,9 +125,20 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
                 continue
             }
 
+            // PR body
+            if let body = prData["body"] as? String, !body.isEmpty {
+                pr.body = body
+            }
+
             // Review decision
             if let decision = prData["reviewDecision"] as? String {
                 pr.reviewDecision = decision
+            }
+
+            // Approval count
+            if let reviews = prData["reviews"] as? [String: Any],
+               let totalCount = reviews["totalCount"] as? Int {
+                pr.approvalCount = totalCount
             }
 
             // Unresolved threads
@@ -128,23 +147,65 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
                 pr.unresolvedThreads = nodes.filter { ($0["isResolved"] as? Bool) == false }.count
             }
 
-            // CI status
+            // CI status + individual check runs
             if let commits = prData["commits"] as? [String: Any],
                let commitNodes = commits["nodes"] as? [[String: Any]],
                let lastCommit = commitNodes.last,
                let commit = lastCommit["commit"] as? [String: Any],
-               let rollup = commit["statusCheckRollup"] as? [String: Any],
-               let state = rollup["state"] as? String {
-                switch state.uppercased() {
-                case "SUCCESS": pr.checksStatus = .pass
-                case "FAILURE", "ERROR": pr.checksStatus = .fail
-                case "PENDING": pr.checksStatus = .pending
-                default: break
+               let rollup = commit["statusCheckRollup"] as? [String: Any] {
+                // Aggregate state
+                if let state = rollup["state"] as? String {
+                    switch state.uppercased() {
+                    case "SUCCESS": pr.checksStatus = .pass
+                    case "FAILURE", "ERROR": pr.checksStatus = .fail
+                    case "PENDING": pr.checksStatus = .pending
+                    default: break
+                    }
+                }
+
+                // Individual check runs
+                if let contexts = rollup["contexts"] as? [String: Any],
+                   let nodes = contexts["nodes"] as? [[String: Any]] {
+                    var runs: [CheckRun] = []
+                    for node in nodes {
+                        if let name = node["name"] as? String {
+                            // CheckRun type
+                            let status = (node["status"] as? String).flatMap { CheckRunStatus(rawValue: $0.lowercased().replacingOccurrences(of: "_", with: "_")) } ?? .completed
+                            let conclusion = (node["conclusion"] as? String).flatMap { CheckRunConclusion(rawValue: $0.lowercased()) }
+                            runs.append(CheckRun(name: name, status: status, conclusion: conclusion))
+                        } else if let context = node["context"] as? String,
+                                  let state = node["state"] as? String {
+                            // StatusContext type
+                            let conclusion: CheckRunConclusion? = switch state.uppercased() {
+                            case "SUCCESS": .success
+                            case "FAILURE", "ERROR": .failure
+                            case "PENDING": nil
+                            default: nil
+                            }
+                            runs.append(CheckRun(name: context, status: .completed, conclusion: conclusion))
+                        }
+                    }
+                    pr.checkRuns = runs
                 }
             }
 
             prs[branch] = pr
         }
+    }
+
+    public func fetchPRBody(repoRoot: String, prNumber: Int) async throws -> String? {
+        let result = try await ShellCommand.run(
+            "/usr/bin/env",
+            arguments: ["gh", "pr", "view", "\(prNumber)", "--json", "body"],
+            currentDirectory: repoRoot
+        )
+        guard result.succeeded, !result.stdout.isEmpty,
+              let data = result.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let body = json["body"] as? String else {
+            return nil
+        }
+        return body
     }
 
     public func isAvailable() async -> Bool {

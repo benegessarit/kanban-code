@@ -43,17 +43,51 @@ Feature: Card Lifecycle and Automation
 
   Scenario: Card detail has dynamic tabs based on links
     Given a card's available links determine which tabs appear:
-      | Links present     | Available tabs           |
-      | tmuxLink          | Terminal                 |
-      | sessionLink       | History                  |
-      | issueLink         | Context (issue body)     |
-      | promptBody        | Context (prompt text)    |
-    And a card with all links has Terminal + History + Context tabs
+      | Links present     | Available tabs                           |
+      | tmuxLink          | Terminal                                 |
+      | sessionLink       | History                                  |
+      | issueLink         | Issue (markdown-rendered body)            |
+      | prLink            | Pull Request (body + CI checks + reviews) |
+      | promptBody only   | Prompt (markdown-rendered text)           |
+    And a card with all links has Terminal + History + Issue + Pull Request tabs
+    And the tab priority for default selection is: Terminal > History > Issue > PR > Prompt
 
-  Scenario: Card with no session or tmux shows Context tab only
+  Scenario: Backlog issue card shows Issue tab with Start button in header
     Given a card has only an issueLink (backlog GitHub issue)
-    Then the detail view should show a Context tab with the issue body
-    And a "Start Work" button to begin a session
+    Then the detail view should show an Issue tab with the markdown-rendered body
+    And the header should show a "Start" button (not inside the tab content)
+    And the Issue tab should have an "Open in Browser" button
+
+  Scenario: Issue tab renders GitHub-flavored markdown
+    Given a card has issueLink with body containing markdown (headers, code blocks, tables, links)
+    When I open the Issue tab
+    Then the body should be rendered as rich formatted text
+    And code blocks should have syntax highlighting
+    And links should be clickable
+    And tables should render as proper tables
+
+  Scenario: Pull Request tab shows CI checks and review status
+    Given a card has a prLink with status, checkRuns, approvalCount, and unresolvedThreads
+    When I open the Pull Request tab
+    Then I should see:
+      | Section          | Content                                        |
+      | Header           | PR title, #number, status badge, Open in Browser |
+      | Checks           | Each CI check with name + pass/fail/pending icon |
+      | Reviews          | Approval count (green), unresolved threads (orange) |
+      | Body             | PR description rendered as markdown              |
+
+  Scenario: PR body loads lazily
+    Given a card has a prLink but the body has not been fetched yet
+    When I switch to the Pull Request tab
+    Then a loading spinner should appear while the body is fetched
+    And once loaded, the markdown-rendered body should replace the spinner
+    And the body should be cached for the current card selection
+
+  Scenario: Prompt tab for manual tasks
+    Given a card has promptBody but no issueLink
+    When I open the card detail
+    Then a "Prompt" tab should appear (not "Issue" or "Pull Request")
+    And the prompt text should be rendered as markdown
 
   # ── Backlog → In Progress ──
 

@@ -8,6 +8,9 @@ public protocol PRTrackerPort: Sendable {
     /// Enrich open PRs with CI checks and review thread counts.
     func enrichPRDetails(repoRoot: String, prs: inout [String: PullRequest]) async throws
 
+    /// Fetch PR body on demand (lazy-loaded when user opens PR tab).
+    func fetchPRBody(repoRoot: String, prNumber: Int) async throws -> String?
+
     /// Check if the gh CLI is available and authenticated.
     func isAvailable() async -> Bool
 }
