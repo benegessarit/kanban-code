@@ -3,7 +3,7 @@
 BUNDLE_NAME = KanbanCode.app
 BUNDLE_DIR = build/$(BUNDLE_NAME)
 BUNDLE_ID = com.kanban-code.app
-VERSION = 0.1.0
+VERSION = 0.1.1
 
 build:
 	swift build
