@@ -14,6 +14,7 @@ final class TerminalCache {
     static let shared = TerminalCache()
     private var terminals: [String: LocalProcessTerminalView] = [:]
     private var shiftEnterMonitor: Any?
+    private var scrollWheelMonitor: Any?
 
     private init() {
         // Intercept Shift+Enter in terminal views to send \n (0x0a) instead of \r (0x0d).
@@ -23,6 +24,75 @@ final class TerminalCache {
             guard let terminal = event.window?.firstResponder as? TerminalView else { return event }
             terminal.send([0x0a])
             return nil
+        }
+
+        // Intercept scroll wheel events over terminal views and translate to tmux
+        // copy-mode navigation. TerminalView (from SwiftTerm) consumes scrollWheel
+        // events before parent views can handle them, so we intercept at the app level.
+        let tmux = Self.tmuxPath
+        var inCopyMode = false
+        var copyModeExitTimer: Timer?
+
+        scrollWheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            guard event.deltaY != 0 else { return event }
+
+            // Find the view under the cursor
+            guard let contentView = event.window?.contentView else { return event }
+            let point = contentView.convert(event.locationInWindow, from: nil)
+            guard let hitView = contentView.hitTest(point) else { return event }
+
+            // Walk up to find a TerminalView (SwiftTerm)
+            var view: NSView? = hitView
+            while let v = view, !(v is TerminalView) {
+                view = v.superview
+            }
+            guard view is TerminalView else { return event }
+
+            // Walk up further to find TerminalContainerNSView for the active session
+            var container: NSView? = view
+            while let v = container, !(v is TerminalContainerNSView) {
+                container = v.superview
+            }
+            guard let containerView = container as? TerminalContainerNSView,
+                  let session = containerView.activeSession else { return event }
+
+            // Cancel pending copy-mode exit
+            copyModeExitTimer?.invalidate()
+            copyModeExitTimer = nil
+
+            if event.deltaY > 0 {
+                // Scroll UP — enter copy-mode if needed, then send Up keys
+                if !inCopyMode {
+                    inCopyMode = true
+                    Task.detached {
+                        _ = try? await ShellCommand.run(tmux, arguments: ["copy-mode", "-t", session])
+                    }
+                }
+                let lines = max(1, Int(abs(event.deltaY)))
+                Task.detached {
+                    let keys = Array(repeating: "Up", count: lines)
+                    _ = try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session] + keys)
+                }
+            } else {
+                // Scroll DOWN — send Down keys in copy-mode
+                let lines = max(1, Int(abs(event.deltaY)))
+                if inCopyMode {
+                    Task.detached {
+                        let keys = Array(repeating: "Down", count: lines)
+                        _ = try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session] + keys)
+                    }
+                }
+            }
+
+            // Exit copy-mode after a brief pause (user stopped scrolling)
+            copyModeExitTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { _ in
+                inCopyMode = false
+                Task.detached {
+                    _ = try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session, "q"])
+                }
+            }
+
+            return nil // consume the event — don't let TerminalView handle it
         }
     }
 
@@ -161,7 +231,7 @@ final class TerminalContainerNSView: NSView {
 
     /// Ordered list of session names managed by this container.
     private var managedSessions: [String] = []
-    private var activeSession: String?
+    fileprivate private(set) var activeSession: String?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -247,56 +317,4 @@ final class TerminalContainerNSView: NSView {
         }
     }
 
-    // MARK: - Tmux scroll via copy-mode
-
-    /// Track whether tmux copy-mode is active (to avoid re-entering on each scroll tick).
-    private var inCopyMode = false
-    /// Debounce: exit copy-mode after user stops scrolling.
-    private var copyModeExitTimer: Timer?
-
-    override func scrollWheel(with event: NSEvent) {
-        guard let session = activeSession else { return }
-        guard event.deltaY != 0 else { return }
-
-        let tmux = TerminalCache.tmuxPath
-
-        // Cancel pending copy-mode exit
-        copyModeExitTimer?.invalidate()
-        copyModeExitTimer = nil
-
-        if event.deltaY > 0 {
-            // Scroll UP — enter copy-mode if needed, then send Up keys
-            if !inCopyMode {
-                inCopyMode = true
-                Task.detached {
-                    try? await ShellCommand.run(tmux, arguments: ["copy-mode", "-t", session])
-                }
-            }
-            let lines = max(1, Int(abs(event.deltaY)))
-            Task.detached {
-                // Send Up arrow keys to scroll within copy-mode
-                let keys = Array(repeating: "Up", count: lines)
-                try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session] + keys)
-            }
-        } else {
-            // Scroll DOWN — send Down keys in copy-mode
-            let lines = max(1, Int(abs(event.deltaY)))
-            if inCopyMode {
-                Task.detached {
-                    let keys = Array(repeating: "Down", count: lines)
-                    try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session] + keys)
-                }
-            }
-        }
-
-        // Exit copy-mode after a brief pause (user stopped scrolling)
-        copyModeExitTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
-            guard let self, self.inCopyMode, let session = self.activeSession else { return }
-            self.inCopyMode = false
-            let tmux = TerminalCache.tmuxPath
-            Task.detached {
-                try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session, "q"])
-            }
-        }
-    }
 }
