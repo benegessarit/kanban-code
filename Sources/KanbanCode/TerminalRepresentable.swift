@@ -85,7 +85,7 @@ final class TerminalCache {
             }
 
             // Exit copy-mode after a brief pause (user stopped scrolling)
-            copyModeExitTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { _ in
+            copyModeExitTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { _ in
                 inCopyMode = false
                 Task.detached {
                     _ = try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session, "q"])
