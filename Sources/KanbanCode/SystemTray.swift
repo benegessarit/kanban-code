@@ -10,15 +10,23 @@ private let systemTrayLogDir: String = {
 
 /// Manages the menu bar status item (system tray).
 /// Shows clawd icon when Claude sessions are actively working.
-/// Spawns a separate "clawd" helper process so Amphetamine can detect it.
+/// Launches a "clawd" helper .app so Amphetamine can detect it.
 @MainActor
-final class SystemTray: @unchecked Sendable {
+final class SystemTray: NSObject, @unchecked Sendable {
     private var statusItem: NSStatusItem?
     private var menu: NSMenu?
     private weak var store: BoardStore?
+    private var clawdApp: NSRunningApplication?
+    /// Fallback for dev mode (bare binary, no .app bundle).
     private var clawdProcess: Process?
     /// Time when In Progress last had sessions (for linger timeout).
     private var lastActiveTime: Date?
+    /// Timer for live-updating the countdown while menu is open.
+    private var countdownTimer: Timer?
+    /// Reference to the countdown menu item for live updates.
+    private weak var countdownItem: NSMenuItem?
+
+    private static let clawdBundleID = "com.kanban-code.clawd"
 
     /// How long to keep tray visible after last active session.
     /// Reads from UserDefaults (synced with @AppStorage("clawdLingerTimeout") in settings).
@@ -67,10 +75,22 @@ final class SystemTray: @unchecked Sendable {
 
     private func updateMenu() {
         let menu = NSMenu()
+        menu.delegate = self
 
         if let store {
             let activeCards = store.state.cards(in: .inProgress)
             let attentionCards = store.state.cards(in: .waiting)
+
+            // Countdown at the top when lingering (no active sessions)
+            if activeCards.isEmpty {
+                let item = NSMenuItem(title: countdownText(), action: nil, keyEquivalent: "")
+                item.isEnabled = false
+                menu.addItem(item)
+                countdownItem = item
+                if !attentionCards.isEmpty {
+                    menu.addItem(NSMenuItem.separator())
+                }
+            }
 
             if !activeCards.isEmpty {
                 menu.addItem(NSMenuItem.sectionHeader(title: "In Progress"))
@@ -86,19 +106,12 @@ final class SystemTray: @unchecked Sendable {
             }
 
             if !attentionCards.isEmpty {
-                menu.addItem(NSMenuItem.separator())
                 menu.addItem(NSMenuItem.sectionHeader(title: "Waiting"))
                 for card in attentionCards.prefix(5) {
                     let item = NSMenuItem(title: card.displayTitle, action: nil, keyEquivalent: "")
                     item.image = NSImage(systemSymbolName: "exclamationmark.circle.fill", accessibilityDescription: nil)
                     menu.addItem(item)
                 }
-            }
-
-            if activeCards.isEmpty && attentionCards.isEmpty {
-                let item = NSMenuItem(title: "No active sessions", action: nil, keyEquivalent: "")
-                item.isEnabled = false
-                menu.addItem(item)
             }
         }
 
@@ -117,13 +130,25 @@ final class SystemTray: @unchecked Sendable {
         self.menu = menu
     }
 
+    private func countdownText() -> String {
+        guard let lastActive = lastActiveTime else {
+            return "No active sessions"
+        }
+        let elapsed = Date().timeIntervalSince(lastActive)
+        let remaining = max(0, Int(lingerTimeout - elapsed))
+        let mins = remaining / 60
+        let secs = remaining % 60
+        let countdown = mins > 0 ? "\(mins)m \(secs)s" : "\(secs)s"
+        return "No active sessions, sleeping in \(countdown)"
+    }
+
     @objc func openMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.windows.first?.makeKeyAndOrderFront(nil)
     }
 
     /// Show tray icon when there are In Progress sessions, or within linger timeout.
-    /// Also manages the "clawd" helper process for Amphetamine integration.
+    /// Also manages the "clawd" helper app for Amphetamine integration.
     private func updateVisibility() {
         guard let store else { return }
         let hasActive = store.state.cardCount(in: .inProgress) > 0
@@ -143,44 +168,80 @@ final class SystemTray: @unchecked Sendable {
         }
     }
 
-    // MARK: - Clawd helper process (for Amphetamine)
+    // MARK: - Clawd helper app (for Amphetamine)
 
-    /// Spawns the "clawd" helper so Amphetamine can detect it.
+    /// Launches the "clawd" helper .app so Amphetamine can detect it as a running app.
+    /// Falls back to bare binary for development (no Amphetamine support).
     private func startClawdIfNeeded() {
-        // Already running?
+        // Already running via .app?
+        if let app = clawdApp, !app.isTerminated { return }
+        // Already running via bare binary?
         if let proc = clawdProcess, proc.isRunning { return }
-
-        // Find clawd binary next to the Kanban binary
-        let clawdPath = Self.findClawdBinary()
-        guard let path = clawdPath else {
-            Self.log("clawd binary not found")
+        // Check if already running from a previous app launch
+        if let existing = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == Self.clawdBundleID }) {
+            clawdApp = existing
+            Self.log("clawd already running: pid=\(existing.processIdentifier)")
             return
         }
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: path)
-        proc.qualityOfService = .background
-        proc.terminationHandler = { process in
-            let reason = process.terminationReason == .exit ? "exit" : "uncaughtSignal"
-            Self.log("clawd terminated: status=\(process.terminationStatus) reason=\(reason)")
+        // Try .app bundle first (Amphetamine can detect this)
+        if let appURL = Self.findClawdApp() {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = false
+            config.addsToRecentItems = false
+            NSWorkspace.shared.openApplication(at: appURL, configuration: config) { [weak self] app, error in
+                Task { @MainActor in
+                    if let error {
+                        Self.log("clawd.app failed to start: \(error)")
+                    } else if let app {
+                        self?.clawdApp = app
+                        Self.log("clawd started: pid=\(app.processIdentifier)")
+                    }
+                }
+            }
+            return
         }
-        do {
-            try proc.run()
-            clawdProcess = proc
-            Self.log("clawd started: pid=\(proc.processIdentifier)")
-        } catch {
-            Self.log("clawd failed to start: \(error)")
+
+        // Fallback: bare binary (dev mode — no Amphetamine support)
+        if let path = Self.findClawdBinary() {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: path)
+            proc.qualityOfService = .background
+            proc.terminationHandler = { process in
+                let reason = process.terminationReason == .exit ? "exit" : "uncaughtSignal"
+                Self.log("clawd terminated: status=\(process.terminationStatus) reason=\(reason)")
+            }
+            do {
+                try proc.run()
+                clawdProcess = proc
+                Self.log("clawd started (bare binary): pid=\(proc.processIdentifier)")
+            } catch {
+                Self.log("clawd failed to start: \(error)")
+            }
+            return
         }
+
+        Self.log("clawd not found")
     }
 
-    /// Kill the clawd helper when no more active sessions.
+    /// Stop the clawd helper when no more active sessions.
     private func stopClawd() {
-        guard let proc = clawdProcess, proc.isRunning else {
-            clawdProcess = nil
-            return
+        if let app = clawdApp, !app.isTerminated {
+            Self.log("stopping clawd: pid=\(app.processIdentifier)")
+            app.terminate()
+            // Force-terminate after 2s if it doesn't respond
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                if let app = self?.clawdApp, !app.isTerminated {
+                    app.forceTerminate()
+                }
+            }
         }
-        Self.log("stopping clawd: pid=\(proc.processIdentifier)")
-        proc.terminate()
+        clawdApp = nil
+
+        if let proc = clawdProcess, proc.isRunning {
+            Self.log("stopping clawd (bare): pid=\(proc.processIdentifier)")
+            proc.terminate()
+        }
         clawdProcess = nil
     }
 
@@ -199,7 +260,32 @@ final class SystemTray: @unchecked Sendable {
         }
     }
 
-    /// Find the clawd binary by checking multiple locations.
+    /// Find the clawd .app bundle.
+    private static func findClawdApp() -> URL? {
+        var candidates: [String] = []
+
+        // 1. Inside main app bundle: KanbanCode.app/Contents/Helpers/clawd.app
+        candidates.append(
+            (Bundle.main.bundlePath as NSString).appendingPathComponent("Contents/Helpers/clawd.app")
+        )
+
+        // 2. Next to the main app bundle
+        candidates.append(
+            ((Bundle.main.bundlePath as NSString).deletingLastPathComponent as NSString)
+                .appendingPathComponent("clawd.app")
+        )
+
+        for candidate in candidates {
+            if FileManager.default.fileExists(atPath: candidate) {
+                log("clawd.app found at: \(candidate)")
+                return URL(fileURLWithPath: candidate)
+            }
+        }
+
+        return nil
+    }
+
+    /// Find the bare clawd binary (fallback for development).
     private static func findClawdBinary() -> String? {
         var candidates: [String] = []
 
@@ -228,5 +314,28 @@ final class SystemTray: @unchecked Sendable {
 
         log("clawd binary not found, searched: \(candidates)")
         return nil
+    }
+}
+
+// MARK: - NSMenuDelegate (live countdown)
+
+extension SystemTray: NSMenuDelegate {
+    nonisolated func menuWillOpen(_ menu: NSMenu) {
+        MainActor.assumeIsolated {
+            countdownTimer?.invalidate()
+            guard countdownItem != nil else { return }
+            countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.countdownItem?.title = self?.countdownText() ?? ""
+                }
+            }
+        }
+    }
+
+    nonisolated func menuDidClose(_ menu: NSMenu) {
+        MainActor.assumeIsolated {
+            countdownTimer?.invalidate()
+            countdownTimer = nil
+        }
     }
 }

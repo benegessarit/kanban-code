@@ -1,11 +1,10 @@
-import Foundation
+import AppKit
 
-// Tiny helper process that shows up as "clawd" in Activity Monitor.
-// Kanban Code spawns this when Claude sessions are actively working.
-// Amphetamine can be configured to detect this process to prevent sleep.
-// Exits when it receives SIGTERM or SIGINT.
+// Tiny background-only app that shows up as "clawd" in Activity Monitor
+// and is visible to Amphetamine as a registered macOS app.
+// Kanban Code launches this .app bundle when Claude sessions are active.
+// LSUIElement in Info.plist keeps it out of the Dock.
+// NSApplication handles SIGTERM/terminate() properly.
 
-signal(SIGTERM, SIG_DFL)
-signal(SIGINT, SIG_DFL)
-
-dispatchMain()
+let app = NSApplication.shared
+app.run()
