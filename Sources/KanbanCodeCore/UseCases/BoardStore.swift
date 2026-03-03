@@ -881,6 +881,8 @@ public final class BoardStore: @unchecked Sendable {
 
     // Dependencies for reconciliation
     private var isReconciling = false
+    private var lastGHLookup: ContinuousClock.Instant = .now - .seconds(600)
+    public var appIsActive: Bool = true
     private let discovery: SessionDiscovery
     private let coordinationStore: CoordinationStore
     private let activityDetector: ClaudeCodeActivityDetector?
@@ -1080,9 +1082,12 @@ public final class BoardStore: @unchecked Sendable {
             }
 
             // Fetch PR data via targeted GraphQL — concurrent across repos (max 5)
+            // Throttle: every 30s when active, every 5min when backgrounded.
+            let ghInterval: Duration = appIsActive ? .seconds(30) : .seconds(300)
+            let shouldFetchPRs = ContinuousClock.now - lastGHLookup >= ghInterval
             var pullRequests: [String: PullRequest] = [:]  // branch → PR for reconciler
             var prsByRepoAndNumber: [String: [Int: PullRequest]] = [:]  // repo → number → PR
-            if let ghAdapter {
+            if let ghAdapter, shouldFetchPRs {
                 let t = ContinuousClock.now
                 let allRepos = Set(branchesByRepo.keys).union(prNumbersByRepo.keys)
                 typealias PRResult = (String, [String: PullRequest], [Int: PullRequest])
@@ -1125,6 +1130,7 @@ public final class BoardStore: @unchecked Sendable {
                 }
                 let totalByNumber = prsByRepoAndNumber.values.reduce(0) { $0 + $1.count }
                 KanbanCodeLog.info("reconcile", "PR lookup: \(t.duration(to: .now)) (\(pullRequests.count) by branch, \(totalByNumber) by number, \(allRepos.count) repos)")
+                lastGHLookup = .now
             }
 
             // Scan tmux sessions

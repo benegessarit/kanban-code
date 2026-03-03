@@ -530,10 +530,14 @@ struct ContentView: View {
                 quitConfirmationSheet
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                store.appIsActive = true
                 Task {
                     await store.reconcile()
                     systemTray.update()
                 }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+                store.appIsActive = false
             }
             .toolbar {
                 ToolbarItemGroup(placement: .navigation) {

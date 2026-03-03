@@ -11,6 +11,40 @@ public enum ShellCommand {
         public var succeeded: Bool { exitCode == 0 }
     }
 
+    /// Cached user login-shell environment, resolved once on first use.
+    /// .app bundles get a minimal environment (TMPDIR=/var/folders/..., PATH=/usr/bin:/bin)
+    /// which causes tmux socket mismatches, missing binaries, etc. We resolve the real
+    /// environment from the user's login shell and inject it into every subprocess.
+    private static let userEnvironment: [String: String] = {
+        // Run the user's login shell to dump its environment
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: shell)
+        proc.arguments = ["-l", "-c", "env"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = Pipe()
+        do {
+            try proc.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard proc.terminationStatus == 0,
+                  let output = String(data: data, encoding: .utf8) else {
+                return ProcessInfo.processInfo.environment
+            }
+            var env: [String: String] = [:]
+            for line in output.components(separatedBy: "\n") {
+                guard let eq = line.firstIndex(of: "=") else { continue }
+                let key = String(line[..<eq])
+                let value = String(line[line.index(after: eq)...])
+                env[key] = value
+            }
+            return env.isEmpty ? ProcessInfo.processInfo.environment : env
+        } catch {
+            return ProcessInfo.processInfo.environment
+        }
+    }()
+
     /// Run a command and capture its output.
     public static func run(
         _ executable: String,
@@ -20,6 +54,7 @@ public enum ShellCommand {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        process.environment = userEnvironment
 
         if let dir = currentDirectory {
             process.currentDirectoryURL = URL(fileURLWithPath: dir)
