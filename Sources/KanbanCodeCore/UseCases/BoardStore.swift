@@ -168,6 +168,7 @@ public enum Action: Sendable {
     case setBusy(cardId: String, busy: Bool)
 
     // Settings / misc
+    case settingsLoaded(projects: [Project], excludedPaths: [String], remote: RemoteSettings?)
     case setError(String?)
     case setSelectedProject(String?)
     case setLoading(Bool)
@@ -801,6 +802,12 @@ public enum Reducer {
 
         // MARK: Settings / Misc
 
+        case .settingsLoaded(let projects, let excludedPaths, let remote):
+            state.configuredProjects = projects
+            state.excludedPaths = excludedPaths
+            state.globalRemoteSettings = remote
+            return []
+
         case .setError(let message):
             state.error = message
             return []
@@ -916,6 +923,30 @@ public final class BoardStore: @unchecked Sendable {
         }
         if !activityMap.isEmpty {
             dispatch(.activityChanged(activityMap))
+        }
+    }
+
+    // MARK: - Eager settings load
+
+    /// Load settings and cached links immediately — populates project list
+    /// and cards before the full reconcile finishes.
+    public func loadSettingsAndCache() async {
+        if let store = settingsStore {
+            if let settings = try? await store.read() {
+                dispatch(.settingsLoaded(
+                    projects: settings.projects,
+                    excludedPaths: settings.globalView.excludedPaths,
+                    remote: settings.remote
+                ))
+            }
+        }
+        // Also load cached links so cards appear instantly
+        if state.links.isEmpty {
+            if let cached = try? await coordinationStore.readLinks(), !cached.isEmpty {
+                for link in cached {
+                    state.links[link.id] = link
+                }
+            }
         }
     }
 

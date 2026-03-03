@@ -450,6 +450,7 @@ struct ContentView: View {
                     TerminalCache.shared.remove(name)
                 }
                 systemTray.setup(store: store)
+                await store.loadSettingsAndCache()
                 await store.reconcile()
                 systemTray.update()
                 orchestrator.start()
