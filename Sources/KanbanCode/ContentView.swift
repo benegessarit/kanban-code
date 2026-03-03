@@ -1740,9 +1740,10 @@ struct ContentView: View {
         if let tmux = card.link.tmuxLink {
             // Has existing tmux — add an extra shell session
             let existing = tmux.extraSessions ?? []
+            let liveTmux = store.state.tmuxSessions // live tmux sessions from last reconciliation
             let baseName = tmux.sessionName
             var n = 1
-            while existing.contains("\(baseName)-sh\(n)") { n += 1 }
+            while existing.contains("\(baseName)-sh\(n)") || liveTmux.contains("\(baseName)-sh\(n)") { n += 1 }
             let newName = "\(baseName)-sh\(n)"
             store.dispatch(.addExtraTerminal(cardId: cardId, sessionName: newName))
         } else {

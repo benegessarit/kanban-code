@@ -712,8 +712,12 @@ struct CardDetailView: View {
 
     @ViewBuilder
     private func shellTab(sessionName: String, isSelected: Bool) -> some View {
-        let primaryName = card.link.tmuxLink?.sessionName ?? ""
+        let tmux = card.link.tmuxLink
+        let primaryName = tmux?.sessionName ?? ""
+        let isPrimary = sessionName == primaryName
         let displayName: String = {
+            // Shell-only primary gets labeled "Shell" to distinguish from numbered extras
+            if isPrimary { return "Shell" }
             let stripped = sessionName.replacingOccurrences(of: "\(primaryName)-", with: "")
             return stripped.isEmpty || stripped == sessionName ? "sh1" : stripped
         }()
