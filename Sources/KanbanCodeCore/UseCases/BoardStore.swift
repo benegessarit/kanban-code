@@ -91,7 +91,23 @@ public struct AppState: Sendable {
         guard let cardPath else { return false }
         let normalizedCard = ProjectDiscovery.normalizePath(cardPath)
         let normalizedSelected = ProjectDiscovery.normalizePath(selectedPath)
-        return normalizedCard == normalizedSelected || normalizedCard.hasPrefix(normalizedSelected + "/")
+
+        // Direct match: card is at or under the selected project
+        if normalizedCard == normalizedSelected || normalizedCard.hasPrefix(normalizedSelected + "/") {
+            return true
+        }
+
+        // Worktree match: card's worktree is at the git root (e.g. repo/.claude/worktrees/name)
+        // but the selected project is a subfolder of that repo (monorepo layout).
+        // Strip /.claude/worktrees/<name> to get the repo root and check if the selected project is under it.
+        if let range = normalizedCard.range(of: "/.claude/worktrees/") {
+            let repoRoot = String(normalizedCard[..<range.lowerBound])
+            if normalizedSelected == repoRoot || normalizedSelected.hasPrefix(repoRoot + "/") {
+                return true
+            }
+        }
+
+        return false
     }
 
     private func isExcludedFromGlobalView(_ card: KanbanCodeCard) -> Bool {
@@ -131,9 +147,11 @@ public enum Action: Sendable {
     case addBranchToCard(cardId: String, branch: String)
     case addIssueLinkToCard(cardId: String, issueNumber: Int)
     case moveCardToProject(cardId: String, projectPath: String)
+    case mergeCards(sourceId: String, targetId: String)
 
     // Async completions
     case launchCompleted(cardId: String, tmuxName: String, sessionLink: SessionLink?, worktreeLink: WorktreeLink?, isRemote: Bool)
+    case launchTmuxReady(cardId: String)
     case launchFailed(cardId: String, error: String)
     case resumeCompleted(cardId: String, tmuxName: String)
     case resumeFailed(cardId: String, error: String)
@@ -254,8 +272,9 @@ public enum Reducer {
         case .launchCard(let cardId, _, let projectPath, let worktreeName, _, _):
             guard var link = state.links[cardId] else { return [] }
             let projectName = (projectPath as NSString).lastPathComponent
-            let tmuxName = worktreeName != nil
-                ? "\(projectName)-\(worktreeName!)"
+            let effectiveName = (worktreeName?.isEmpty == false) ? worktreeName! : nil
+            let tmuxName = effectiveName != nil
+                ? "\(projectName)-\(effectiveName!)"
                 : "\(projectName)-\(cardId)"
             link.tmuxLink = TmuxLink(sessionName: tmuxName)
             link.column = .inProgress
@@ -437,6 +456,75 @@ public enum Reducer {
             KanbanCodeLog.info("store", "MoveToProject: card=\(cardId.prefix(12)) → \(projectPath)")
             return effects
 
+        case .mergeCards(let sourceId, let targetId):
+            guard let source = state.links[sourceId],
+                  var target = state.links[targetId],
+                  sourceId != targetId else { return [] }
+
+            // Validation: don't merge two cards that both have sessions
+            if source.sessionLink != nil && target.sessionLink != nil {
+                state.error = "Cannot merge: both cards have sessions"
+                return []
+            }
+            // Don't merge two cards that both have tmux terminals
+            if source.tmuxLink != nil && target.tmuxLink != nil {
+                state.error = "Cannot merge: both cards have terminals"
+                return []
+            }
+            // Don't merge two cards that both have different issues
+            if source.issueLink != nil && target.issueLink != nil
+                && source.issueLink != target.issueLink {
+                state.error = "Cannot merge: both cards have different issues"
+                return []
+            }
+
+            // Transfer links from source → target (only fill nil slots)
+            if target.sessionLink == nil { target.sessionLink = source.sessionLink }
+            if target.tmuxLink == nil { target.tmuxLink = source.tmuxLink }
+            if target.worktreeLink == nil { target.worktreeLink = source.worktreeLink }
+            if target.issueLink == nil { target.issueLink = source.issueLink }
+            if target.projectPath == nil { target.projectPath = source.projectPath }
+            if target.name == nil { target.name = source.name }
+            if target.promptBody == nil { target.promptBody = source.promptBody }
+            // Merge PR links (deduplicate by PR number)
+            let existingPRNumbers = Set(target.prLinks.map(\.number))
+            for pr in source.prLinks where !existingPRNumbers.contains(pr.number) {
+                target.prLinks.append(pr)
+            }
+            // Merge discovered branches
+            if let sourceBranches = source.discoveredBranches {
+                var branches = target.discoveredBranches ?? []
+                for b in sourceBranches where !branches.contains(b) { branches.append(b) }
+                target.discoveredBranches = branches
+            }
+            if let sourceRepos = source.discoveredRepos {
+                var repos = target.discoveredRepos ?? [:]
+                for (k, v) in sourceRepos { repos[k] = v }
+                target.discoveredRepos = repos
+            }
+            // Preserve the more recent lastActivity
+            if let sourceActivity = source.lastActivity {
+                if target.lastActivity == nil || sourceActivity > target.lastActivity! {
+                    target.lastActivity = sourceActivity
+                }
+            }
+            // If source is remote, inherit that
+            if source.isRemote { target.isRemote = true }
+
+            target.updatedAt = .now
+            state.links[targetId] = target
+
+            // Remove source card
+            state.links.removeValue(forKey: sourceId)
+            state.deletedCardIds.insert(sourceId)
+            if let sessionId = source.sessionLink?.sessionId, target.sessionLink?.sessionId != sessionId {
+                state.deletedSessionIds.insert(sessionId)
+            }
+            if state.selectedCardId == sourceId { state.selectedCardId = targetId }
+
+            KanbanCodeLog.info("store", "Merge: \(sourceId.prefix(12)) → \(targetId.prefix(12))")
+            return [.upsertLink(target), .removeLink(sourceId)]
+
         // MARK: Async Completions
 
         case .launchCompleted(let cardId, let tmuxName, let sessionLink, let worktreeLink, let isRemote):
@@ -450,6 +538,16 @@ public enum Reducer {
             link.isLaunching = nil
             link.lastActivity = .now
             link.isRemote = isRemote
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
+
+        case .launchTmuxReady(let cardId):
+            guard var link = state.links[cardId] else { return [] }
+            // Clear isLaunching so the UI shows the terminal immediately.
+            // tmuxLink was already set by launchCard — we just flip the flag.
+            link.isLaunching = nil
+            link.lastActivity = .now
             link.updatedAt = .now
             state.links[cardId] = link
             return [.upsertLink(link)]
@@ -915,6 +1013,12 @@ public final class BoardStore: @unchecked Sendable {
 
                     if let branch = link.worktreeLink?.branch, link.prLinks.isEmpty, !coveredBranches.contains(branch) {
                         branchesByRepo[repoRoot, default: []].append((index: i, branch: branch))
+                    }
+                    // Also look up PRs for discovered branches (from git push scanning)
+                    if link.prLinks.isEmpty, let discovered = link.discoveredBranches {
+                        for branch in discovered where !coveredBranches.contains(branch) {
+                            branchesByRepo[repoRoot, default: []].append((index: i, branch: branch))
+                        }
                     }
                     for j in link.prLinks.indices {
                         let prNumber = link.prLinks[j].number

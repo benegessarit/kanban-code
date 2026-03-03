@@ -50,9 +50,6 @@ struct ContentView: View {
     @State private var showOnboarding = false
     @AppStorage("appearanceMode") private var appearanceMode: AppearanceMode = .auto
     @State private var showProcessManager = false
-    @State private var showQuitConfirmation = false
-    @State private var quitOwnedSessions: [TmuxSession] = []
-    @AppStorage("killTmuxOnQuit") private var killTmuxOnQuit = true
     @State private var showAddFromPath = false
     @State private var addFromPathText = ""
     @State private var launchConfig: LaunchConfig?
@@ -144,9 +141,7 @@ struct ContentView: View {
             store: store,
             onStartCard: { cardId in startCard(cardId: cardId) },
             onResumeCard: { cardId in resumeCard(cardId: cardId) },
-            onForkCard: { cardId in
-                store.dispatch(.selectCard(cardId: cardId))
-            },
+            onForkCard: { cardId in forkCard(cardId: cardId) },
             onCopyResumeCmd: { cardId in
                 guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
                 var cmd = ""
@@ -168,6 +163,9 @@ struct ContentView: View {
             },
             onRefreshBacklog: { Task { await store.refreshBacklog() } },
             onDropCard: { cardId, column in handleDrop(cardId: cardId, to: column) },
+            onMergeCards: { sourceId, targetId in
+                store.dispatch(.mergeCards(sourceId: sourceId, targetId: targetId))
+            },
             onNewTask: { showNewTask = true }
         )
     }
@@ -188,7 +186,7 @@ struct ContentView: View {
                 onRename: { name in
                     store.dispatch(.renameCard(cardId: card.id, name: name))
                 },
-                onFork: {},
+                onFork: { forkCard(cardId: card.id) },
                 onDismiss: { store.dispatch(.selectCard(cardId: nil)) },
                 onUnlink: { linkType in
                     let actionType: Action.LinkType
@@ -256,9 +254,7 @@ struct ContentView: View {
                         onResumeCard: { card in
                             resumeCard(cardId: card.id)
                         },
-                        onForkCard: { card in
-                            store.dispatch(.selectCard(cardId: card.id))
-                        },
+                        onForkCard: { card in forkCard(cardId: card.id) },
                         onCheckpointCard: { card in
                             store.dispatch(.selectCard(cardId: card.id))
                         }
@@ -378,7 +374,7 @@ struct ContentView: View {
                         if let nextId {
                             store.dispatch(.selectCard(cardId: nextId))
                         }
-                        if card?.link.worktreeLink != nil {
+                        if let wt = card?.link.worktreeLink, !wt.path.isEmpty, wt.path.contains("/.claude/worktrees/") {
                             pendingWorktreeCleanupCardId = cardId
                         }
                     }
@@ -401,7 +397,7 @@ struct ContentView: View {
                     if let cardId = pendingArchiveCardId {
                         let card = store.state.cards.first(where: { $0.id == cardId })
                         store.dispatch(.archiveCard(cardId: cardId))
-                        if card?.link.worktreeLink != nil {
+                        if let wt = card?.link.worktreeLink, !wt.path.isEmpty, wt.path.contains("/.claude/worktrees/") {
                             pendingWorktreeCleanupCardId = cardId
                         }
                     }
@@ -500,18 +496,6 @@ struct ContentView: View {
                     await store.reconcile()
                     applyAppearance()
                 }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeQuitRequested)) { notification in
-                // Sessions are already loaded by AppDelegate — no re-fetch needed
-                if let sessions = notification.userInfo?["sessions"] as? [TmuxSession], !sessions.isEmpty {
-                    quitOwnedSessions = sessions
-                    showQuitConfirmation = true
-                } else {
-                    NSApp.reply(toApplicationShouldTerminate: true)
-                }
-            }
-            .sheet(isPresented: $showQuitConfirmation) {
-                quitConfirmationSheet
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 Task {
@@ -822,90 +806,6 @@ struct ContentView: View {
     }
 
     // MARK: - Quit Confirmation
-
-    private var quitConfirmationSheet: some View {
-        VStack(spacing: 0) {
-            VStack(spacing: 8) {
-                Image(systemName: "terminal")
-                    .font(.largeTitle)
-                    .foregroundStyle(.secondary)
-                Text("Quit Kanban?")
-                    .font(.headline)
-                Text("You have \(quitOwnedSessions.count) managed tmux session\(quitOwnedSessions.count == 1 ? "" : "s") running.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.top, 20)
-            .padding(.bottom, 12)
-
-            // Table of sessions — fills available space
-            Table(quitOwnedSessions) {
-                TableColumn("") { session in
-                    Circle()
-                        .fill(session.attached ? .green : .gray)
-                        .frame(width: 8, height: 8)
-                }
-                .width(16)
-
-                TableColumn("Session") { session in
-                    Text(session.name)
-                        .lineLimit(1)
-                }
-
-                TableColumn("Card") { session in
-                    if let card = store.state.cards.first(where: { card in
-                        card.link.tmuxLink?.allSessionNames.contains(session.name) == true
-                    }) {
-                        Text(card.displayTitle)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-
-                TableColumn("Path") { session in
-                    Text(abbreviateHomePath(session.path))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-            }
-            .frame(maxHeight: .infinity)
-
-            Divider()
-
-            HStack {
-                Toggle("Kill managed sessions on quit", isOn: $killTmuxOnQuit)
-                    .toggleStyle(.checkbox)
-                Spacer()
-                Button("Cancel") {
-                    showQuitConfirmation = false
-                    NSApp.reply(toApplicationShouldTerminate: false)
-                }
-                .keyboardShortcut(.cancelAction)
-                Button("Quit Kanban") {
-                    showQuitConfirmation = false
-                    if killTmuxOnQuit {
-                        Task {
-                            await killOwnedTmuxSessions()
-                            NSApp.reply(toApplicationShouldTerminate: true)
-                        }
-                    } else {
-                        NSApp.reply(toApplicationShouldTerminate: true)
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-            .padding(16)
-        }
-        .frame(width: 520, height: 380)
-    }
-
-    private func killOwnedTmuxSessions() async {
-        let tmux = TmuxAdapter()
-        for session in quitOwnedSessions {
-            try? await tmux.killSession(name: session.name)
-            TerminalCache.shared.remove(session.name)
-        }
-    }
 
     private func abbreviateHomePath(_ path: String) -> String {
         let home = NSHomeDirectory()
@@ -1361,7 +1261,9 @@ struct ContentView: View {
             pendingArchiveCardId = cardId
         } else {
             store.dispatch(.archiveCard(cardId: cardId))
-            if card.link.worktreeLink != nil {
+            // Only offer worktree cleanup if the card has an actual worktree directory
+            // (not just a branch reference from discovery or manual linking)
+            if let wt = card.link.worktreeLink, !wt.path.isEmpty, wt.path.contains("/.claude/worktrees/") {
                 pendingWorktreeCleanupCardId = cardId
             }
         }
@@ -1538,6 +1440,10 @@ struct ContentView: View {
                     skipPermissions: skipPermissions
                 )
                 KanbanCodeLog.info("launch", "Tmux session created: \(tmuxName)")
+
+                // Show terminal immediately — clear isLaunching so UI switches
+                // from spinner to terminal view without waiting for session detection.
+                store.dispatch(.launchTmuxReady(cardId: cardId))
 
                 // Detect new Claude session by polling for new .jsonl file
                 // Worktree launches need more attempts (git worktree + Claude startup)
@@ -1759,6 +1665,31 @@ struct ContentView: View {
             isResume: true,
             sessionId: sessionId
         )
+    }
+
+    private func forkCard(cardId: String) {
+        guard let card = store.state.cards.first(where: { $0.id == cardId }),
+              let sessionPath = card.link.sessionLink?.sessionPath else { return }
+        Task {
+            do {
+                let newSessionId = try await store.sessionStore.forkSession(sessionPath: sessionPath)
+                let dir = (sessionPath as NSString).deletingLastPathComponent
+                let newPath = (dir as NSString).appendingPathComponent("\(newSessionId).jsonl")
+                let newLink = Link(
+                    name: (card.link.name ?? card.link.displayTitle) + " (fork)",
+                    projectPath: card.link.projectPath,
+                    column: .waiting,
+                    lastActivity: .now,
+                    source: .discovered,
+                    sessionLink: SessionLink(sessionId: newSessionId, sessionPath: newPath),
+                    worktreeLink: card.link.worktreeLink
+                )
+                store.dispatch(.createManualTask(newLink))
+                store.dispatch(.selectCard(cardId: newLink.id))
+            } catch {
+                KanbanCodeLog.error("fork", "Fork failed: \(error)")
+            }
+        }
     }
 
     private func executeResume(cardId: String, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String?) {

@@ -6,9 +6,19 @@ import KanbanCodeCore
 class DragState {
     var draggingCard: KanbanCodeCard?
     var sourceColumn: KanbanCodeColumn?
+    /// Card ID the cursor is currently over (merge candidate).
+    var mergeTargetId: String?
 }
 
-/// A column view that supports drag and drop.
+/// Preference key to collect card frames within a column's coordinate space.
+struct CardFramePreference: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
+/// A column view that supports drag and drop (column move + card-to-card merge).
 struct DroppableColumnView: View {
     let column: KanbanCodeColumn
     let cards: [KanbanCodeCard]
@@ -16,6 +26,7 @@ struct DroppableColumnView: View {
     var dragState: DragState
     var isRefreshingBacklog: Bool = false
     var onMoveCard: (String, KanbanCodeColumn) -> Void = { _, _ in }
+    var onMergeCards: (String, String) -> Void = { _, _ in }   // (sourceId, targetId)
     var onRenameCard: (String, String) -> Void = { _, _ in }
     var onArchiveCard: (String) -> Void = { _ in }
     var onStartCard: (String) -> Void = { _ in }
@@ -30,11 +41,18 @@ struct DroppableColumnView: View {
 
     @State private var isTargeted = false
     @State private var renamingCardId: String?
+    @State private var cardFrames: [String: CGRect] = [:]
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 8) {
                 ForEach(cards) { card in
+                    let isMergeTarget = dragState.mergeTargetId == card.id
+                    let canMerge: Bool = {
+                        guard let source = dragState.draggingCard, source.id != card.id else { return false }
+                        return Link.mergeBlocked(source: source.link, target: card.link) == nil
+                    }()
+
                     CardView(
                         card: card,
                         isSelected: card.id == selectedCardId,
@@ -53,6 +71,34 @@ struct DroppableColumnView: View {
                         onDelete: { onDeleteCard(card.id) },
                         availableProjects: availableProjects,
                         onMoveToProject: { projectPath in onMoveToProject(card.id, projectPath) }
+                    )
+                    // Merge highlight
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(
+                                isMergeTarget && canMerge ? Color.orange : Color.clear,
+                                lineWidth: 2
+                            )
+                    )
+                    .overlay(alignment: .top) {
+                        if isMergeTarget && canMerge {
+                            Text("Merge")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                                .background(Color.orange, in: Capsule())
+                                .offset(y: -10)
+                        }
+                    }
+                    // Report frame in column coordinate space
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: CardFramePreference.self,
+                                value: [card.id: geo.frame(in: .named("column_\(column.rawValue)"))]
+                            )
+                        }
                     )
                     .onDrag {
                         dragState.draggingCard = card
@@ -76,8 +122,9 @@ struct DroppableColumnView: View {
                     }
                 }
 
-                // Ghost card placeholder when dragging over this column
-                if isTargeted, let dragging = dragState.draggingCard, dragState.sourceColumn != column {
+                // Ghost card placeholder when dragging over this column (not merging)
+                if isTargeted, dragState.mergeTargetId == nil,
+                   let dragging = dragState.draggingCard, dragState.sourceColumn != column {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(dragging.displayTitle)
                             .font(.system(.body, weight: .medium))
@@ -96,12 +143,15 @@ struct DroppableColumnView: View {
             .padding(.top, 56) // space for the floating header
             .padding(.bottom, 8)
         }
+        .coordinateSpace(name: "column_\(column.rawValue)")
+        .onPreferenceChange(CardFramePreference.self) { cardFrames = $0 }
         .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
         .glassColumn()
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .stroke(
-                    isTargeted ? Color.accentColor.opacity(0.5) : Color.clear,
+                    isTargeted && dragState.mergeTargetId == nil
+                        ? Color.accentColor.opacity(0.5) : Color.clear,
                     lineWidth: isTargeted ? 2 : 0
                 )
         )
@@ -145,19 +195,87 @@ struct DroppableColumnView: View {
             .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
             .padding(4)
         }
-        .onDrop(of: [.utf8PlainText], isTargeted: $isTargeted) { _, _ in
-            defer {
-                dragState.draggingCard = nil
-                dragState.sourceColumn = nil
-            }
-            guard let cardId = dragState.draggingCard?.id,
-                  let source = dragState.sourceColumn,
-                  source != column else {
-                return false
-            }
-            onMoveCard(cardId, column)
+        .onDrop(of: [.utf8PlainText], delegate: ColumnDropDelegate(
+            column: column,
+            cards: cards,
+            cardFrames: cardFrames,
+            dragState: dragState,
+            isTargeted: $isTargeted,
+            onMoveCard: onMoveCard,
+            onMergeCards: onMergeCards
+        ))
+        .animation(.easeInOut(duration: 0.15), value: isTargeted)
+        .animation(.easeInOut(duration: 0.15), value: dragState.mergeTargetId)
+    }
+}
+
+/// Drop delegate that handles both column-level moves and card-to-card merges.
+/// Uses cursor position + stored card frames to detect merge targets.
+struct ColumnDropDelegate: DropDelegate {
+    let column: KanbanCodeColumn
+    let cards: [KanbanCodeCard]
+    let cardFrames: [String: CGRect]
+    let dragState: DragState
+    @Binding var isTargeted: Bool
+    let onMoveCard: (String, KanbanCodeColumn) -> Void
+    let onMergeCards: (String, String) -> Void
+
+    func dropEntered(info: DropInfo) {
+        isTargeted = true
+        updateMergeTarget(at: info.location)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        updateMergeTarget(at: info.location)
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        isTargeted = false
+        dragState.mergeTargetId = nil
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer {
+            dragState.draggingCard = nil
+            dragState.sourceColumn = nil
+            dragState.mergeTargetId = nil
+            isTargeted = false
+        }
+
+        guard let sourceCard = dragState.draggingCard else { return false }
+
+        // Check if we're merging onto a card
+        if let targetId = dragState.mergeTargetId,
+           let targetCard = cards.first(where: { $0.id == targetId }),
+           Link.mergeBlocked(source: sourceCard.link, target: targetCard.link) == nil {
+            onMergeCards(sourceCard.id, targetId)
             return true
         }
-        .animation(.easeInOut(duration: 0.15), value: isTargeted)
+
+        // Otherwise, column-level move
+        guard let source = dragState.sourceColumn, source != column else { return false }
+        onMoveCard(sourceCard.id, column)
+        return true
+    }
+
+    private func updateMergeTarget(at location: CGPoint) {
+        guard let source = dragState.draggingCard else {
+            dragState.mergeTargetId = nil
+            return
+        }
+
+        // Find the card under the cursor
+        for (cardId, frame) in cardFrames {
+            guard cardId != source.id, frame.contains(location) else { continue }
+            guard let targetCard = cards.first(where: { $0.id == cardId }),
+                  Link.mergeBlocked(source: source.link, target: targetCard.link) == nil else {
+                dragState.mergeTargetId = nil
+                return
+            }
+            dragState.mergeTargetId = cardId
+            return
+        }
+        dragState.mergeTargetId = nil
     }
 }
