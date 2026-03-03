@@ -78,6 +78,9 @@ struct CardDetailView: View {
     // Add link popover
     @State private var showAddLink = false
 
+    // Copy toast
+    @State private var copyToast: String?
+
     // Resolved GitHub base URL for constructing issue/PR links
     @State private var githubBaseURL: String?
 
@@ -176,8 +179,7 @@ struct CardDetailView: View {
                             .help("Open in editor")
                         }
 
-                        actionsMenu
-                            .frame(width: 36, height: 36)
+                        actionsMenuButton
                             .glassEffect(.regular, in: .capsule)
                             .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
                             .modifier(HoverBrightness())
@@ -403,6 +405,19 @@ struct CardDetailView: View {
                 focusTerminal = false
             }
         }
+        .overlay(alignment: .bottom) {
+            if let copyToast {
+                Text(copyToast)
+                    .font(.caption.weight(.medium))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: copyToast)
         .onDisappear {
             stopHistoryWatcher()
         }
@@ -860,98 +875,76 @@ struct CardDetailView: View {
         isLoadingPRBody = false
     }
 
-    private var actionsMenu: some View {
-        Menu {
-            Button(action: { showRenameSheet = true }) {
-                Label("Rename", systemImage: "pencil")
-            }
-
-            Button(action: { showForkConfirm = true }) {
-                Label("Fork Session", systemImage: "arrow.branch")
-            }
-            .disabled(card.link.sessionLink?.sessionPath == nil)
-
-            Button {
-                checkpointMode = true
-                selectedTab = .history
-            } label: {
-                Label("Checkpoint / Restore", systemImage: "clock.arrow.circlepath")
-            }
-            .disabled(card.link.sessionLink?.sessionPath == nil || turns.isEmpty)
-
-            Divider()
-
-            Button(action: copyResumeCommand) {
-                Label("Copy Resume Command", systemImage: "doc.on.doc")
-            }
-
-            Button(action: { copyToClipboard(card.id) }) {
-                Label("Copy Card ID", systemImage: "number")
-            }
-
-            if let sessionId = card.link.sessionLink?.sessionId {
-                Button(action: { copyToClipboard(sessionId) }) {
-                    Label {
-                        Text("Copy Session ID")
-                    } icon: {
-                        ClawdIcon(size: 14)
-                    }
-                }
-            }
-
-            if let tmux = card.link.tmuxLink?.sessionName {
-                Button(action: { copyToClipboard("tmux attach -t \(tmux)") }) {
-                    Label("Copy Tmux Command", systemImage: "terminal")
-                }
-            }
-
-            if !card.link.prLinks.isEmpty {
-                Divider()
-                ForEach(card.link.prLinks, id: \.number) { pr in
-                    Button {
-                        if let url = pr.url.flatMap({ URL(string: $0) }) {
-                            NSWorkspace.shared.open(url)
-                        }
-                    } label: {
-                        Label("Open PR #\(pr.number)", systemImage: "arrow.up.right.square")
-                    }
-                }
-            }
-            if card.link.sessionLink != nil || card.link.worktreeLink != nil {
-                Divider()
-                Button(action: onDiscover) {
-                    Label("Discover PRs", systemImage: "arrow.triangle.pull")
-                }
-            }
-            if let issue = card.link.issueLink {
-                Button {
-                    if let url = issue.url.flatMap({ URL(string: $0) }) {
-                        NSWorkspace.shared.open(url)
-                    }
-                } label: {
-                    Label("Open Issue #\(issue.number)", systemImage: "arrow.up.right.square")
-                }
-            }
-
-            if card.link.worktreeLink != nil {
-                Divider()
-                Button(role: .destructive, action: onCleanupWorktree) {
-                    Label("Cleanup Worktree", systemImage: "trash")
-                }
-            }
-
-            Divider()
-            Button(role: .destructive, action: { onDeleteCard(); onDismiss() }) {
-                Label("Delete Card", systemImage: "trash")
-            }
+    private var actionsMenuButton: some View {
+        Button {
+            showActionsNSMenu()
         } label: {
             Image(systemName: "ellipsis")
                 .font(.caption)
                 .frame(width: 36, height: 36)
                 .contentShape(Circle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+    }
+
+    private func showActionsNSMenu() {
+        let menu = NSMenu()
+
+        menu.addActionItem("Rename", image: "pencil") { [self] in showRenameSheet = true }
+
+        let forkItem = menu.addActionItem("Fork Session", image: "arrow.branch") { [self] in showForkConfirm = true }
+        forkItem.isEnabled = card.link.sessionLink?.sessionPath != nil
+
+        let cpItem = menu.addActionItem("Checkpoint / Restore", image: "clock.arrow.circlepath") { [self] in
+            checkpointMode = true
+            selectedTab = .history
+        }
+        cpItem.isEnabled = card.link.sessionLink?.sessionPath != nil && !turns.isEmpty
+
+        menu.addItem(NSMenuItem.separator())
+
+        menu.addActionItem("Copy Resume Command", image: "doc.on.doc") { [self] in copyResumeCommand() }
+        menu.addActionItem("Copy Card ID", image: "number") { [self] in copyToClipboard(card.id) }
+
+        if let sessionId = card.link.sessionLink?.sessionId {
+            menu.addActionItem("Copy Session ID", image: "brain") { [self] in copyToClipboard(sessionId) }
+        }
+
+        if let tmux = card.link.tmuxLink?.sessionName {
+            menu.addActionItem("Copy Tmux Command", image: "terminal") { [self] in copyToClipboard("tmux attach -t \(tmux)") }
+        }
+
+        if !card.link.prLinks.isEmpty {
+            menu.addItem(NSMenuItem.separator())
+            for pr in card.link.prLinks {
+                menu.addActionItem("Open PR #\(pr.number)", image: "arrow.up.right.square") {
+                    if let url = pr.url.flatMap({ URL(string: $0) }) { NSWorkspace.shared.open(url) }
+                }
+            }
+        }
+
+        if card.link.sessionLink != nil || card.link.worktreeLink != nil {
+            menu.addItem(NSMenuItem.separator())
+            menu.addActionItem("Discover PRs", image: "arrow.triangle.pull") { [self] in onDiscover() }
+        }
+
+        if let issue = card.link.issueLink {
+            menu.addActionItem("Open Issue #\(issue.number)", image: "arrow.up.right.square") {
+                if let url = issue.url.flatMap({ URL(string: $0) }) { NSWorkspace.shared.open(url) }
+            }
+        }
+
+        if card.link.worktreeLink != nil {
+            menu.addItem(NSMenuItem.separator())
+            let item = menu.addActionItem("Cleanup Worktree", image: "trash") { [self] in onCleanupWorktree() }
+            item.attributedTitle = NSAttributedString(string: "Cleanup Worktree", attributes: [.foregroundColor: NSColor.systemRed])
+        }
+
+        menu.addItem(NSMenuItem.separator())
+        let del = menu.addActionItem("Delete Card", image: "trash") { [self] in onDeleteCard(); onDismiss() }
+        del.attributedTitle = NSAttributedString(string: "Delete Card", attributes: [.foregroundColor: NSColor.systemRed])
+
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 
     // MARK: - History loading
@@ -1096,7 +1089,7 @@ struct CardDetailView: View {
                 Button {
                     NSWorkspace.shared.open(parsed)
                 } label: {
-                    Image(systemName: "link")
+                    Image(systemName: "arrow.up.forward.app")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -1105,8 +1098,9 @@ struct CardDetailView: View {
 
                 Button {
                     copyToClipboard(url)
+                    showCopyToast("\(label) link copied to clipboard")
                 } label: {
-                    Image(systemName: "doc.on.doc")
+                    Image(systemName: "link")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -1131,6 +1125,14 @@ struct CardDetailView: View {
     private func copyToClipboard(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func showCopyToast(_ message: String) {
+        copyToast = message
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            if copyToast == message { copyToast = nil }
+        }
     }
 
     private func copyableRow(icon: String, text: String) -> some View {
@@ -1297,5 +1299,28 @@ struct RenameSessionDialog: View {
         .onAppear {
             name = currentName
         }
+    }
+}
+
+// MARK: - NSMenu closure helper
+
+private final class NSMenuActionItem: NSObject {
+    let handler: () -> Void
+    init(_ handler: @escaping () -> Void) { self.handler = handler }
+    @objc func invoke() { handler() }
+}
+
+extension NSMenu {
+    @discardableResult
+    func addActionItem(_ title: String, image: String? = nil, handler: @escaping () -> Void) -> NSMenuItem {
+        let target = NSMenuActionItem(handler)
+        let item = NSMenuItem(title: title, action: #selector(NSMenuActionItem.invoke), keyEquivalent: "")
+        item.target = target
+        item.representedObject = target // prevent dealloc
+        if let image, let img = NSImage(systemSymbolName: image, accessibilityDescription: nil) {
+            item.image = img
+        }
+        addItem(item)
+        return item
     }
 }
