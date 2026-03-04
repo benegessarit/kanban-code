@@ -97,6 +97,13 @@ public struct GitHubSettings: Codable, Sendable {
         self.pollIntervalSeconds = pollIntervalSeconds
         self.mergeCommand = mergeCommand ?? Self.defaultMergeCommand
     }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        defaultFilter = try c.decodeIfPresent(String.self, forKey: .defaultFilter) ?? "assignee:@me is:open"
+        pollIntervalSeconds = try c.decodeIfPresent(Int.self, forKey: .pollIntervalSeconds) ?? 60
+        mergeCommand = try c.decodeIfPresent(String.self, forKey: .mergeCommand) ?? Self.defaultMergeCommand
+    }
 }
 
 public struct NotificationSettings: Codable, Sendable {
