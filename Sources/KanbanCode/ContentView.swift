@@ -357,8 +357,7 @@ struct ContentView: View {
             }
     }
 
-    var body: some View {
-        NavigationStack {
+    private var boardWithAlerts: some View {
         boardWithSheets
             .alert(
                 "Remote Worktree",
@@ -500,6 +499,10 @@ struct ContentView: View {
             } message: {
                 Text("This card has a worktree. Do you want to remove it?")
             }
+    }
+
+    private var boardWithHandlers: some View {
+        boardWithAlerts
             .task {
                 // Show onboarding wizard on first launch
                 if let settings = try? await settingsStore.read(), !settings.hasCompletedOnboarding {
@@ -555,9 +558,6 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeHookEvent)) { _ in
                 Task {
                     await orchestrator.processHookEvents()
-                    // Fast path: update activity states and columns immediately
-                    // without waiting for full reconciliation (which may be blocked
-                    // or take seconds due to discovery/PR fetching)
                     await store.refreshActivity()
                     systemTray.update()
                 }
@@ -574,7 +574,6 @@ struct ContentView: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeQuitRequested)) { _ in
-                // Build session list instantly from store state
                 let sessions = store.state.cards.compactMap { card -> TmuxSession? in
                     guard let tmux = card.link.tmuxLink else { return nil }
                     return TmuxSession(name: tmux.sessionName, path: card.link.projectPath ?? "")
@@ -584,7 +583,6 @@ struct ContentView: View {
                 } else {
                     quitOwnedSessions = sessions
                     showQuitConfirmation = true
-                    // Update alive status async — green dot = session exists in tmux
                     Task.detached {
                         let live = AppDelegate.listAllTmuxSessionsSync()
                         let liveNames = Set(live.map(\.name))
@@ -608,6 +606,11 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
                 store.appIsActive = false
             }
+    }
+
+    var body: some View {
+        NavigationStack {
+        boardWithHandlers
             .toolbar {
                 ToolbarItemGroup(placement: .navigation) {
                     Button { showNewTask = true } label: {
