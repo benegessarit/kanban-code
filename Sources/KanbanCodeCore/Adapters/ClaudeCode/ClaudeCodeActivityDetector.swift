@@ -152,8 +152,8 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
         let fileSize = handle.seekToEndOfFile()
         let readSize: UInt64 = min(4096, fileSize)
         handle.seek(toFileOffset: fileSize - readSize)
-        guard let data = try? handle.availableData,
-              let tail = String(data: data, encoding: .utf8) else { return false }
+        let data = handle.availableData
+        guard let tail = String(data: data, encoding: .utf8) else { return false }
 
         // Find the last non-empty line
         let lines = tail.split(separator: "\n", omittingEmptySubsequences: true)

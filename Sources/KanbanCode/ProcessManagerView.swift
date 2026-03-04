@@ -291,9 +291,9 @@ struct ProcessManagerView: View {
         isLoading = true
         defer { isLoading = false }
 
-        async let t = loadTmux()
-        async let c = loadClaude()
-        async let w = loadWorktrees()
+        async let t: Void = loadTmux()
+        async let c: Void = loadClaude()
+        async let w: Void = loadWorktrees()
         _ = await (t, c, w)
     }
 
