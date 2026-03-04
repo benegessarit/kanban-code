@@ -39,9 +39,13 @@ struct SessionHistoryView: View {
     @State private var searchScanTask: Task<Void, Never>?
     @State private var isSearchScanning = false
     @State private var didOverscrollTop = false
+    @State private var pendingMatchScroll = false  // scroll to match after turns load from navigation
     @FocusState private var isSearchFieldFocused: Bool
 
-    private static let maxSearchResults = 500
+    private var currentMatchTurnIndex: Int? {
+        guard showSearch, !searchMatchIndices.isEmpty, currentMatchPosition < searchMatchIndices.count else { return nil }
+        return searchMatchIndices[currentMatchPosition]
+    }
 
     var body: some View {
         if isLoading {
@@ -99,7 +103,8 @@ struct SessionHistoryView: View {
                                         checkpointMode: checkpointMode,
                                         isHovered: hoveredTurnIndex == turn.index,
                                         isDimmed: checkpointMode && hoveredTurnIndex != nil && turn.index > hoveredTurnIndex!,
-                                        highlightText: activeQuery.isEmpty ? nil : activeQuery
+                                        highlightText: activeQuery.isEmpty ? nil : activeQuery,
+                                        isCurrentMatch: currentMatchTurnIndex == turn.index
                                     )
                                     .id(turn.index)
                                     .overlay {
@@ -126,15 +131,10 @@ struct SessionHistoryView: View {
                     .onChange(of: turns.count) {
                         if activeQuery.isEmpty {
                             scrollToBottom(proxy: proxy)
-                        } else if !searchMatchIndices.isEmpty,
-                                  currentMatchPosition < searchMatchIndices.count {
-                            // Turns loaded during search — scroll to current match
-                            let idx = searchMatchIndices[currentMatchPosition]
-                            if turns.contains(where: { $0.index == idx }) {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    proxy.scrollTo(idx, anchor: .center)
-                                }
-                            }
+                        } else if pendingMatchScroll {
+                            // Only scroll when we explicitly loaded turns for search navigation
+                            pendingMatchScroll = false
+                            scrollToCurrentMatch(proxy: proxy, delay: true)
                         }
                         didOverscrollTop = false
                     }
@@ -144,24 +144,15 @@ struct SessionHistoryView: View {
                         }
                     }
                     .onChange(of: currentMatchPosition) {
-                        guard !isSearchScanning,
-                              !searchMatchIndices.isEmpty,
+                        guard !searchMatchIndices.isEmpty,
                               currentMatchPosition < searchMatchIndices.count else { return }
                         let idx = searchMatchIndices[currentMatchPosition]
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            proxy.scrollTo(idx, anchor: .center)
-                        }
-                    }
-                    .onChange(of: isSearchScanning) {
-                        if !isSearchScanning && !searchMatchIndices.isEmpty {
-                            let idx = searchMatchIndices[currentMatchPosition]
-                            if turns.contains(where: { $0.index == idx }) {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    proxy.scrollTo(idx, anchor: .center)
-                                }
-                            } else {
-                                onLoadAroundTurn?(idx)
-                            }
+                        if turns.contains(where: { $0.index == idx }) {
+                            scrollToCurrentMatch(proxy: proxy, delay: false)
+                        } else {
+                            // Turn not loaded — load it, pendingMatchScroll triggers scroll after
+                            pendingMatchScroll = true
+                            onLoadAroundTurn?(idx)
                         }
                     }
                 }
@@ -200,7 +191,7 @@ struct SessionHistoryView: View {
                 .foregroundStyle(.white)
                 .focused($isSearchFieldFocused)
                 .onKeyPress(.escape) { dismissSearch(); return .handled }
-                .onSubmit { navigateSearch(forward: true) }
+                .onSubmit { navigateSearch(forward: false) }  // Enter goes upward (reverse search)
                 .onChange(of: searchText) { scheduleSearch() }
 
             if !activeQuery.isEmpty {
@@ -208,14 +199,18 @@ struct SessionHistoryView: View {
                     ProgressView()
                         .controlSize(.mini)
                         .tint(.white.opacity(0.5))
-                }
 
-                if searchMatchIndices.isEmpty && !isSearchScanning {
+                    if !searchMatchIndices.isEmpty {
+                        Text("\(searchMatchIndices.count) found…")
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                } else if searchMatchIndices.isEmpty {
                     Text("0 results")
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.4))
-                } else if !searchMatchIndices.isEmpty {
-                    Text("\(currentMatchPosition + 1)/\(searchMatchIndices.count)\(isSearchScanning ? "…" : "")")
+                } else {
+                    Text("\(searchMatchIndices.count - currentMatchPosition)/\(searchMatchIndices.count)")
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.6))
 
@@ -284,7 +279,6 @@ struct SessionHistoryView: View {
 
         isSearchScanning = true
         let query = activeQuery
-        let maxResults = Self.maxSearchResults
 
         searchScanTask = Task {
             var matches: [Int] = []
@@ -292,20 +286,21 @@ struct SessionHistoryView: View {
             for await matchIndex in TranscriptReader.scanForMatches(from: path, query: query) {
                 if Task.isCancelled { break }
                 matches.append(matchIndex)
-                if matches.count >= maxResults { break }
 
-                // Batch update UI every 20 matches or on first match
-                if matches.count == 1 || matches.count % 20 == 0 {
+                // Update match count display periodically (no position/scroll changes)
+                if matches.count == 1 || matches.count % 50 == 0 {
                     searchMatchIndices = matches
-                    currentMatchPosition = max(0, matches.count - 1)
                 }
             }
 
             guard !Task.isCancelled else { return }
 
+            // Final update — set position to most recent match, triggering scroll
             searchMatchIndices = matches
-            currentMatchPosition = max(0, matches.count - 1)
             isSearchScanning = false
+            if !matches.isEmpty {
+                currentMatchPosition = matches.count - 1
+            }
         }
     }
 
@@ -358,6 +353,25 @@ struct SessionHistoryView: View {
         .background(Color.orange.opacity(0.15))
     }
 
+    private func scrollToCurrentMatch(proxy: ScrollViewProxy, delay: Bool) {
+        guard !searchMatchIndices.isEmpty,
+              currentMatchPosition < searchMatchIndices.count else { return }
+        let idx = searchMatchIndices[currentMatchPosition]
+        guard turns.contains(where: { $0.index == idx }) else { return }
+        if delay {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(80))
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo(idx, anchor: .center)
+                }
+            }
+        } else {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                proxy.scrollTo(idx, anchor: .center)
+            }
+        }
+    }
+
     private func scrollToBottom(proxy: ScrollViewProxy, force: Bool = false) {
         guard activeQuery.isEmpty else { return }
         guard force || isAtBottom else { return }
@@ -380,6 +394,7 @@ struct TurnBlockView: View {
     var isHovered: Bool = false
     var isDimmed: Bool = false
     var highlightText: String? = nil
+    var isCurrentMatch: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -396,11 +411,15 @@ struct TurnBlockView: View {
             RoundedRectangle(cornerRadius: 4)
                 .fill(turnBackground)
         )
-        .overlay(
-            isSearchMatch
-                ? RoundedRectangle(cornerRadius: 4).stroke(Color.yellow.opacity(0.3), lineWidth: 1)
-                : nil
-        )
+        .overlay {
+            if isCurrentMatch {
+                RoundedRectangle(cornerRadius: 4).stroke(Color.orange.opacity(0.7), lineWidth: 2)
+            } else if isSearchMatch {
+                RoundedRectangle(cornerRadius: 4).stroke(Color.yellow.opacity(0.3), lineWidth: 1)
+            }
+        }
+        .scaleEffect(isCurrentMatch ? 1.02 : 1.0)
+        .animation(.easeInOut(duration: 0.15), value: isCurrentMatch)
         .contentShape(Rectangle())
     }
 
@@ -413,6 +432,9 @@ struct TurnBlockView: View {
     private var turnBackground: Color {
         if isHovered && checkpointMode {
             return Color.orange.opacity(0.1)
+        }
+        if isCurrentMatch {
+            return Color.orange.opacity(0.12)
         }
         if isSearchMatch {
             return Color.yellow.opacity(0.08)
@@ -517,11 +539,13 @@ struct TurnBlockView: View {
         result.foregroundColor = color
         let lowerText = text.lowercased()
         var pos = lowerText.startIndex
+        let hlBg: Color = isCurrentMatch ? .orange.opacity(0.5) : .yellow.opacity(0.35)
+        let hlFg: Color = isCurrentMatch ? .orange : .yellow
         while let range = lowerText.range(of: query, range: pos..<lowerText.endIndex) {
             if let attrStart = AttributedString.Index(range.lowerBound, within: result),
                let attrEnd = AttributedString.Index(range.upperBound, within: result) {
-                result[attrStart..<attrEnd].backgroundColor = .yellow.opacity(0.35)
-                result[attrStart..<attrEnd].foregroundColor = .yellow
+                result[attrStart..<attrEnd].backgroundColor = hlBg
+                result[attrStart..<attrEnd].foregroundColor = hlFg
             }
             pos = range.upperBound
         }

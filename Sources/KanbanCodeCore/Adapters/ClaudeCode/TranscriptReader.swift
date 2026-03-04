@@ -149,9 +149,9 @@ public enum TranscriptReader {
         }
     }
 
-    /// Lightweight scan for matching turn indices — no JSON parsing for non-matches.
-    /// Yields each matching turn index as found. Scans the full file but only does
-    /// case-insensitive string search on raw line text.
+    /// Scan for matching turn indices using the same content extraction as the reader.
+    /// Yields each matching turn index as found. Matches against the same text fields
+    /// that TurnBlockView displays (textPreview + contentBlocks[].text).
     public static func scanForMatches(
         from filePath: String,
         query: String
@@ -168,19 +168,29 @@ public enum TranscriptReader {
                     defer { try? handle.close() }
 
                     var turnIndex = 0
+                    let queryLower = query.lowercased()
 
                     for try await line in handle.bytes.lines {
                         if Task.isCancelled { break }
                         guard !line.isEmpty, line.contains("\"type\"") else { continue }
 
-                        // Minimal JSON parse — just check if it's a user/assistant line
                         guard let data = line.data(using: .utf8),
                               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                               let type = obj["type"] as? String,
                               type == "user" || type == "assistant" else { continue }
 
-                        // Case-insensitive search on the raw line text (covers all content)
-                        if line.range(of: query, options: .caseInsensitive) != nil {
+                        // Extract content the same way the reader/frontend does
+                        let blocks: [ContentBlock]
+                        if type == "user" {
+                            blocks = extractUserBlocks(from: obj)
+                        } else {
+                            blocks = extractAssistantBlocks(from: obj)
+                        }
+                        let textPreview = buildTextPreview(blocks: blocks, role: type)
+
+                        // Match against the same fields TurnBlockView.isSearchMatch checks
+                        if textPreview.lowercased().contains(queryLower)
+                            || blocks.contains(where: { $0.text.lowercased().contains(queryLower) }) {
                             continuation.yield(turnIndex)
                         }
                         turnIndex += 1
