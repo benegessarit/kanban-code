@@ -388,11 +388,20 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
         }
     }
 
-    /// Merge a PR (respects repo's default merge strategy).
-    public func mergePR(repoRoot: String, prNumber: Int) async throws -> MergeResult {
+    /// Merge a PR using the configured merge command template.
+    /// The template can contain `${number}` which gets replaced with the PR number.
+    public func mergePR(repoRoot: String, prNumber: Int, commandTemplate: String) async throws -> MergeResult {
+        let expanded = commandTemplate.replacingOccurrences(of: "${number}", with: "\(prNumber)")
+        let parts = expanded.components(separatedBy: " ").filter { !$0.isEmpty }
+        guard parts.count >= 2 else { return .failure("Invalid merge command") }
+
+        // Resolve the executable (first part, e.g. "gh")
+        let executable = ShellCommand.findExecutable(parts[0]) ?? parts[0]
+        let arguments = Array(parts.dropFirst())
+
         let result = try await ShellCommand.run(
-            ghPath,
-            arguments: ["pr", "merge", "\(prNumber)"],
+            executable,
+            arguments: arguments,
             currentDirectory: repoRoot
         )
         if result.succeeded {

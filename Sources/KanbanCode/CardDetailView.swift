@@ -1127,7 +1127,8 @@ struct CardDetailView: View {
             mergeError = nil
             Task {
                 let gh = GhCliAdapter()
-                let result = try await gh.mergePR(repoRoot: repoRoot, prNumber: pr.number)
+                let settings = try await SettingsStore().read()
+                let result = try await gh.mergePR(repoRoot: repoRoot, prNumber: pr.number, commandTemplate: settings.github.mergeCommand)
                 isMerging = false
                 switch result {
                 case .success:

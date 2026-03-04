@@ -88,10 +88,14 @@ public struct GlobalViewSettings: Codable, Sendable {
 public struct GitHubSettings: Codable, Sendable {
     public var defaultFilter: String
     public var pollIntervalSeconds: Int
+    public var mergeCommand: String
 
-    public init(defaultFilter: String = "assignee:@me is:open", pollIntervalSeconds: Int = 60) {
+    public static let defaultMergeCommand = "gh pr merge ${number} --squash --delete-branch"
+
+    public init(defaultFilter: String = "assignee:@me is:open", pollIntervalSeconds: Int = 60, mergeCommand: String? = nil) {
         self.defaultFilter = defaultFilter
         self.pollIntervalSeconds = pollIntervalSeconds
+        self.mergeCommand = mergeCommand ?? Self.defaultMergeCommand
     }
 }
 

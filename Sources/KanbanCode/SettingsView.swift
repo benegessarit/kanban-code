@@ -129,6 +129,8 @@ struct GeneralSettingsView: View {
     @AppStorage("preferredEditorBundleId") private var editorBundleId: String = "dev.zed.Zed"
     @State private var installedEditors: [EditorDiscovery.Editor] = []
     @State private var showOnboarding = false
+    @State private var mergeCommand: String = GitHubSettings.defaultMergeCommand
+    @State private var mergeSaveTask: Task<Void, Never>?
 
     private let settingsStore = SettingsStore()
 
@@ -175,6 +177,24 @@ struct GeneralSettingsView: View {
                 statusRow("Mutagen", available: mutagenAvailable)
             }
 
+            Section("PR Merge") {
+                TextField("Merge command", text: $mergeCommand)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                    .onChange(of: mergeCommand) { scheduleMergeSave() }
+                Text("Use ${number} for the PR number. Default: \(GitHubSettings.defaultMergeCommand)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                HStack {
+                    Spacer()
+                    Button("Reset to Default") {
+                        mergeCommand = GitHubSettings.defaultMergeCommand
+                        scheduleMergeSave()
+                    }
+                    .controlSize(.small)
+                }
+            }
+
             Section("Settings File") {
                 HStack {
                     Text("~/.kanban-code/settings.json")
@@ -201,6 +221,11 @@ struct GeneralSettingsView: View {
         .onAppear {
             installedEditors = EditorDiscovery.installedEditors()
         }
+        .task {
+            if let settings = try? await settingsStore.read() {
+                mergeCommand = settings.github.mergeCommand
+            }
+        }
         .sheet(isPresented: $showOnboarding) {
             OnboardingWizard(
                 settingsStore: settingsStore,
@@ -209,6 +234,19 @@ struct GeneralSettingsView: View {
                     hooksInstalled = HookManager.isInstalled()
                 }
             )
+        }
+    }
+
+    private func scheduleMergeSave() {
+        mergeSaveTask?.cancel()
+        mergeSaveTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            do {
+                var settings = try await settingsStore.read()
+                settings.github.mergeCommand = mergeCommand.isEmpty ? GitHubSettings.defaultMergeCommand : mergeCommand
+                try await settingsStore.write(settings)
+            } catch {}
         }
     }
 
