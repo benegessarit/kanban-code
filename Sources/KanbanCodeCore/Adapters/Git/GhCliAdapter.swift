@@ -243,7 +243,7 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
             branchAliases[alias] = branch
             queryParts.append("""
             \(alias): pullRequests(headRefName: "\(branch)", first: 1, states: [OPEN, CLOSED, MERGED], orderBy: {field: CREATED_AT, direction: DESC}) {
-              nodes { number title state url headRefName reviewDecision reviews(states: APPROVED) { totalCount } }
+              nodes { number title state url headRefName reviewDecision mergeStateStatus reviews(states: APPROVED) { totalCount } }
             }
             """)
         }
@@ -254,7 +254,7 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
             numberAliases[alias] = number
             queryParts.append("""
             \(alias): pullRequest(number: \(number)) {
-              number title state url headRefName reviewDecision reviews(states: APPROVED) { totalCount }
+              number title state url headRefName reviewDecision mergeStateStatus reviews(states: APPROVED) { totalCount }
             }
             """)
         }
@@ -319,6 +319,7 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
         }
         let reviewDecision = item["reviewDecision"] as? String
         let approvalCount = (item["reviews"] as? [String: Any])?["totalCount"] as? Int ?? 0
+        let mergeStateStatus = item["mergeStateStatus"] as? String
         return PullRequest(
             number: number,
             title: title,
@@ -326,7 +327,8 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
             url: url,
             headRefName: headRefName,
             reviewDecision: reviewDecision,
-            approvalCount: approvalCount
+            approvalCount: approvalCount,
+            mergeStateStatus: mergeStateStatus
         )
     }
 

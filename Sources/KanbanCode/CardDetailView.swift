@@ -165,9 +165,10 @@ struct CardDetailView: View {
                             prSummaryPill(primary: primary)
                         }
 
-                        // Merge button (approved PRs only)
+                        // Merge button (based on GitHub mergeability)
                         if let primary = card.link.prLink,
-                           primary.status == .approved {
+                           let status = primary.status,
+                           status != .merged, status != .closed {
                             mergeButton(pr: primary)
                         }
 
@@ -1120,10 +1121,22 @@ struct CardDetailView: View {
         }
     }
 
+    private var isMergeable: Bool {
+        guard let ms = card.link.prLink?.mergeStateStatus?.uppercased() else { return false }
+        return ms == "MERGEABLE" || ms == "UNSTABLE" || ms == "HAS_HOOKS"
+    }
+
+    private var isMergeLoading: Bool {
+        guard let pr = card.link.prLink, let status = pr.status,
+              status != .merged, status != .closed else { return false }
+        return pr.mergeStateStatus == nil
+    }
+
     @ViewBuilder
     private func mergeButton(pr: PRLink) -> some View {
+        let canMerge = isMergeable
         Button {
-            guard !isMerging, let repoRoot = card.link.projectPath else { return }
+            guard canMerge, !isMerging, let repoRoot = card.link.projectPath else { return }
             isMerging = true
             mergeError = nil
             Task {
@@ -1144,25 +1157,25 @@ struct CardDetailView: View {
             }
         } label: {
             HStack(spacing: 4) {
-                if isMerging {
+                if isMerging || isMergeLoading {
                     ProgressView()
                         .controlSize(.small)
                 } else {
                     Image(systemName: "arrow.triangle.merge")
                 }
-                Text("Merge")
+                Text(canMerge || isMergeLoading ? "Merge" : "Merge Blocked")
             }
             .font(.system(size: 13))
-            .foregroundStyle(Color.green.opacity(0.8))
+            .foregroundStyle(canMerge ? Color.green.opacity(0.8) : Color.secondary.opacity(0.6))
             .padding(.horizontal, 12)
             .frame(height: 36)
-            .background(Color.green.opacity(0.08), in: Capsule())
+            .background((canMerge ? Color.green : Color.secondary).opacity(0.08), in: Capsule())
             .background(.ultraThinMaterial, in: Capsule())
         }
         .buttonStyle(HoverFeedbackStyle())
         .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
-        .disabled(isMerging)
-        .help("Merge pull request")
+        .disabled(!canMerge || isMerging)
+        .help(canMerge ? "Merge pull request" : "PR cannot be merged yet")
         .popover(isPresented: .init(get: { mergeError != nil }, set: { if !$0 { mergeError = nil } })) {
             if let err = mergeError {
                 Text(err)

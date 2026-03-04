@@ -307,9 +307,10 @@ public enum CardReconciler {
                         link.prLinks[idx].status = pr.status
                         link.prLinks[idx].url = pr.url
                         link.prLinks[idx].title = pr.title
+                        link.prLinks[idx].mergeStateStatus = pr.mergeStateStatus
                     } else {
                         KanbanCodeLog.info("reconciler", "Adding PR #\(pr.number) to card \(cardId.prefix(12)): status=\(pr.status)")
-                        link.prLinks.append(PRLink(number: pr.number, url: pr.url, status: pr.status, title: pr.title))
+                        link.prLinks.append(PRLink(number: pr.number, url: pr.url, status: pr.status, title: pr.title, mergeStateStatus: pr.mergeStateStatus))
                     }
                     linksById[cardId] = link
                 }

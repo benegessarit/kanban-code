@@ -1237,6 +1237,7 @@ public final class BoardStore: @unchecked Sendable {
                             mergedLinks[i].prLinks[j].status = pr.status
                             mergedLinks[i].prLinks[j].title = pr.title
                             mergedLinks[i].prLinks[j].url = pr.url
+                            mergedLinks[i].prLinks[j].mergeStateStatus = pr.mergeStateStatus
                         }
                     }
                 }

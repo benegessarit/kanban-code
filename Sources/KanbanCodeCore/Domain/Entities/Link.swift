@@ -62,6 +62,7 @@ public struct PRLink: Codable, Sendable, Equatable {
     public var approvalCount: Int?
     public var checkRuns: [CheckRun]?
     public var firstUnresolvedThreadURL: String?
+    public var mergeStateStatus: String?
 
     public init(
         number: Int,
@@ -72,7 +73,8 @@ public struct PRLink: Codable, Sendable, Equatable {
         body: String? = nil,
         approvalCount: Int? = nil,
         checkRuns: [CheckRun]? = nil,
-        firstUnresolvedThreadURL: String? = nil
+        firstUnresolvedThreadURL: String? = nil,
+        mergeStateStatus: String? = nil
     ) {
         self.number = number
         self.url = url
@@ -83,6 +85,7 @@ public struct PRLink: Codable, Sendable, Equatable {
         self.approvalCount = approvalCount
         self.checkRuns = checkRuns
         self.firstUnresolvedThreadURL = firstUnresolvedThreadURL
+        self.mergeStateStatus = mergeStateStatus
     }
 }
 

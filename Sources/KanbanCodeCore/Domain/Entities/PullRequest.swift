@@ -15,6 +15,7 @@ public struct PullRequest: Identifiable, Sendable {
     public var approvalCount: Int
     public var checkRuns: [CheckRun]
     public var firstUnresolvedThreadURL: String?
+    public var mergeStateStatus: String? // MERGEABLE, BLOCKED, DIRTY, BEHIND, DRAFT, UNSTABLE, HAS_HOOKS, UNKNOWN
 
     public init(
         number: Int,
@@ -28,7 +29,8 @@ public struct PullRequest: Identifiable, Sendable {
         body: String? = nil,
         approvalCount: Int = 0,
         checkRuns: [CheckRun] = [],
-        firstUnresolvedThreadURL: String? = nil
+        firstUnresolvedThreadURL: String? = nil,
+        mergeStateStatus: String? = nil
     ) {
         self.number = number
         self.title = title
@@ -42,6 +44,7 @@ public struct PullRequest: Identifiable, Sendable {
         self.approvalCount = approvalCount
         self.checkRuns = checkRuns
         self.firstUnresolvedThreadURL = firstUnresolvedThreadURL
+        self.mergeStateStatus = mergeStateStatus
     }
 
     /// Derive unified PR status with priority ordering.
