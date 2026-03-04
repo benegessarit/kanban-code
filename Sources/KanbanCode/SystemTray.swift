@@ -225,11 +225,11 @@ final class SystemTray: NSObject, @unchecked Sendable {
     }
 
     /// Stop the clawd helper when no more active sessions.
+    /// Also discovers and kills orphaned clawd processes from previous app instances.
     private func stopClawd() {
         if let app = clawdApp, !app.isTerminated {
             Self.log("stopping clawd: pid=\(app.processIdentifier)")
             app.terminate()
-            // Force-terminate after 2s if it doesn't respond
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                 if let app = self?.clawdApp, !app.isTerminated {
                     app.forceTerminate()
@@ -243,6 +243,15 @@ final class SystemTray: NSObject, @unchecked Sendable {
             proc.terminate()
         }
         clawdProcess = nil
+
+        // Kill any orphaned clawd from a previous app instance (crash, rebuild, etc.)
+        for app in NSWorkspace.shared.runningApplications where app.bundleIdentifier == Self.clawdBundleID && !app.isTerminated {
+            Self.log("stopping orphaned clawd: pid=\(app.processIdentifier)")
+            app.terminate()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                if !app.isTerminated { app.forceTerminate() }
+            }
+        }
     }
 
     // MARK: - Logging
