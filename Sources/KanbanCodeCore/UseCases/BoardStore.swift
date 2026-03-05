@@ -1369,13 +1369,11 @@ public final class BoardStore: @unchecked Sendable {
         // Use in-memory state as source of truth — same principle as reconcile().
         var links = Array(state.links.values)
 
-        let defaultFilter = settings.github.defaultFilter
         var fetchedIssueKeys: Set<String> = []
         var changed = false
 
         for project in settings.projects {
-            let filter = project.githubFilter ?? defaultFilter
-            guard !filter.isEmpty else { continue }
+            guard let filter = project.githubFilter, !filter.isEmpty else { continue }
 
             do {
                 let issues = try await ghAdapter.fetchIssues(repoRoot: project.effectiveRepoRoot, filter: filter)

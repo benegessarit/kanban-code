@@ -619,13 +619,11 @@ public final class BoardState: @unchecked Sendable {
 
         guard var links = try? await coordinationStore.readLinks() else { return }
 
-        let defaultFilter = settings.github.defaultFilter
         var fetchedIssueKeys: Set<String> = [] // "projectPath:issueNumber"
         var changed = false
 
         for project in settings.projects {
-            let filter = project.githubFilter ?? defaultFilter
-            guard !filter.isEmpty else { continue }
+            guard let filter = project.githubFilter, !filter.isEmpty else { continue }
 
             do {
                 let issues = try await ghAdapter.fetchIssues(repoRoot: project.effectiveRepoRoot, filter: filter)
