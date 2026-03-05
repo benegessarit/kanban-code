@@ -125,7 +125,8 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                                 status: pr.status, title: pr.title,
                                 approvalCount: pr.approvalCount > 0 ? pr.approvalCount : nil,
                                 checkRuns: pr.checkRuns.isEmpty ? nil : pr.checkRuns,
-                                firstUnresolvedThreadURL: pr.firstUnresolvedThreadURL
+                                firstUnresolvedThreadURL: pr.firstUnresolvedThreadURL,
+                                mergeStateStatus: pr.mergeStateStatus
                             ))
                         }
                     }
@@ -268,18 +269,27 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
 
         // Mirrors claude-pushover's do_notify() exactly:
         // 1. Get last assistant response
-        // 2. If multi-line: render image + use text preview
-        // 3. If single line: use as-is
-        // 4. No response: "Waiting for input"
+        // 2. If multi-line + render enabled: render image, message = "Task completed"
+        // 3. If multi-line + no image: truncate to 1000 chars
+        // 4. If single line: use as-is
+        // 5. No response: "Waiting for input"
         var message = "Waiting for input"
         var imageData: Data?
+
+        let renderMarkdown = (try? await SettingsStore().read())?.notifications.renderMarkdownImage ?? false
 
         if let transcriptPath = link?.sessionLink?.sessionPath {
             if let lastText = await TranscriptNotificationReader.lastAssistantText(transcriptPath: transcriptPath) {
                 let lineCount = lastText.components(separatedBy: "\n").count
                 if lineCount > 1 {
-                    imageData = await MarkdownImageRenderer.renderToImage(markdown: lastText)
-                    message = TranscriptNotificationReader.textPreview(lastText)
+                    if renderMarkdown {
+                        imageData = await MarkdownImageRenderer.renderToImage(markdown: lastText)
+                    }
+                    if imageData != nil {
+                        message = "Task completed"
+                    } else {
+                        message = String(lastText.prefix(1000)) + (lastText.count > 1000 ? "..." : "")
+                    }
                 } else {
                     message = lastText
                 }

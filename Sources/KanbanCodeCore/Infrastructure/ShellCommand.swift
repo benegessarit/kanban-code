@@ -49,7 +49,8 @@ public enum ShellCommand {
     public static func run(
         _ executable: String,
         arguments: [String] = [],
-        currentDirectory: String? = nil
+        currentDirectory: String? = nil,
+        stdin: String? = nil
     ) async throws -> Result {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -64,6 +65,13 @@ public enum ShellCommand {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+
+        if let stdin, let data = stdin.data(using: .utf8) {
+            let stdinPipe = Pipe()
+            process.standardInput = stdinPipe
+            stdinPipe.fileHandleForWriting.write(data)
+            stdinPipe.fileHandleForWriting.closeFile()
+        }
 
         try process.run()
 
