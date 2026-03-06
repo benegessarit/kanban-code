@@ -508,6 +508,7 @@ public enum Reducer {
             if let idx = link.prLinks.firstIndex(where: { $0.number == prNumber }) {
                 link.prLinks[idx].status = .merged
             }
+            link.column = .done
             link.updatedAt = .now
             state.links[cardId] = link
             return [.upsertLink(link)]

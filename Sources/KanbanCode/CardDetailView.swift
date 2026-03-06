@@ -1221,7 +1221,7 @@ struct CardDetailView: View {
                     isMerging = false
                     switch result {
                     case .success(let warning):
-                        copyToast = "PR #\(pr.number) merged"
+                        showCopyToast("PR #\(pr.number) merged")
                         onPRMerged(pr.number)
                         if let warning, !warning.isEmpty {
                             KanbanCodeLog.info("merge", "PR #\(pr.number) merged with warning: \(warning)")
