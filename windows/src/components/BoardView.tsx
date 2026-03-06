@@ -1,63 +1,42 @@
 import {
-  DndContext,
-  DragEndEvent,
-  DragOverlay,
-  DragStartEvent,
-  PointerSensor,
-  useSensor,
-  useSensors,
+  DndContext, DragEndEvent, DragOverlay, DragStartEvent,
+  PointerSensor, useSensor, useSensors,
 } from "@dnd-kit/core";
 import { useState } from "react";
 import { useBoardStore } from "../store/boardStore";
 import { COLUMNS, type CardDto, type KanbanColumn } from "../types";
+import { useTheme, t } from "../theme";
 import CardView from "./CardView";
 import ColumnView from "./ColumnView";
 
 export default function BoardView() {
-  const { moveCard, isLoading } = useBoardStore();
+  const { moveCard, isLoading, cards, setNewTaskOpen } = useBoardStore();
   const [draggingCard, setDraggingCard] = useState<CardDto | null>(null);
+  const { theme } = useTheme();
+  const c = t(theme);
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 4 },
-    })
-  );
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
-  const handleDragStart = (event: DragStartEvent) => {
-    const card = event.active.data.current as CardDto;
-    setDraggingCard(card);
-  };
-
+  const handleDragStart = (event: DragStartEvent) => setDraggingCard(event.active.data.current as CardDto);
   const handleDragEnd = (event: DragEndEvent) => {
     setDraggingCard(null);
     const { active, over } = event;
     if (!over) return;
-
-    const cardId = active.id as string;
-    const targetColumn = over.id as KanbanColumn;
     const card = active.data.current as CardDto;
-
-    if (card.link.column !== targetColumn) {
-      moveCard(cardId, targetColumn);
-    }
+    if (card.link.column !== over.id) moveCard(active.id as string, over.id as KanbanColumn);
   };
 
-  return (
-    <div className="flex flex-1 overflow-hidden">
-      <DndContext
-        sensors={sensors}
-        onDragStart={handleDragStart}
-        onDragEnd={handleDragEnd}
-      >
-        <div className="flex flex-1 gap-0 overflow-x-auto p-3">
-          {COLUMNS.map((column) => (
-            <ColumnView key={column} column={column} />
-          ))}
-        </div>
+  const isEmpty = cards.length === 0 && !isLoading;
 
+  return (
+    <div className="flex flex-1 overflow-hidden relative">
+      <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+        <div className="flex flex-1 gap-1.5 overflow-x-auto p-2">
+          {COLUMNS.map((column) => <ColumnView key={column} column={column} />)}
+        </div>
         <DragOverlay>
           {draggingCard && (
-            <div className="rotate-1 opacity-90 pointer-events-none">
+            <div className="opacity-90 pointer-events-none">
               <CardView card={draggingCard} isDragging />
             </div>
           )}
@@ -65,8 +44,34 @@ export default function BoardView() {
       </DndContext>
 
       {isLoading && (
-        <div className="fixed top-12 left-1/2 -translate-x-1/2 text-xs text-zinc-500 bg-[#141417] px-3 py-1 rounded-full border border-[#2a2a32]">
-          Refreshing...
+        <div
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-20 px-4 py-1.5 rounded-full animate-fade-in"
+          style={{ background: c.bgDialog, border: `1px solid ${c.borderBright}` }}
+        >
+          <div className="flex items-center gap-2">
+            <div className="w-3.5 h-3.5 border-2 border-[#4f8ef7] border-t-transparent rounded-full animate-spin" />
+            <span className="text-[12px]" style={{ color: c.textMuted }}>Refreshing...</span>
+          </div>
+        </div>
+      )}
+
+      {isEmpty && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-4 animate-fade-in">
+            <p className="text-[15px]" style={{ color: c.textSecondary }}>No sessions found</p>
+            <p className="text-[13px]" style={{ color: c.textDim }}>
+              Create a new task or start a Claude session to get going.
+            </p>
+            <button
+              onClick={() => setNewTaskOpen(true)}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#4f8ef7] hover:bg-[#5b97fa] text-white text-[13px] font-semibold transition-colors mt-2"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              New Task
+            </button>
+          </div>
         </div>
       )}
     </div>

@@ -10,7 +10,6 @@ export default function NewTaskDialog() {
   const [submitting, setSubmitting] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
 
-  // Collect unique project paths from existing cards
   const projects = [...new Set(
     cards
       .map((c) => c.link.projectPath ?? c.session?.projectPath)
@@ -29,12 +28,7 @@ export default function NewTaskDialog() {
     if (!prompt.trim()) return;
     setSubmitting(true);
     try {
-      await createCard(
-        prompt.trim(),
-        title.trim() || null,
-        project || ".",
-        launch
-      );
+      await createCard(prompt.trim(), title.trim() || null, project || ".", launch);
       setNewTaskOpen(false);
     } finally {
       setSubmitting(false);
@@ -43,20 +37,30 @@ export default function NewTaskDialog() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
+      className="fixed inset-0 z-50 flex items-center justify-center glass-overlay animate-fade-in"
       onClick={() => setNewTaskOpen(false)}
     >
       <div
-        className="w-[480px] bg-[#141417] border border-[#3a3a44] rounded-xl shadow-2xl"
+        className="w-[520px] bg-[#141417] border border-white/10 rounded-xl shadow-2xl animate-slide-up"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="px-5 py-4 border-b border-[#2a2a32]">
-          <h2 className="text-sm font-semibold text-zinc-200">New Task</h2>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.06]">
+          <h2 className="text-[16px] font-semibold text-zinc-100">New Task</h2>
+          <button
+            onClick={() => setNewTaskOpen(false)}
+            className="text-zinc-500 hover:text-zinc-300 transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="px-5 py-4 flex flex-col gap-4">
+        <form onSubmit={handleSubmit} className="px-5 py-5 flex flex-col gap-5">
+          {/* Prompt */}
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+            <label className="block text-[13px] font-medium text-zinc-300 mb-2">
               Prompt
             </label>
             <textarea
@@ -65,72 +69,76 @@ export default function NewTaskDialog() {
               placeholder="Describe the task for Claude..."
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              className="w-full bg-[#1c1c21] border border-[#2a2a32] focus:border-[#4f8ef7]/50 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 outline-none resize-none transition-colors leading-relaxed"
+              className="w-full bg-[#0a0a0c] border border-white/10 focus:border-[#4f8ef7]/50 rounded-lg px-3.5 py-3 text-[14px] text-zinc-100 placeholder-zinc-600 outline-none resize-none transition-colors leading-relaxed"
             />
           </div>
 
+          {/* Title */}
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-              Title <span className="text-zinc-600">(optional)</span>
+            <label className="block text-[13px] font-medium text-zinc-300 mb-2">
+              Title <span className="text-zinc-600 font-normal">(optional)</span>
             </label>
             <input
               type="text"
               placeholder="Short title for the board card"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="w-full bg-[#1c1c21] border border-[#2a2a32] focus:border-[#4f8ef7]/50 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 outline-none transition-colors"
+              className="w-full bg-[#0a0a0c] border border-white/10 focus:border-[#4f8ef7]/50 rounded-lg px-3.5 py-2.5 text-[14px] text-zinc-100 placeholder-zinc-600 outline-none transition-colors"
             />
           </div>
 
+          {/* Project */}
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+            <label className="block text-[13px] font-medium text-zinc-300 mb-2">
               Project
             </label>
             {projects.length > 0 ? (
               <select
                 value={project}
                 onChange={(e) => setProject(e.target.value)}
-                className="w-full bg-[#1c1c21] border border-[#2a2a32] focus:border-[#4f8ef7]/50 rounded-lg px-3 py-2 text-sm text-zinc-200 outline-none transition-colors"
+                className="w-full bg-[#0a0a0c] border border-white/10 focus:border-[#4f8ef7]/50 rounded-lg px-3.5 py-2.5 text-[14px] text-zinc-100 outline-none transition-colors"
               >
                 {projects.map((p) => (
                   <option key={p} value={p}>
-                    {p.split("/").pop() ?? p}
+                    {p.split(/[/\\]/).pop() ?? p}
                   </option>
                 ))}
               </select>
             ) : (
               <input
                 type="text"
-                placeholder="/path/to/project"
+                placeholder="C:\path\to\project"
                 value={project}
                 onChange={(e) => setProject(e.target.value)}
-                className="w-full bg-[#1c1c21] border border-[#2a2a32] focus:border-[#4f8ef7]/50 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 outline-none transition-colors"
+                className="w-full bg-[#0a0a0c] border border-white/10 focus:border-[#4f8ef7]/50 rounded-lg px-3.5 py-2.5 text-[14px] text-zinc-100 placeholder-zinc-600 outline-none transition-colors"
               />
             )}
           </div>
 
-          <label className="flex items-center gap-2 cursor-pointer select-none">
+          {/* Launch toggle */}
+          <label className="flex items-center gap-3 cursor-pointer select-none">
             <input
               type="checkbox"
               checked={launch}
               onChange={(e) => setLaunch(e.target.checked)}
-              className="w-3.5 h-3.5 rounded accent-[#4f8ef7]"
+              className="w-4 h-4 rounded accent-[#4f8ef7] bg-[#0a0a0c] border-white/10"
             />
-            <span className="text-xs text-zinc-400">Start immediately in terminal</span>
+            <span className="text-[13px] text-zinc-300">Start immediately in terminal</span>
           </label>
 
-          <div className="flex gap-2 pt-1">
+          {/* Buttons */}
+          <div className="flex gap-3 pt-1">
             <button
               type="button"
               onClick={() => setNewTaskOpen(false)}
-              className="flex-1 py-2 rounded-lg border border-[#2a2a32] text-xs text-zinc-400 hover:text-zinc-200 hover:border-[#3a3a44] transition-colors"
+              className="flex-1 py-2.5 rounded-lg border border-white/10 text-[13px] text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!prompt.trim() || submitting}
-              className="flex-1 py-2 rounded-lg bg-[#4f8ef7] hover:bg-[#5b97fa] disabled:opacity-40 text-white text-xs font-medium transition-colors"
+              className="flex-1 py-2.5 rounded-lg bg-[#4f8ef7] hover:bg-[#5b97fa] disabled:opacity-40 text-white text-[13px] font-semibold transition-colors"
             >
               {submitting ? "Creating..." : launch ? "Create & Start" : "Create Task"}
             </button>

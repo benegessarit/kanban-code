@@ -9,12 +9,41 @@ pub fn is_wsl() -> bool {
 
 /// Launch a brand-new Claude CLI session for a prompt in a given project dir.
 ///
-/// On WSL/Linux: `cd '<project>' && claude '<prompt>'` via bash
-/// On Windows:   `cd /d "C:\project" && claude "prompt"` via cmd.exe
+/// On Windows: tries WSL first (where Claude Code CLI typically lives),
+/// then falls back to native cmd.
+/// On WSL/Linux: uses bash directly.
 pub async fn launch_new_claude_session(prompt: &str, project: &str) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
-        // cmd.exe syntax: double-quote the path and prompt, escape internal quotes
+        // If the project path looks like a WSL path (/home/...) or a UNC WSL path,
+        // route through WSL. Otherwise try native Windows.
+        let is_wsl_path = project.starts_with("/")
+            || project.starts_with("\\\\wsl")
+            || project.contains("\\wsl$\\")
+            || project.contains("\\wsl.localhost\\");
+
+        if is_wsl_path {
+            // Convert UNC path to Linux path if needed
+            let linux_path = unc_to_linux_path(project);
+            let safe_project = linux_path.replace('\'', "'\\''");
+            let safe_prompt = prompt.replace('\'', "'\\''");
+            let wsl_cmd = format!("cd '{}' && claude '{}'", safe_project, safe_prompt);
+
+            let wt = tokio::process::Command::new("wt")
+                .args(["new-tab", "wsl.exe", "--", "bash", "-lic", &wsl_cmd])
+                .spawn();
+            if wt.is_ok() {
+                return Ok(());
+            }
+            let cmd = tokio::process::Command::new("cmd")
+                .args(["/c", "start", "wsl.exe", "--", "bash", "-lic", &wsl_cmd])
+                .spawn();
+            if cmd.is_ok() {
+                return Ok(());
+            }
+        }
+
+        // Native Windows fallback
         let safe_project = project.replace('"', "\"\"");
         let safe_prompt = prompt.replace('"', "\"\"");
         let command = format!("cd /d \"{}\" && claude \"{}\"", safe_project, safe_prompt);
@@ -23,7 +52,6 @@ pub async fn launch_new_claude_session(prompt: &str, project: &str) -> Result<()
 
     #[cfg(not(target_os = "windows"))]
     {
-        // bash syntax: single-quote the path and prompt
         let safe_project = project.replace('\'', "'\\''");
         let safe_prompt = prompt.replace('\'', "'\\''");
         let command = format!("cd '{}' && claude '{}'", safe_project, safe_prompt);
@@ -31,13 +59,59 @@ pub async fn launch_new_claude_session(prompt: &str, project: &str) -> Result<()
     }
 }
 
+/// Convert a \\wsl$\Distro\path or \\wsl.localhost\Distro\path to /path
+#[cfg(target_os = "windows")]
+fn unc_to_linux_path(path: &str) -> String {
+    // \\wsl$\Ubuntu\home\user\project -> /home/user/project
+    // \\wsl.localhost\Ubuntu\home\user\project -> /home/user/project
+    let normalized = path.replace('\\', "/");
+    // Remove //wsl$/Distro or //wsl.localhost/Distro prefix
+    if let Some(rest) = normalized.strip_prefix("//wsl.localhost/") {
+        if let Some(pos) = rest.find('/') {
+            return rest[pos..].to_string();
+        }
+    }
+    if let Some(rest) = normalized.strip_prefix("//wsl$/") {
+        if let Some(pos) = rest.find('/') {
+            return rest[pos..].to_string();
+        }
+    }
+    // Already a Linux path
+    path.to_string()
+}
+
 /// Launch a Claude CLI session resume in a new terminal window.
 ///
-/// WSL: uses `wsl.exe` to open Windows Terminal with Claude running in WSL.
-/// Fallback: tries common Linux terminal emulators.
+/// On native Windows: tries running via WSL first (since Claude Code CLI
+/// sessions are typically created inside WSL), then falls back to native cmd.
 pub async fn launch_claude_session(session_id: &str) -> Result<()> {
-    let command = format!("claude --resume {}", session_id);
-    launch_terminal_command(&command).await
+    #[cfg(target_os = "windows")]
+    {
+        // Try launching via WSL in Windows Terminal first
+        let wsl_cmd = format!("claude --resume {}", session_id);
+        let wt = tokio::process::Command::new("wt")
+            .args(["new-tab", "wsl.exe", "--", "bash", "-lic", &wsl_cmd])
+            .spawn();
+        if wt.is_ok() {
+            return Ok(());
+        }
+        // Fallback: cmd start with wsl
+        let cmd = tokio::process::Command::new("cmd")
+            .args(["/c", "start", "wsl.exe", "--", "bash", "-lic", &wsl_cmd])
+            .spawn();
+        if cmd.is_ok() {
+            return Ok(());
+        }
+        // Last resort: native Windows claude
+        let native_cmd = format!("claude --resume {}", session_id);
+        return launch_terminal_command(&native_cmd).await;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let command = format!("claude --resume {}", session_id);
+        launch_terminal_command(&command).await
+    }
 }
 
 /// Internal: open a new terminal window and run `command` inside it.
