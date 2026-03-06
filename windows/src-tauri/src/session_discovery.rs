@@ -33,65 +33,149 @@ impl Session {
     }
 }
 
-/// Discovers Claude Code sessions by scanning ~/.claude/projects/.
+/// Discovers Claude Code sessions by scanning multiple directories.
 pub struct SessionDiscovery {
-    claude_dir: PathBuf,
+    claude_dirs: Vec<PathBuf>,
 }
 
 impl SessionDiscovery {
     pub fn new(claude_dir: Option<PathBuf>) -> Self {
-        let dir = claude_dir.unwrap_or_else(|| resolve_claude_dir());
-        Self { claude_dir: dir }
+        let dirs = match claude_dir {
+            Some(d) => vec![d],
+            None => resolve_all_claude_dirs(),
+        };
+        Self { claude_dirs: dirs }
     }
 }
 
-/// Resolve the Claude projects directory, handling native Windows and WSL.
-///
-/// Priority order:
-///   1. Native Windows: %APPDATA%\Claude\projects
-///   2. WSL: /mnt/c/Users/<username>/AppData/Roaming/Claude/projects
-///   3. Linux/macOS fallback: ~/.claude/projects
-fn resolve_claude_dir() -> PathBuf {
-    // Native Windows
+/// Collect ALL Claude projects directories that exist on this system.
+/// On Windows this includes:
+///   1. %USERPROFILE%\.claude\projects  (Claude Code CLI on native Windows)
+///   2. %APPDATA%\Claude\projects       (Claude Desktop app)
+///   3. \\wsl$\<distro>\home\<user>\.claude\projects  (Claude Code CLI in WSL)
+fn resolve_all_claude_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
     #[cfg(target_os = "windows")]
     {
-        let appdata = std::env::var("APPDATA").unwrap_or_default();
-        let p = PathBuf::from(&appdata).join("Claude").join("projects");
-        if p.exists() {
-            return p;
-        }
-    }
-
-    // WSL detection: check /proc/version for "microsoft" (case-insensitive)
-    if is_wsl() {
-        // Determine the Windows username from /mnt/c/Users
-        if let Some(p) = wsl_claude_dir() {
+        // 1. Native Windows Claude Code CLI: %USERPROFILE%\.claude\projects
+        if let Ok(profile) = std::env::var("USERPROFILE") {
+            let p = PathBuf::from(&profile).join(".claude").join("projects");
             if p.exists() {
-                return p;
+                dirs.push(p);
+            }
+        }
+
+        // 2. Claude Desktop app: %APPDATA%\Claude\projects
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = PathBuf::from(&appdata).join("Claude").join("projects");
+            if p.exists() {
+                dirs.push(p);
+            }
+        }
+
+        // 3. WSL distros via UNC paths: \\wsl$\ and \\wsl.localhost\
+        for wsl_root in &["\\\\wsl$", "\\\\wsl.localhost"] {
+            let root = PathBuf::from(wsl_root);
+            if let Ok(distros) = std::fs::read_dir(&root) {
+                for distro_entry in distros.flatten() {
+                    let home_dir = distro_entry.path().join("home");
+                    if let Ok(users) = std::fs::read_dir(&home_dir) {
+                        for user_entry in users.flatten() {
+                            let p = user_entry.path().join(".claude").join("projects");
+                            if p.exists() {
+                                dirs.push(p);
+                            }
+                        }
+                    }
+                    // Also check /root/.claude/projects
+                    let root_p = distro_entry.path().join("root").join(".claude").join("projects");
+                    if root_p.exists() {
+                        dirs.push(root_p);
+                    }
+                }
+            }
+        }
+
+        // 4. Fallback: ask wsl.exe for the home dir path directly
+        //    This works even if UNC path enumeration fails.
+        if let Ok(output) = std::process::Command::new("wsl.exe")
+            .args(["-e", "bash", "-c", "echo $HOME"])
+            .output()
+        {
+            let wsl_home = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !wsl_home.is_empty() {
+                // Convert /home/user to \\wsl.localhost\<distro>\home\user
+                // Get default distro name
+                if let Ok(distro_out) = std::process::Command::new("wsl.exe")
+                    .args(["-e", "bash", "-c", "cat /etc/os-release | grep ^ID= | cut -d= -f2"])
+                    .output()
+                {
+                    let distro_id = String::from_utf8_lossy(&distro_out.stdout).trim().to_string();
+                    // Try common distro names: the ID, capitalized, and well-known names
+                    let candidates: Vec<String> = vec![
+                        distro_id.clone(),
+                        capitalize(&distro_id),
+                        format!("{}-22.04", distro_id),
+                        "Ubuntu".to_string(),
+                        "Ubuntu-22.04".to_string(),
+                        "Ubuntu-24.04".to_string(),
+                        "Debian".to_string(),
+                    ];
+                    for wsl_root in &["\\\\wsl.localhost", "\\\\wsl$"] {
+                        for name in &candidates {
+                            let p = PathBuf::from(wsl_root)
+                                .join(name)
+                                .join(wsl_home.trim_start_matches('/'))
+                                .join(".claude")
+                                .join("projects");
+                            if p.exists() && !dirs.contains(&p) {
+                                dirs.push(p);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
-    // Fallback: ~/.claude/projects (Linux, macOS, plain WSL home)
-    dirs::home_dir()
-        .expect("no home dir")
-        .join(".claude")
-        .join("projects")
-}
+    #[cfg(not(target_os = "windows"))]
+    {
+        // WSL or Linux/macOS: check native home dir
+        if let Some(home) = dirs::home_dir() {
+            let p = home.join(".claude").join("projects");
+            if p.exists() {
+                dirs.push(p);
+            }
+        }
 
-/// Returns true when running inside WSL (delegates to shell_command).
-fn is_wsl() -> bool {
-    crate::shell_command::is_wsl()
+        // If inside WSL, also check the Windows-side paths
+        if crate::shell_command::is_wsl() {
+            if let Some(p) = wsl_claude_dir() {
+                if p.exists() {
+                    dirs.push(p);
+                }
+            }
+        }
+    }
+
+    // Fallback: if nothing found, at least try the home dir
+    if dirs.is_empty() {
+        if let Some(home) = dirs::home_dir() {
+            dirs.push(home.join(".claude").join("projects"));
+        }
+    }
+
+    dirs
 }
 
 /// Find the Claude projects dir via the Windows AppData path mounted under /mnt/c.
-/// Tries each directory under /mnt/c/Users/ and returns the first match.
+#[cfg(not(target_os = "windows"))]
 fn wsl_claude_dir() -> Option<PathBuf> {
     let users_dir = PathBuf::from("/mnt/c/Users");
     if !users_dir.exists() {
         return None;
     }
-    // Try $USERPROFILE env var first (WSL often sets this)
     if let Ok(profile) = std::env::var("USERPROFILE") {
         let p = PathBuf::from(profile)
             .join("AppData")
@@ -102,7 +186,6 @@ fn wsl_claude_dir() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    // Scan /mnt/c/Users/<name>/AppData/Roaming/Claude/projects
     let entries = std::fs::read_dir(&users_dir).ok()?;
     for entry in entries.flatten() {
         let candidate = entry
@@ -118,17 +201,42 @@ fn wsl_claude_dir() -> Option<PathBuf> {
     None
 }
 
+#[cfg(target_os = "windows")]
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().to_string() + c.as_str(),
+    }
+}
+
 impl SessionDiscovery {
-
     pub async fn discover_sessions(&self) -> Result<Vec<Session>> {
-        if !self.claude_dir.exists() {
-            return Ok(vec![]);
-        }
-
         let mut sessions_by_id: std::collections::HashMap<String, Session> =
             std::collections::HashMap::new();
 
-        let mut dir_entries = tokio::fs::read_dir(&self.claude_dir).await?;
+        for claude_dir in &self.claude_dirs {
+            if !claude_dir.exists() {
+                continue;
+            }
+            self.scan_directory(claude_dir, &mut sessions_by_id).await?;
+        }
+
+        let mut sessions: Vec<Session> = sessions_by_id
+            .into_values()
+            .filter(|s| s.message_count > 0)
+            .collect();
+
+        sessions.sort_by(|a, b| b.modified_time.cmp(&a.modified_time));
+        Ok(sessions)
+    }
+
+    async fn scan_directory(
+        &self,
+        claude_dir: &PathBuf,
+        sessions_by_id: &mut std::collections::HashMap<String, Session>,
+    ) -> Result<()> {
+        let mut dir_entries = tokio::fs::read_dir(claude_dir).await?;
         while let Some(entry) = dir_entries.next_entry().await? {
             let dir_path = entry.path();
             if !dir_path.is_dir() {
@@ -141,7 +249,6 @@ impl SessionDiscovery {
                 .unwrap_or("")
                 .to_string();
 
-            // Scan .jsonl files
             let mut sub_entries = match tokio::fs::read_dir(&dir_path).await {
                 Ok(e) => e,
                 Err(_) => continue,
@@ -203,13 +310,6 @@ impl SessionDiscovery {
                 }
             }
         }
-
-        let mut sessions: Vec<Session> = sessions_by_id
-            .into_values()
-            .filter(|s| s.message_count > 0)
-            .collect();
-
-        sessions.sort_by(|a, b| b.modified_time.cmp(&a.modified_time));
-        Ok(sessions)
+        Ok(())
     }
 }
