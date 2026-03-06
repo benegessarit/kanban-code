@@ -261,6 +261,96 @@ fn start_polling(app: tauri::AppHandle) {
     });
 }
 
+// ── PR polling ───────────────────────────────────────────────────────────────
+
+fn start_pr_polling(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        // Offset the first run by 15s so it doesn't hit at the same time as the
+        // board polling startup
+        tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let state = app.state::<AppState>();
+            if let Ok(links) = state.coordination_store.read_links().await {
+                // Collect unique project paths that have a worktree branch
+                let mut project_paths: Vec<String> = links
+                    .iter()
+                    .filter_map(|l| {
+                        if l.worktree_link.as_ref().and_then(|wl| wl.branch.as_ref()).is_some() {
+                            l.project_path.clone()
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                project_paths.dedup();
+
+                let mut changed = false;
+                let mut updated_links = links.clone();
+
+                for project in &project_paths {
+                    if let Ok(prs) = gh_cli::fetch_prs(project).await {
+                        for pr in &prs {
+                            // Find card whose worktree branch matches this PR's head ref
+                            for link in &mut updated_links {
+                                if link
+                                    .worktree_link
+                                    .as_ref()
+                                    .and_then(|wl| wl.branch.as_ref())
+                                    .map(|b| b == &pr.head_ref)
+                                    .unwrap_or(false)
+                                {
+                                    let pr_link = coordination_store::PrLink {
+                                        number: pr.number,
+                                        url: Some(pr.url.clone()),
+                                        status: Some(pr.state.clone()),
+                                        title: Some(pr.title.clone()),
+                                        body: None,
+                                        approval_count: None,
+                                        unresolved_threads: None,
+                                        merge_state_status: pr.merge_state_status.clone(),
+                                    };
+                                    // Update if number matches, otherwise add
+                                    if let Some(existing) =
+                                        link.pr_links.iter_mut().find(|p| p.number == pr.number)
+                                    {
+                                        *existing = pr_link;
+                                    } else {
+                                        link.pr_links.push(pr_link);
+                                        changed = true;
+                                    }
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if changed {
+                    let _ = state.coordination_store.write_links(&updated_links).await;
+                    // Trigger a board refresh so the UI sees the new PR data
+                    let mut bs = state.board_state.lock().await;
+                    if let Ok(()) = bs
+                        .refresh(
+                            &state.session_discovery,
+                            &state.coordination_store,
+                            &state.settings_store,
+                        )
+                        .await
+                    {
+                        let dto = bs.to_dto();
+                        drop(bs);
+                        let _ = app.emit("board-updated", dto);
+                    }
+                }
+            }
+        }
+    });
+}
+
 // ── Tray menu ────────────────────────────────────────────────────────────────
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -341,6 +431,7 @@ pub fn run() {
         .setup(|app| {
             build_tray(app)?;
             start_polling(app.handle().clone());
+            start_pr_polling(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())
