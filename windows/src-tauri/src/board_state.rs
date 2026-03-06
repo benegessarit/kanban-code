@@ -33,6 +33,8 @@ pub struct BoardStateDto {
 pub struct BoardState {
     pub cards: Vec<CardDto>,
     pub last_refresh: Option<DateTime<Utc>>,
+    /// Previous activity state per card id, used to detect transitions
+    prev_activity: HashMap<String, String>,
 }
 
 impl BoardState {
@@ -144,6 +146,28 @@ impl BoardState {
             cards: self.cards.clone(),
             last_refresh: self.last_refresh,
         }
+    }
+
+    /// Returns cards that just transitioned to NeedsAttention (Claude finished a turn).
+    /// Should be called after `refresh()` to drive OS notifications.
+    pub fn drain_notification_candidates(&mut self) -> Vec<CardDto> {
+        let mut notify = Vec::new();
+        let mut new_states: HashMap<String, String> = HashMap::new();
+
+        for card in &self.cards {
+            let current = card.activity_state.as_deref().unwrap_or("").to_string();
+            new_states.insert(card.id.clone(), current.clone());
+
+            let prev = self.prev_activity.get(&card.id).map(|s| s.as_str()).unwrap_or("");
+
+            // Notify when Claude just stopped working and needs the user's attention
+            if current == "needsAttention" && prev == "activelyWorking" {
+                notify.push(card.clone());
+            }
+        }
+
+        self.prev_activity = new_states;
+        notify
     }
 }
 

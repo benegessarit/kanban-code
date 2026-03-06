@@ -22,6 +22,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager,
 };
+use tauri_plugin_notification::NotificationExt;
 use tokio::sync::Mutex;
 
 pub struct AppState {
@@ -244,9 +245,17 @@ fn start_polling(app: tauri::AppHandle) {
                 )
                 .await
             {
+                let notify_cards = bs.drain_notification_candidates();
                 let dto = bs.to_dto();
                 drop(bs);
                 let _ = app.emit("board-updated", dto);
+
+                // Send OS notifications for cards where Claude just finished a turn
+                for card in notify_cards {
+                    let title = card.display_title.clone();
+                    let body = "Claude finished — your input is needed.".to_string();
+                    let _ = app.notification().builder().title(title).body(body).show();
+                }
             }
         }
     });
