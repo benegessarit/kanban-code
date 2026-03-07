@@ -28,6 +28,7 @@ struct DroppableColumnView: View {
     let cards: [KanbanCodeCard]
     @Binding var selectedCardId: String?
     var dragState: DragState
+    var canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool = { _, _ in true }
     var isRefreshingBacklog: Bool = false
     var onMoveCard: (String, KanbanCodeColumn) -> Void = { _, _ in }
     var onMergeCards: (String, String) -> Void = { _, _ in }   // (sourceId, targetId)
@@ -49,6 +50,14 @@ struct DroppableColumnView: View {
     @State private var isTargeted = false
     @State private var renamingCardId: String?
     @State private var cardFrames: [String: CGRect] = [:]
+
+    private var isCurrentDropAllowed: Bool {
+        guard let draggingCard = dragState.draggingCard else { return true }
+        if dragState.sourceColumn == column || dragState.mergeTargetId != nil {
+            return true
+        }
+        return canDropCard(draggingCard, column)
+    }
 
     var body: some View {
         ScrollView {
@@ -171,10 +180,17 @@ struct DroppableColumnView: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(
                     isTargeted && dragState.mergeTargetId == nil
-                        ? Color.accentColor.opacity(0.5) : Color.clear,
+                        ? (isCurrentDropAllowed ? Color.accentColor.opacity(0.5) : Color.red.opacity(0.55))
+                        : Color.clear,
                     lineWidth: isTargeted ? 2 : 0
                 )
         )
+        .overlay(alignment: .topTrailing) {
+            if isTargeted, dragState.mergeTargetId == nil, !isCurrentDropAllowed {
+                InvalidDropBadge()
+                    .padding(10)
+            }
+        }
         // Header pill floating on top of the column
         .overlay(alignment: .top) {
             HStack {
@@ -221,6 +237,7 @@ struct DroppableColumnView: View {
             cardFrames: cardFrames,
             dragState: dragState,
             isTargeted: $isTargeted,
+            canDropCard: canDropCard,
             onMoveCard: onMoveCard,
             onMergeCards: onMergeCards,
             onReorderCard: onReorderCard
@@ -239,6 +256,7 @@ struct ColumnDropDelegate: DropDelegate {
     let cardFrames: [String: CGRect]
     let dragState: DragState
     @Binding var isTargeted: Bool
+    let canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool
     let onMoveCard: (String, KanbanCodeColumn) -> Void
     let onMergeCards: (String, String) -> Void
     let onReorderCard: (String, String, Bool) -> Void  // (cardId, targetCardId, above)
@@ -254,7 +272,11 @@ struct ColumnDropDelegate: DropDelegate {
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         updateTargets(at: info.location)
-        return DropProposal(operation: .move)
+        guard let sourceCard = dragState.draggingCard else { return nil }
+        if isSameColumn || dragState.mergeTargetId != nil || canDropCard(sourceCard, column) {
+            return DropProposal(operation: .move)
+        }
+        return nil
     }
 
     func dropExited(info: DropInfo) {
@@ -290,6 +312,7 @@ struct ColumnDropDelegate: DropDelegate {
 
         // Otherwise, column-level move
         guard let source = dragState.sourceColumn, source != column else { return false }
+        guard canDropCard(sourceCard, column) else { return false }
         onMoveCard(sourceCard.id, column)
         return true
     }
@@ -358,5 +381,16 @@ struct ReorderIndicator: View {
         }
         .padding(.horizontal, 4)
         .transition(.opacity)
+    }
+}
+
+struct InvalidDropBadge: View {
+    var body: some View {
+        Label("Not allowed", systemImage: "nosign")
+            .font(.app(.caption2))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.red, in: Capsule())
     }
 }

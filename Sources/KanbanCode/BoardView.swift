@@ -16,6 +16,7 @@ struct BoardView: View {
     var onMoveToProject: (String, String) -> Void = { _, _ in }
     var onRefreshBacklog: () -> Void = {}
 
+    var canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool = { _, _ in true }
     var onDropCard: (String, KanbanCodeColumn) -> Void = { _, _ in }
     var onMergeCards: (String, String) -> Void = { _, _ in }   // (sourceId, targetId)
     var onNewTask: () -> Void = {}
@@ -38,6 +39,7 @@ struct BoardView: View {
                                 set: { store.dispatch(.selectCard(cardId: $0)) }
                             ),
                             dragState: dragState,
+                            canDropCard: canDropCard,
                             isRefreshingBacklog: store.state.isRefreshingBacklog,
                             onMoveCard: { cardId, targetColumn in
                                 onDropCard(cardId, targetColumn)

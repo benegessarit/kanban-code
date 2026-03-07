@@ -4,6 +4,7 @@ import KanbanCodeCore
 
 struct ListBoardView: View {
     var store: BoardStore
+    @State private var dragState = DragState()
     var onStartCard: (String) -> Void = { _ in }
     var onResumeCard: (String) -> Void = { _ in }
     var onForkCard: (String) -> Void = { _ in }
@@ -15,6 +16,8 @@ struct ListBoardView: View {
     var availableProjects: [(name: String, path: String)] = []
     var onMoveToProject: (String, String) -> Void = { _, _ in }
     var onRefreshBacklog: () -> Void = {}
+    var onDropCard: (String, KanbanCodeColumn) -> Void = { _, _ in }
+    var canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool = { _, _ in true }
     var onNewTask: () -> Void = {}
     var onCardClicked: (String) -> Void = { _ in }
     @SceneStorage("listBoardCollapsedColumns") private var collapsedColumnsRaw = ""
@@ -69,6 +72,7 @@ struct ListBoardView: View {
             isCollapsed: collapsedColumns.contains(section.column),
             isRefreshingBacklog: store.state.isRefreshingBacklog,
             availableProjects: availableProjects,
+            dragState: dragState,
             onSelectCard: handleCardSelection,
             onStartCard: onStartCard,
             onResumeCard: onResumeCard,
@@ -80,6 +84,11 @@ struct ListBoardView: View {
             onDeleteCard: onDeleteCard,
             onMoveToProject: onMoveToProject,
             onRefreshBacklog: onRefreshBacklog,
+            onMoveCard: onDropCard,
+            canDropCard: canDropCard,
+            onReorderCard: { cardId, targetCardId, above in
+                store.dispatch(.reorderCard(cardId: cardId, targetCardId: targetCardId, above: above))
+            },
             onToggleCollapse: { toggleCollapse(for: section.column) }
         )
     }
@@ -164,6 +173,7 @@ private struct ListBoardSectionView: View {
     let isCollapsed: Bool
     let isRefreshingBacklog: Bool
     let availableProjects: [(name: String, path: String)]
+    let dragState: DragState
     let onSelectCard: (String) -> Void
     let onStartCard: (String) -> Void
     let onResumeCard: (String) -> Void
@@ -175,7 +185,21 @@ private struct ListBoardSectionView: View {
     let onDeleteCard: (String) -> Void
     let onMoveToProject: (String, String) -> Void
     let onRefreshBacklog: () -> Void
+    let onMoveCard: (String, KanbanCodeColumn) -> Void
+    let canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool
+    let onReorderCard: (String, String, Bool) -> Void
     let onToggleCollapse: () -> Void
+
+    @State private var isTargeted = false
+    @State private var cardFrames: [String: CGRect] = [:]
+
+    private var isCurrentDropAllowed: Bool {
+        guard let draggingCard = dragState.draggingCard else { return true }
+        if dragState.sourceColumn == section.column {
+            return true
+        }
+        return canDropCard(draggingCard, section.column)
+    }
 
     var body: some View {
         Section {
@@ -192,6 +216,30 @@ private struct ListBoardSectionView: View {
                 onRefreshBacklog: section.column == .backlog ? onRefreshBacklog : nil,
                 onToggleCollapse: onToggleCollapse
             )
+            .overlay(alignment: .topTrailing) {
+                if isTargeted, !isCurrentDropAllowed {
+                    InvalidDropBadge()
+                        .padding(10)
+                }
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(
+                        isTargeted
+                            ? (isCurrentDropAllowed ? Color.accentColor.opacity(0.4) : Color.red.opacity(0.55))
+                            : Color.clear,
+                        lineWidth: isTargeted ? 2 : 0
+                    )
+            )
+            .onDrop(of: [.utf8PlainText], delegate: ListSectionDropDelegate(
+                column: section.column,
+                cardFrames: cardFrames,
+                dragState: dragState,
+                isTargeted: $isTargeted,
+                canDropCard: canDropCard,
+                onMoveCard: onMoveCard,
+                onReorderCard: onReorderCard
+            ))
         }
     }
 
@@ -202,19 +250,46 @@ private struct ListBoardSectionView: View {
                 .fill(Color.primary.opacity(0.03))
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.secondary.opacity(0.12), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                        .stroke(
+                            isTargeted
+                                ? (isCurrentDropAllowed ? Color.accentColor.opacity(0.4) : Color.red.opacity(0.55))
+                                : Color.secondary.opacity(0.12),
+                            style: StrokeStyle(lineWidth: 1, dash: [5, 4])
+                        )
                 )
                 .frame(height: 52)
                 .overlay {
-                    Text("No cards")
-                        .font(.app(.caption))
-                        .foregroundStyle(.tertiary)
+                    if isTargeted, let draggingCard = dragState.draggingCard, dragState.sourceColumn != section.column, isCurrentDropAllowed {
+                        Text(draggingCard.displayTitle)
+                            .font(.app(.caption))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .padding(.horizontal, 10)
+                    } else {
+                        Text("No cards")
+                            .font(.app(.caption))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
+                .coordinateSpace(name: "list_section_\(section.column.rawValue)")
+                .onPreferenceChange(CardFramePreference.self) { cardFrames = $0 }
+                .onDrop(of: [.utf8PlainText], delegate: ListSectionDropDelegate(
+                    column: section.column,
+                    cardFrames: cardFrames,
+                    dragState: dragState,
+                    isTargeted: $isTargeted,
+                    canDropCard: canDropCard,
+                    onMoveCard: onMoveCard,
+                    onReorderCard: onReorderCard
+                ))
         } else {
             VStack(spacing: 6) {
                 ForEach(section.cards) { card in
+                    if dragState.reorderTargetId == card.id && dragState.reorderAbove {
+                        ReorderIndicator()
+                    }
                     ListCardRowView(
                         card: card,
                         isSelected: card.id == selectedCardId,
@@ -230,11 +305,58 @@ private struct ListBoardSectionView: View {
                         availableProjects: availableProjects,
                         onMoveToProject: { projectPath in onMoveToProject(card.id, projectPath) }
                     )
+                    .opacity(dragState.draggingCard?.id == card.id ? 0.65 : 1)
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: CardFramePreference.self,
+                                value: [card.id: geo.frame(in: .named("list_section_\(section.column.rawValue)"))]
+                            )
+                        }
+                    )
+                    .onDrag {
+                        dragState.draggingCard = card
+                        dragState.sourceColumn = section.column
+                        return NSItemProvider(object: card.id as NSString)
+                    }
                     .id(card.id)
+                    if dragState.reorderTargetId == card.id && !dragState.reorderAbove {
+                        ReorderIndicator()
+                    }
+                }
+
+                if isTargeted, dragState.reorderTargetId == nil,
+                   let draggingCard = dragState.draggingCard, dragState.sourceColumn != section.column,
+                   isCurrentDropAllowed {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(draggingCard.displayTitle)
+                            .font(.app(.body, weight: .medium))
+                            .lineLimit(1)
+                            .foregroundStyle(.primary)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(Color.accentColor.opacity(0.3), style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                    )
+                    .opacity(0.7)
                 }
             }
             .padding(8)
             .glassColumn()
+            .coordinateSpace(name: "list_section_\(section.column.rawValue)")
+            .onPreferenceChange(CardFramePreference.self) { cardFrames = $0 }
+            .onDrop(of: [.utf8PlainText], delegate: ListSectionDropDelegate(
+                column: section.column,
+                cardFrames: cardFrames,
+                dragState: dragState,
+                isTargeted: $isTargeted,
+                canDropCard: canDropCard,
+                onMoveCard: onMoveCard,
+                onReorderCard: onReorderCard
+            ))
         }
     }
 }
@@ -301,6 +423,75 @@ private struct ListSectionHeader: View {
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct ListSectionDropDelegate: DropDelegate {
+    let column: KanbanCodeColumn
+    let cardFrames: [String: CGRect]
+    let dragState: DragState
+    @Binding var isTargeted: Bool
+    let canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool
+    let onMoveCard: (String, KanbanCodeColumn) -> Void
+    let onReorderCard: (String, String, Bool) -> Void
+
+    private var isSameSection: Bool {
+        dragState.sourceColumn == column
+    }
+
+    func dropEntered(info: DropInfo) {
+        isTargeted = true
+        updateReorderTarget(at: info.location)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        updateReorderTarget(at: info.location)
+        guard let draggingCard = dragState.draggingCard else { return nil }
+        if isSameSection || canDropCard(draggingCard, column) {
+            return DropProposal(operation: .move)
+        }
+        return nil
+    }
+
+    func dropExited(info: DropInfo) {
+        isTargeted = false
+        dragState.reorderTargetId = nil
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer {
+            dragState.draggingCard = nil
+            dragState.sourceColumn = nil
+            dragState.reorderTargetId = nil
+            isTargeted = false
+        }
+
+        guard let sourceCard = dragState.draggingCard else { return false }
+
+        if isSameSection, let targetId = dragState.reorderTargetId, targetId != sourceCard.id {
+            onReorderCard(sourceCard.id, targetId, dragState.reorderAbove)
+            return true
+        }
+
+        guard let sourceColumn = dragState.sourceColumn, sourceColumn != column else { return false }
+        guard canDropCard(sourceCard, column) else { return false }
+        onMoveCard(sourceCard.id, column)
+        return true
+    }
+
+    private func updateReorderTarget(at location: CGPoint) {
+        guard isSameSection, let sourceCard = dragState.draggingCard else {
+            dragState.reorderTargetId = nil
+            return
+        }
+
+        for (cardId, frame) in cardFrames {
+            guard cardId != sourceCard.id, frame.contains(location) else { continue }
+            dragState.reorderTargetId = cardId
+            dragState.reorderAbove = location.y < frame.midY
+            return
+        }
+        dragState.reorderTargetId = nil
     }
 }
 
