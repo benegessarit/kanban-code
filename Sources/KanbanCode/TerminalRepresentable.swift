@@ -244,6 +244,20 @@ final class TerminalCache {
         return stored > 0 ? CGFloat(stored) : TerminalCache.defaultFontSize
     }()
 
+    /// Find the active (visible) session name for the terminal under the given window point.
+    /// Bypasses hitTest which can be intercepted by SwiftUI overlay views.
+    func sessionUnderPoint(_ windowPoint: NSPoint, in window: NSWindow) -> String? {
+        for (sessionName, terminal) in terminals {
+            guard !terminal.isHidden,
+                  terminal.window == window else { continue }
+            let localPoint = terminal.convert(windowPoint, from: nil)
+            if terminal.bounds.contains(localPoint) {
+                return sessionName
+            }
+        }
+        return nil
+    }
+
     /// Tracks tmux copy-mode state per session for scroll interception.
     fileprivate var copyModeSessions: Set<String> = []
 
@@ -305,28 +319,13 @@ final class TerminalCache {
         // Intercept scroll wheel events over terminal views and translate to tmux
         // copy-mode navigation. TerminalView (from SwiftTerm) consumes scrollWheel
         // events before parent views can handle them, so we intercept at the app level.
+        // We check terminal bounds directly instead of using hitTest, which can be
+        // intercepted by SwiftUI overlay views (e.g. inspector panel).
         scrollWheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard event.deltaY != 0 else { return event }
 
-            // Find the view under the cursor
-            guard let contentView = event.window?.contentView else { return event }
-            let point = contentView.convert(event.locationInWindow, from: nil)
-            guard let hitView = contentView.hitTest(point) else { return event }
-
-            // Walk up to find a TerminalView (SwiftTerm)
-            var view: NSView? = hitView
-            while let v = view, !(v is TerminalView) {
-                view = v.superview
-            }
-            guard view is TerminalView else { return event }
-
-            // Walk up further to find TerminalContainerNSView for the active session
-            var container: NSView? = view
-            while let v = container, !(v is TerminalContainerNSView) {
-                container = v.superview
-            }
-            guard let containerView = container as? TerminalContainerNSView,
-                  let session = containerView.activeSession else { return event }
+            guard let window = event.window else { return event }
+            guard let session = self?.sessionUnderPoint(event.locationInWindow, in: window) else { return event }
 
             let inCopyMode = self?.copyModeSessions.contains(session) ?? false
 
