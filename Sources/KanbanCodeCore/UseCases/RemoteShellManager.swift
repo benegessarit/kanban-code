@@ -81,6 +81,28 @@ public enum RemoteShellManager {
     SSH_OPTS="-o ControlMaster=auto -o ControlPath=/tmp/ssh-kanban-code-%r@%h:%p -o ControlPersist=600 -o ConnectTimeout=5"
     STATE_FILE="/tmp/kanban-code-remote-state"
     NOTIFY_COOLDOWN=300  # 5 minutes
+    MUTAGEN=$(command -v mutagen 2>/dev/null || echo "")
+
+    # Ensure mutagen sync session exists and flush
+    ensure_sync() {
+        [[ -n "$MUTAGEN" ]] || return 0
+        if ! "$MUTAGEN" sync list --label-selector kanban=true 2>/dev/null | grep -q "Name:"; then
+            "$MUTAGEN" sync create "$LOCAL_MOUNT" "${REMOTE_HOST}:${REMOTE_DIR}" \\
+                --name kanban-code-sync \\
+                --label kanban=true \\
+                --sync-mode two-way-resolved \\
+                --default-file-mode-beta 0644 \\
+                --default-directory-mode-beta 0755 \\
+                --ignore node_modules --ignore .venv --ignore .cache \\
+                --ignore dist --ignore '.next*' --ignore __pycache__ \\
+                --ignore .pytest_cache --ignore .mypy_cache --ignore .turbo \\
+                --ignore '*.pyc' --ignore .DS_Store --ignore coverage \\
+                --ignore .nyc_output --ignore target --ignore build \\
+                --ignore .build --ignore .swiftpm \\
+                >/dev/null 2>&1 || true
+        fi
+        "$MUTAGEN" sync flush --label-selector kanban=true >/dev/null 2>&1 || true
+    }
 
     # Worktree path fix — git worktrees use absolute paths in .git files.
     # When Mutagen syncs between machines, those paths break.
@@ -221,8 +243,8 @@ public enum RemoteShellManager {
             # Map local paths in command to remote
             cmd="${cmd//$LOCAL_MOUNT/$REMOTE_DIR}"
 
-            # Flush mutagen sync before command
-            mutagen sync flush --label-selector kanban=true >/dev/null 2>&1 || true
+            # Ensure mutagen sync is running and flush before command
+            ensure_sync
 
             # Build remote command
             # Source .profile and .bashrc (with non-interactive guard disabled)
@@ -237,7 +259,7 @@ public enum RemoteShellManager {
             exit_code=$?
 
             # Flush mutagen sync after command
-            mutagen sync flush --label-selector kanban=true >/dev/null 2>&1 || true
+            "$MUTAGEN" sync flush --label-selector kanban=true >/dev/null 2>&1 || true
 
             # Split output and handle pwd
             if [[ "$remote_output" == *"$MARKER"* ]]; then

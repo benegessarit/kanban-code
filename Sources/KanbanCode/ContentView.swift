@@ -1221,6 +1221,31 @@ struct ContentView: View {
                 .controlSize(.small)
                 .disabled(isSyncRefreshing)
 
+                if currentSyncStatus == .notRunning {
+                    Button {
+                        Task {
+                            isSyncRefreshing = true
+                            if let remote = store.state.globalRemoteSettings {
+                                let syncName = "kanban-code-sync"
+                                let remoteDest = "\(remote.host):\(remote.remotePath)"
+                                let ignores = remote.syncIgnores ?? MutagenAdapter.defaultIgnores
+                                try? await mutagenAdapter.startSync(
+                                    localPath: remote.localPath,
+                                    remotePath: remoteDest,
+                                    name: syncName,
+                                    ignores: ignores
+                                )
+                            }
+                            await refreshSyncStatus()
+                        }
+                    } label: {
+                        Label("Start", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isSyncRefreshing)
+                }
+
                 if currentSyncStatus == .error || currentSyncStatus == .paused {
                     Button {
                         Task {
