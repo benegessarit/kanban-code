@@ -55,6 +55,13 @@ struct CardView: View {
                     .font(.app(.caption2))
                     .foregroundStyle(.tertiary)
 
+                // Assistant badge (only shown for non-default assistants)
+                if card.link.effectiveAssistant != .claude {
+                    Image(systemName: card.link.effectiveAssistant.iconName)
+                        .font(.app(.caption2))
+                        .foregroundStyle(.purple)
+                }
+
                 Spacer()
 
                 // Tmux indicator (green when attached, shows count for 2+)

@@ -13,7 +13,7 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
 
     private let discovery: SessionDiscovery
     private let coordinationStore: CoordinationStore
-    private let activityDetector: ClaudeCodeActivityDetector
+    private let activityDetector: any ActivityDetector
     private let hookEventStore: HookEventStore
     private let tmux: TmuxManagerPort?
     private let prTracker: PRTrackerPort?
@@ -27,7 +27,7 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
     public init(
         discovery: SessionDiscovery,
         coordinationStore: CoordinationStore,
-        activityDetector: ClaudeCodeActivityDetector = .init(),
+        activityDetector: any ActivityDetector,
         hookEventStore: HookEventStore = .init(),
         tmux: TmuxManagerPort? = nil,
         prTracker: PRTrackerPort? = nil,

@@ -136,17 +136,24 @@ struct OnboardingWizard: View {
         VStack(alignment: .leading, spacing: 16) {
             stepHeader(
                 icon: "terminal",
-                title: "Coding Agent",
-                description: "Kanban manages sessions from coding agents. Currently supports Claude Code."
+                title: "Coding Assistants",
+                description: "Kanban manages sessions from coding assistants. Supports Claude Code and Gemini CLI."
             )
 
             statusCheckRow("Claude Code CLI", done: status?.claudeAvailable ?? false)
+            statusCheckRow("Gemini CLI", done: status?.geminiAvailable ?? false)
 
             if status?.claudeAvailable == true {
                 Label("Claude Code is installed and ready", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .font(.app(.callout))
-            } else {
+            }
+            if status?.geminiAvailable == true {
+                Label("Gemini CLI is installed and ready", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(.app(.callout))
+            }
+            if status?.claudeAvailable != true {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Install Claude Code:")
                         .font(.app(.caption))
@@ -469,6 +476,7 @@ struct OnboardingWizard: View {
 
                 Group {
                     summaryRow("Claude Code", status: status?.claudeAvailable ?? false)
+                    summaryRow("Gemini CLI", status: status?.geminiAvailable ?? false)
                     summaryRow("Claude Code Hooks", status: status?.hooksInstalled ?? false)
                     summaryRow("Pushover", status: status?.pushoverConfigured ?? false)
                     summaryRow("tmux", status: status?.tmuxAvailable ?? false)

@@ -28,16 +28,17 @@ public actor ImageSender {
         self.tmux = tmux
     }
 
-    /// Wait for Claude Code to show its input prompt (❯).
+    /// Wait for the coding assistant to show its input prompt.
     public func waitForReady(
         sessionName: String,
+        assistant: CodingAssistant = .claude,
         pollInterval: Duration = .milliseconds(500),
         timeout: Duration = .seconds(30)
     ) async throws {
         let start = ContinuousClock.now
         while ContinuousClock.now - start < timeout {
             let output = try await tmux.capturePane(sessionName: sessionName)
-            if PaneOutputParser.isClaudeReady(output) { return }
+            if PaneOutputParser.isReady(output, assistant: assistant) { return }
             try await Task.sleep(for: pollInterval)
         }
         throw ImageSendError.claudeNotReady

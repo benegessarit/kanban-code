@@ -321,7 +321,7 @@ public enum Reducer {
         case .resumeCard(let cardId):
             guard var link = state.links[cardId] else { return [] }
             let sid = link.sessionLink?.sessionId ?? link.id
-            let tmuxName = "claude-\(String(sid.prefix(8)))"
+            let tmuxName = "\(link.effectiveAssistant.cliCommand)-\(String(sid.prefix(8)))"
             // Preserve existing shell sessions as extras
             var extras = link.tmuxLink?.extraSessions ?? []
             if link.tmuxLink?.isShellOnly == true, let oldPrimary = link.tmuxLink?.sessionName {
@@ -612,7 +612,7 @@ public enum Reducer {
             link.updatedAt = .now
             state.links[cardId] = link
             let sendEffect: Effect
-            if let imagePaths = prompt.imagePaths, !imagePaths.isEmpty {
+            if let imagePaths = prompt.imagePaths, !imagePaths.isEmpty, link.effectiveAssistant.supportsImageUpload {
                 sendEffect = .sendPromptWithImagesToTmux(sessionName: sessionName, promptBody: prompt.body, imagePaths: imagePaths)
             } else {
                 sendEffect = .sendPromptToTmux(sessionName: sessionName, promptBody: prompt.body)
@@ -1063,7 +1063,7 @@ public final class BoardStore: @unchecked Sendable {
     public var appIsActive: Bool = true
     private let discovery: SessionDiscovery
     private let coordinationStore: CoordinationStore
-    private let activityDetector: ClaudeCodeActivityDetector?
+    private let activityDetector: (any ActivityDetector)?
     private let settingsStore: SettingsStore?
     private let ghAdapter: GhCliAdapter?
     private let worktreeAdapter: GitWorktreeAdapter?
@@ -1075,7 +1075,7 @@ public final class BoardStore: @unchecked Sendable {
         effectHandler: EffectHandler,
         discovery: SessionDiscovery,
         coordinationStore: CoordinationStore,
-        activityDetector: ClaudeCodeActivityDetector? = nil,
+        activityDetector: (any ActivityDetector)? = nil,
         settingsStore: SettingsStore? = nil,
         ghAdapter: GhCliAdapter? = nil,
         worktreeAdapter: GitWorktreeAdapter? = nil,

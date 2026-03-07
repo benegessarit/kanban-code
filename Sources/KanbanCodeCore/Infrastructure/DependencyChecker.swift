@@ -5,6 +5,7 @@ public enum DependencyChecker {
 
     public struct Status: Sendable {
         public let claudeAvailable: Bool
+        public let geminiAvailable: Bool
         public let hooksInstalled: Bool
         public let pandocAvailable: Bool
         public let wkhtmltoimageAvailable: Bool
@@ -15,12 +16,13 @@ public enum DependencyChecker {
         public let mutagenAvailable: Bool
 
         public init(
-            claudeAvailable: Bool, hooksInstalled: Bool, pandocAvailable: Bool,
+            claudeAvailable: Bool, geminiAvailable: Bool = false, hooksInstalled: Bool, pandocAvailable: Bool,
             wkhtmltoimageAvailable: Bool, pushoverConfigured: Bool,
             ghAvailable: Bool, ghAuthenticated: Bool = false,
             tmuxAvailable: Bool, mutagenAvailable: Bool
         ) {
             self.claudeAvailable = claudeAvailable
+            self.geminiAvailable = geminiAvailable
             self.hooksInstalled = hooksInstalled
             self.pandocAvailable = pandocAvailable
             self.wkhtmltoimageAvailable = wkhtmltoimageAvailable
@@ -35,6 +37,7 @@ public enum DependencyChecker {
     /// Check all dependencies concurrently.
     public static func checkAll(settingsStore: SettingsStore) async -> Status {
         async let claude = ShellCommand.isAvailable("claude")
+        async let gemini = ShellCommand.isAvailable("gemini")
         async let hooks = Task { HookManager.isInstalled() }.value
         async let pandoc = ShellCommand.isAvailable("pandoc")
         async let wkhtmltoimage = ShellCommand.isAvailable("wkhtmltoimage")
@@ -54,6 +57,7 @@ public enum DependencyChecker {
 
         return await Status(
             claudeAvailable: claude,
+            geminiAvailable: gemini,
             hooksInstalled: hooks,
             pandocAvailable: pandoc,
             wkhtmltoimageAvailable: wkhtmltoimage,

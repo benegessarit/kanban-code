@@ -17,6 +17,7 @@ struct LaunchConfig: Identifiable {
     let isResume: Bool
     let sessionId: String?
     let promptImagePaths: [String]
+    let assistant: CodingAssistant
 
     init(
         cardId: String,
@@ -29,7 +30,8 @@ struct LaunchConfig: Identifiable {
         remoteHost: String? = nil,
         isResume: Bool = false,
         sessionId: String? = nil,
-        promptImagePaths: [String] = []
+        promptImagePaths: [String] = [],
+        assistant: CodingAssistant = .claude
     ) {
         self.cardId = cardId
         self.projectPath = projectPath
@@ -42,6 +44,7 @@ struct LaunchConfig: Identifiable {
         self.isResume = isResume
         self.sessionId = sessionId
         self.promptImagePaths = promptImagePaths
+        self.assistant = assistant
     }
 }
 
@@ -67,6 +70,10 @@ struct ContentView: View {
     @State private var showSyncPopover = false
     @State private var rawSyncOutput = ""
     @AppStorage("selectedProject") private var selectedProjectPersisted: String = ""
+    @AppStorage("defaultAssistant") private var defaultAssistantRaw: String = CodingAssistant.claude.rawValue
+    private var defaultAssistant: CodingAssistant {
+        CodingAssistant(rawValue: defaultAssistantRaw) ?? .claude
+    }
     private let settingsStore: SettingsStore
     private let launcher: LaunchSession
     private let tmuxAdapter: TmuxAdapter
@@ -94,10 +101,22 @@ struct ContentView: View {
     }
 
     init() {
-        let discovery = ClaudeCodeSessionDiscovery()
+        let claudeDiscovery = ClaudeCodeSessionDiscovery()
+        let claudeDetector = ClaudeCodeActivityDetector()
+        let claudeStore = ClaudeCodeSessionStore()
+        let geminiDiscovery = GeminiSessionDiscovery()
+        let geminiDetector = GeminiActivityDetector()
+        let geminiStore = GeminiSessionStore()
+
+        let registry = CodingAssistantRegistry()
+        registry.register(.claude, discovery: claudeDiscovery, detector: claudeDetector, store: claudeStore)
+        registry.register(.gemini, discovery: geminiDiscovery, detector: geminiDetector, store: geminiStore)
+
+        let discovery = CompositeSessionDiscovery(registry: registry)
+        let activityDetector = CompositeActivityDetector(registry: registry, defaultDetector: claudeDetector)
+
         let coordination = CoordinationStore()
         let settings = SettingsStore()
-        let activityDetector = ClaudeCodeActivityDetector()
         let tmux = TmuxAdapter()
 
         let effectHandler = EffectHandler(
@@ -426,11 +445,12 @@ struct ContentView: View {
                     projects: store.state.configuredProjects,
                     defaultProjectPath: store.state.selectedProjectPath,
                     globalRemoteSettings: store.state.globalRemoteSettings,
-                    onCreate: { prompt, projectPath, title, startImmediately, images in
-                        createManualTask(prompt: prompt, projectPath: projectPath, title: title, startImmediately: startImmediately, images: images)
+                    defaultAssistant: defaultAssistant,
+                    onCreate: { prompt, projectPath, title, startImmediately, images, assistant in
+                        createManualTask(prompt: prompt, projectPath: projectPath, title: title, startImmediately: startImmediately, images: images, assistant: assistant)
                     },
-                    onCreateAndLaunch: { prompt, projectPath, title, createWorktree, runRemotely, skipPermissions, commandOverride, images in
-                        createManualTaskAndLaunch(prompt: prompt, projectPath: projectPath, title: title, createWorktree: createWorktree, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images)
+                    onCreateAndLaunch: { prompt, projectPath, title, createWorktree, runRemotely, skipPermissions, commandOverride, images, assistant in
+                        createManualTaskAndLaunch(prompt: prompt, projectPath: projectPath, title: title, createWorktree: createWorktree, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: assistant)
                     }
                 )
             }
@@ -450,16 +470,17 @@ struct ContentView: View {
                     isResume: config.isResume,
                     sessionId: config.sessionId,
                     promptImagePaths: config.promptImagePaths,
+                    assistant: config.assistant,
                     isPresented: Binding(
                         get: { launchConfig != nil },
                         set: { if !$0 { launchConfig = nil } }
                     )
                 ) { editedPrompt, createWorktree, worktreeBranch, runRemotely, skipPermissions, commandOverride, images in
                     if config.isResume {
-                        executeResume(cardId: config.cardId, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride)
+                        executeResume(cardId: config.cardId, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, assistant: config.assistant)
                     } else {
                         let wtName: String? = createWorktree ? (worktreeBranch ?? config.worktreeName ?? "") : nil
-                        executeLaunch(cardId: config.cardId, prompt: editedPrompt, projectPath: config.projectPath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images)
+                        executeLaunch(cardId: config.cardId, prompt: editedPrompt, projectPath: config.projectPath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: config.assistant)
                     }
                 }
             }
@@ -1615,7 +1636,7 @@ struct ContentView: View {
         presentNewTask()
     }
 
-    private func createManualTask(prompt: String, projectPath: String?, title: String? = nil, startImmediately: Bool = false, images: [ImageAttachment] = []) {
+    private func createManualTask(prompt: String, projectPath: String?, title: String? = nil, startImmediately: Bool = false, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude) {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let name: String
         if let title, !title.isEmpty {
@@ -1634,7 +1655,8 @@ struct ContentView: View {
             column: startImmediately ? .inProgress : .backlog,
             source: .manual,
             promptBody: trimmed,
-            promptImagePaths: imagePaths
+            promptImagePaths: imagePaths,
+            assistant: assistant
         )
 
         store.dispatch(.createManualTask(link))
@@ -1645,7 +1667,7 @@ struct ContentView: View {
         }
     }
 
-    private func createManualTaskAndLaunch(prompt: String, projectPath: String?, title: String? = nil, createWorktree: Bool, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = []) {
+    private func createManualTaskAndLaunch(prompt: String, projectPath: String?, title: String? = nil, createWorktree: Bool, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude) {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let name: String
         if let title, !title.isEmpty {
@@ -1664,7 +1686,8 @@ struct ContentView: View {
             column: .inProgress,
             source: .manual,
             promptBody: trimmed,
-            promptImagePaths: imagePaths
+            promptImagePaths: imagePaths,
+            assistant: assistant
         )
         let effectivePath = projectPath ?? NSHomeDirectory()
 
@@ -1676,8 +1699,8 @@ struct ContentView: View {
             let project = settings?.projects.first(where: { $0.path == effectivePath })
             let builtPrompt = PromptBuilder.buildPrompt(card: link, project: project, settings: settings)
 
-            let wtName: String? = createWorktree ? "" : nil
-            executeLaunch(cardId: link.id, prompt: builtPrompt, projectPath: effectivePath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images)
+            let wtName: String? = (createWorktree && assistant.supportsWorktree) ? "" : nil
+            executeLaunch(cardId: link.id, prompt: builtPrompt, projectPath: effectivePath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: assistant)
         }
     }
 
@@ -1800,12 +1823,13 @@ struct ContentView: View {
                 isGitRepo: isGitRepo,
                 hasRemoteConfig: projectIsUnderRemote,
                 remoteHost: globalRemote?.host,
-                promptImagePaths: card.link.promptImagePaths ?? []
+                promptImagePaths: card.link.promptImagePaths ?? [],
+                assistant: card.link.effectiveAssistant
             )
         }
     }
 
-    private func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = []) {
+    private func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude) {
         // IMMEDIATE state update via reducer — no more dual memory+disk writes
         store.dispatch(.launchCard(cardId: cardId, prompt: prompt, projectPath: projectPath, worktreeName: worktreeName, runRemotely: runRemotely, commandOverride: commandOverride))
         shouldFocusTerminal = true
@@ -1847,15 +1871,24 @@ struct ContentView: View {
                     preamble = nil
                 }
 
-                // Snapshot existing .jsonl files for session detection
-                let claudeProjectsDir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/projects")
+                // Snapshot existing session files for detection
+                let sessionFileExt = assistant == .gemini ? ".json" : ".jsonl"
+                let configDir = (NSHomeDirectory() as NSString).appendingPathComponent(assistant.configDirName)
+                let claudeProjectsDir = (configDir as NSString).appendingPathComponent("projects")
                 let encodedProject = projectPath.replacingOccurrences(of: "/", with: "-")
                 let sessionDir = (claudeProjectsDir as NSString).appendingPathComponent(encodedProject)
 
                 // When worktree is enabled, also snapshot worktree-related directories
                 // (worktrees create sessions in dirs like <encodedProject>-.claude-worktrees-<name>)
                 let dirsToSnapshot: [String]
-                if worktreeName != nil {
+                if assistant == .gemini {
+                    // Gemini stores sessions in ~/.gemini/tmp/<slug>/chats/
+                    let tmpDir = (configDir as NSString).appendingPathComponent("tmp")
+                    let slugDirs = (try? FileManager.default.contentsOfDirectory(atPath: tmpDir)) ?? []
+                    dirsToSnapshot = slugDirs.map { slug in
+                        (tmpDir as NSString).appendingPathComponent(slug).appending("/chats")
+                    }
+                } else if worktreeName != nil {
                     let allDirs = (try? FileManager.default.contentsOfDirectory(atPath: claudeProjectsDir)) ?? []
                     dirsToSnapshot = [sessionDir] + allDirs
                         .filter { $0.hasPrefix(encodedProject) && $0 != encodedProject }
@@ -1867,7 +1900,7 @@ struct ContentView: View {
                 for dir in dirsToSnapshot {
                     existingFilesByDir[dir] = Set(
                         ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? [])
-                            .filter { $0.hasSuffix(".jsonl") }
+                            .filter { $0.hasSuffix(sessionFileExt) }
                     )
                 }
 
@@ -1875,12 +1908,13 @@ struct ContentView: View {
                     sessionName: predictedTmuxName,
                     projectPath: projectPath,
                     prompt: prompt,
-                    worktreeName: worktreeName,
+                    worktreeName: assistant.supportsWorktree ? worktreeName : nil,
                     shellOverride: shellOverride,
                     extraEnv: extraEnv,
                     commandOverride: commandOverride,
                     skipPermissions: skipPermissions,
-                    preamble: preamble
+                    preamble: preamble,
+                    assistant: assistant
                 )
                 KanbanCodeLog.info("launch", "Tmux session created: \(tmuxName)")
 
@@ -1888,12 +1922,12 @@ struct ContentView: View {
                 // from spinner to terminal view without waiting for session detection.
                 store.dispatch(.launchTmuxReady(cardId: cardId))
 
-                // Send images + prompt via send-keys after Claude is ready
+                // Send images + prompt via send-keys after assistant is ready
                 if !prompt.isEmpty || !images.isEmpty {
                     let imageSender = ImageSender(tmux: self.tmuxAdapter)
-                    try await imageSender.waitForReady(sessionName: tmuxName)
+                    try await imageSender.waitForReady(sessionName: tmuxName, assistant: assistant)
 
-                    if !images.isEmpty {
+                    if !images.isEmpty && assistant.supportsImageUpload {
                         try await imageSender.sendImages(
                             sessionName: tmuxName,
                             images: images,
@@ -1909,8 +1943,8 @@ struct ContentView: View {
                     }
                 }
 
-                // Detect new Claude session by polling for new .jsonl file
-                // Worktree launches need more attempts (git worktree + Claude startup)
+                // Detect new session by polling for new session file
+                // Worktree launches need more attempts (git worktree + assistant startup)
                 let maxAttempts = worktreeName != nil ? 12 : 6
                 var sessionLink: SessionLink?
                 for attempt in 0..<maxAttempts {
@@ -1918,7 +1952,13 @@ struct ContentView: View {
 
                     // Build list of dirs to scan (re-list for worktree — dir may appear mid-poll)
                     let dirsToScan: [String]
-                    if worktreeName != nil {
+                    if assistant == .gemini {
+                        let tmpDir = (configDir as NSString).appendingPathComponent("tmp")
+                        let slugDirs = (try? FileManager.default.contentsOfDirectory(atPath: tmpDir)) ?? []
+                        dirsToScan = slugDirs.map { slug in
+                            (tmpDir as NSString).appendingPathComponent(slug).appending("/chats")
+                        }
+                    } else if worktreeName != nil {
                         let allDirs = (try? FileManager.default.contentsOfDirectory(atPath: claudeProjectsDir)) ?? []
                         dirsToScan = allDirs
                             .filter { $0.hasPrefix(encodedProject) }
@@ -1931,10 +1971,23 @@ struct ContentView: View {
                         let baseline = existingFilesByDir[dir] ?? [] // empty for newly-created dirs
                         let currentFiles = Set(
                             ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? [])
-                                .filter { $0.hasSuffix(".jsonl") }
+                                .filter { $0.hasSuffix(sessionFileExt) }
                         )
                         if let newFile = currentFiles.subtracting(baseline).first {
-                            let sessionId = (newFile as NSString).deletingPathExtension
+                            let sessionId: String
+                            if assistant == .gemini {
+                                // Gemini: extract sessionId from inside the JSON file
+                                let filePath = (dir as NSString).appendingPathComponent(newFile)
+                                if let data = try? Data(contentsOf: URL(fileURLWithPath: filePath)),
+                                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                                   let sid = obj["sessionId"] as? String {
+                                    sessionId = sid
+                                } else {
+                                    sessionId = (newFile as NSString).deletingPathExtension
+                                }
+                            } else {
+                                sessionId = (newFile as NSString).deletingPathExtension
+                            }
                             let sessionPath = (dir as NSString).appendingPathComponent(newFile)
                             KanbanCodeLog.info("launch", "Detected session file after \(attempt+1) attempts in \((dir as NSString).lastPathComponent): \(sessionId.prefix(8))")
                             sessionLink = SessionLink(sessionId: sessionId, sessionPath: sessionPath)
@@ -2137,7 +2190,8 @@ struct ContentView: View {
             hasRemoteConfig: projectIsUnderRemote,
             remoteHost: globalRemote?.host,
             isResume: true,
-            sessionId: sessionId
+            sessionId: sessionId,
+            assistant: card.link.effectiveAssistant
         )
     }
 
@@ -2197,7 +2251,7 @@ struct ContentView: View {
         }
     }
 
-    private func executeResume(cardId: String, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String?) {
+    private func executeResume(cardId: String, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String?, assistant: CodingAssistant = .claude) {
         guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
         let sessionId = card.link.sessionLink?.sessionId ?? card.link.id
         // For worktree cards, cd into the worktree — that's where Claude stored the session data.
@@ -2205,7 +2259,9 @@ struct ContentView: View {
 
         // If the session file lives under a different project key (e.g. a cleaned-up worktree),
         // move it to the current projectPath so `claude --resume` can find it.
-        if let sessionLink = card.link.sessionLink,
+        // Only applicable to Claude Code sessions (Gemini uses its own path scheme).
+        if assistant == .claude,
+           let sessionLink = card.link.sessionLink,
            let sessionPath = sessionLink.sessionPath {
             let expectedDir = NSHomeDirectory() + "/.claude/projects/" + projectPath.replacingOccurrences(of: "/", with: "-")
             let expectedPath = expectedDir + "/" + sessionId + ".jsonl"
@@ -2267,7 +2323,8 @@ struct ContentView: View {
                     extraEnv: extraEnv,
                     commandOverride: commandOverride,
                     skipPermissions: skipPermissions,
-                    preamble: preamble
+                    preamble: preamble,
+                    assistant: assistant
                 )
                 KanbanCodeLog.info("resume", "Resume launched for card=\(cardId.prefix(12)) actualTmux=\(actualTmuxName)")
 
