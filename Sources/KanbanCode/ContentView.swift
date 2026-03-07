@@ -768,7 +768,7 @@ struct ContentView: View {
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
-                    .frame(width: 92)
+                    .frame(width: 64)
                 }
 
                 ToolbarItem(placement: .navigation) {
@@ -1038,6 +1038,7 @@ struct ContentView: View {
     private var currentSyncStatus: SyncStatus {
         if syncStatuses.isEmpty { return .notRunning }
         if syncStatuses.values.contains(.error) { return .error }
+        if syncStatuses.values.contains(.conflicts) { return .conflicts }
         if syncStatuses.values.contains(.paused) { return .paused }
         if syncStatuses.values.contains(.staging) { return .staging }
         if syncStatuses.values.contains(.watching) { return .watching }
@@ -1138,14 +1139,13 @@ struct ContentView: View {
     @ViewBuilder
     private var syncStatusView: some View {
         Button { showSyncPopover.toggle() } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 4) {
                 Image(systemName: syncStatusIcon(currentSyncStatus))
                     .foregroundStyle(syncStatusColor(currentSyncStatus))
-                Text("Sync Status")
+                Text("Sync")
                     .font(.app(.headline))
                     .lineLimit(1)
             }
-            .frame(width: 132, alignment: .center)
         }
         .buttonStyle(.plain)
         .help("Mutagen file sync status")
@@ -1162,6 +1162,13 @@ struct ContentView: View {
                 .font(.app(.callout))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 6) {
+                Image(systemName: syncStatusIcon(currentSyncStatus))
+                    .foregroundStyle(syncStatusColor(currentSyncStatus))
+                Text(syncStatusLabel(currentSyncStatus))
+                    .font(.app(.callout))
+            }
 
             ScrollView {
                 Text(rawSyncOutput)
@@ -1270,6 +1277,7 @@ struct ContentView: View {
         switch status {
         case .watching: "checkmark.circle.fill"
         case .staging: "arrow.triangle.2.circlepath"
+        case .conflicts: "exclamationmark.triangle.fill"
         case .paused: "pause.circle.fill"
         case .error: "exclamationmark.triangle.fill"
         case .notRunning: "circle.dashed"
@@ -1280,9 +1288,21 @@ struct ContentView: View {
         switch status {
         case .watching: .green
         case .staging: .blue
+        case .conflicts: .yellow
         case .paused: .yellow
         case .error: .red
         case .notRunning: .secondary
+        }
+    }
+
+    private func syncStatusLabel(_ status: SyncStatus) -> String {
+        switch status {
+        case .watching: "Files in sync"
+        case .staging: "Syncing files…"
+        case .conflicts: "Conflicts detected"
+        case .paused: "Sync paused"
+        case .error: "Sync error"
+        case .notRunning: "Sync not running"
         }
     }
 

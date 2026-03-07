@@ -76,33 +76,39 @@ public final class MutagenAdapter: SyncManagerPort, @unchecked Sendable {
     }
 
     public func status() async throws -> [String: SyncStatus] {
+        let template = #"{{range .}}{{.Name}}|{{.Status}}|{{len .Conflicts}}|{{.Paused}}{{"\\n"}}{{end}}"#
         let result = try await ShellCommand.run(
             mutagenPath,
             arguments: [
                 "sync", "list",
                 "--label-selector", "\(label)=true",
-                "--output", "json",
+                "--template", template,
             ]
         )
 
         guard result.succeeded, !result.stdout.isEmpty else { return [:] }
-        guard let data = result.stdout.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let sessions = root["sessions"] as? [[String: Any]] else {
-            return [:]
-        }
 
         var statuses: [String: SyncStatus] = [:]
-        for session in sessions {
-            guard let name = session["name"] as? String,
-                  let statusStr = session["status"] as? String else { continue }
+        for line in result.stdout.split(separator: "\n") {
+            let parts = line.split(separator: "|", maxSplits: 3)
+            guard parts.count >= 4 else { continue }
+            let name = String(parts[0])
+            let statusStr = String(parts[1]).lowercased()
+            let conflictCount = Int(parts[2]) ?? 0
+            let paused = String(parts[3]) == "true"
 
             let status: SyncStatus
-            switch statusStr.lowercased() {
-            case "watching": status = .watching
-            case "staging", "transitioning": status = .staging
-            case "paused", "halted": status = .paused
-            default: status = .error
+            if paused {
+                status = .paused
+            } else if conflictCount > 0 {
+                status = .conflicts
+            } else {
+                switch statusStr {
+                case "watching": status = .watching
+                case "scanning", "staging", "transitioning", "reconciling", "saving": status = .staging
+                case "halted": status = .paused
+                default: status = .error
+                }
             }
             statuses[name] = status
         }
