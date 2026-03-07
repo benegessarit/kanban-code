@@ -49,6 +49,7 @@ struct ContentView: View {
     @State private var showNewTask = false
     @State private var showOnboarding = false
     @AppStorage("appearanceMode") private var appearanceMode: AppearanceMode = .auto
+    @AppStorage("boardViewMode") private var boardViewModeRaw = BoardViewMode.kanban.rawValue
     @State private var showProcessManager = false
     @State private var showQuitConfirmation = false
     @State private var quitOwnedSessions: [TmuxSession] = []
@@ -70,6 +71,17 @@ struct ContentView: View {
     private let mutagenAdapter = MutagenAdapter()
     private let hookEventsPath: String
     private let settingsFilePath: String
+
+    private var boardViewMode: BoardViewMode {
+        BoardViewMode(rawValue: boardViewModeRaw) ?? .kanban
+    }
+
+    private var boardViewModeBinding: Binding<BoardViewMode> {
+        Binding(
+            get: { boardViewMode },
+            set: { boardViewModeRaw = $0.rawValue }
+        )
+    }
 
     private var showInspector: Binding<Bool> {
         Binding(
@@ -196,6 +208,56 @@ struct ContentView: View {
         )
     }
 
+    private var listBoardView: some View {
+        ListBoardView(
+            store: store,
+            onStartCard: { cardId in startCard(cardId: cardId) },
+            onResumeCard: { cardId in resumeCard(cardId: cardId) },
+            onForkCard: { cardId in pendingForkCardId = cardId },
+            onCopyResumeCmd: { cardId in
+                guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
+                var cmd = ""
+                if let projectPath = card.link.projectPath {
+                    cmd += "cd \(projectPath) && "
+                }
+                if let sessionId = card.link.sessionLink?.sessionId {
+                    cmd += "claude --resume \(sessionId)"
+                }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(cmd, forType: .string)
+            },
+            onCleanupWorktree: { cardId in Task { await cleanupWorktree(cardId: cardId) } },
+            canCleanupWorktree: { cardId in
+                guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return false }
+                return canCleanupWorktree(for: card)
+            },
+            onArchiveCard: { cardId in archiveCard(cardId: cardId) },
+            onDeleteCard: { cardId in pendingDeleteCardId = cardId },
+            availableProjects: projectList,
+            onMoveToProject: { cardId, projectPath in
+                let name = projectList.first(where: { $0.path == projectPath })?.name ?? (projectPath as NSString).lastPathComponent
+                pendingMoveToProject = (cardId: cardId, projectPath: projectPath, projectName: name)
+            },
+            onRefreshBacklog: { Task { await store.refreshBacklog() } },
+            onNewTask: { showNewTask = true },
+            onCardClicked: { cardId in
+                if store.state.cards.first(where: { $0.id == cardId })?.link.tmuxLink != nil {
+                    shouldFocusTerminal = true
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var activeBoardView: some View {
+        switch boardViewMode {
+        case .kanban:
+            boardView
+        case .list:
+            listBoardView
+        }
+    }
+
     @ViewBuilder
     private var inspectorContent: some View {
         if let card = store.state.cards.first(where: { $0.id == store.state.selectedCardId }) {
@@ -280,7 +342,7 @@ struct ContentView: View {
     }
 
     private var boardWithOverlays: some View {
-        boardView
+        activeBoardView
             .ignoresSafeArea(edges: .top)
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .navigationTitle("")
@@ -692,6 +754,17 @@ struct ContentView: View {
 
                 ToolbarItem(placement: .navigation) {
                     projectSelectorMenu
+                }
+
+                ToolbarItem(placement: .navigation) {
+                    Picker("View", selection: boardViewModeBinding) {
+                        ForEach(BoardViewMode.allCases, id: \.self) { mode in
+                            Label(mode.label, systemImage: mode.icon)
+                                .tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 170)
                 }
 
                 ToolbarItem(placement: .navigation) {
