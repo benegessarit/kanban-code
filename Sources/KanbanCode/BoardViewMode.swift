@@ -28,10 +28,8 @@ struct ListBoardSection {
         columns: [KanbanCodeColumn],
         cardsInColumn: (KanbanCodeColumn) -> [KanbanCodeCard]
     ) -> [ListBoardSection] {
-        columns.compactMap { column in
-            let cards = cardsInColumn(column)
-            guard !cards.isEmpty else { return nil }
-            return ListBoardSection(column: column, cards: cards)
+        columns.map { column in
+            ListBoardSection(column: column, cards: cardsInColumn(column))
         }
     }
 }

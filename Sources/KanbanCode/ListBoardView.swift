@@ -31,125 +31,210 @@ struct ListBoardView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18, pinnedViews: [.sectionHeaders]) {
-                    ForEach(sections, id: \.column) { section in
-                        let isCollapsed = collapsedColumns.contains(section.column)
-                        Section {
-                            if !isCollapsed {
-                                VStack(spacing: 6) {
-                                    ForEach(section.cards) { card in
-                                        ListCardRowView(
-                                            card: card,
-                                            isSelected: card.id == store.state.selectedCardId,
-                                            onSelect: {
-                                                let newId = store.state.selectedCardId == card.id ? nil : card.id
-                                                store.dispatch(.selectCard(cardId: newId))
-                                                if newId != nil { onCardClicked(card.id) }
-                                            },
-                                            onStart: { onStartCard(card.id) },
-                                            onResume: { onResumeCard(card.id) },
-                                            onFork: { onForkCard(card.id) },
-                                            onCopyResumeCmd: { onCopyResumeCmd(card.id) },
-                                            onCleanupWorktree: { onCleanupWorktree(card.id) },
-                                            canCleanupWorktree: canCleanupWorktree(card.id),
-                                            onArchive: { onArchiveCard(card.id) },
-                                            onDelete: { onDeleteCard(card.id) },
-                                            availableProjects: availableProjects,
-                                            onMoveToProject: { projectPath in onMoveToProject(card.id, projectPath) }
-                                        )
-                                        .id(card.id)
-                                    }
-                                }
-                                .padding(8)
-                                .glassColumn()
-                                .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
-                            }
-                        } header: {
-                            ListSectionHeader(
-                                column: section.column,
-                                count: section.cards.count,
-                                isCollapsed: isCollapsed,
-                                isRefreshingBacklog: store.state.isRefreshingBacklog,
-                                onRefreshBacklog: section.column == .backlog ? onRefreshBacklog : nil,
-                                onToggleCollapse: {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        var updated = collapsedColumns
-                                        if updated.contains(section.column) {
-                                            updated.remove(section.column)
-                                        } else {
-                                            updated.insert(section.column)
-                                        }
-                                        collapsedColumns = updated
-                                    }
-                                }
-                            )
-                        }
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 52)
-                .padding(.bottom, 16)
-            }
-            .onChange(of: store.state.selectedCardId) {
-                guard let selectedId = store.state.selectedCardId else { return }
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    proxy.scrollTo(selectedId, anchor: .center)
-                }
-            }
-        }
-        .overlay(alignment: .bottom) {
-            if let error = store.state.error {
-                HStack(spacing: 10) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.app(.title3))
-                        .foregroundStyle(.orange.opacity(0.7))
-                    Text(error)
-                        .font(.app(.body, weight: .medium))
-                        .lineLimit(2)
-                    Spacer()
-                    Button("Dismiss") {
-                        store.dispatch(.setError(nil))
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 14)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 12)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
+        listContent
+        .overlay(alignment: .bottom) { errorOverlay }
         .animation(.easeInOut(duration: 0.25), value: store.state.error != nil)
-        .overlay {
-            if store.state.filteredCards.isEmpty && !store.state.isLoading {
-                VStack(spacing: 12) {
-                    if let projectPath = store.state.selectedProjectPath {
-                        let name = store.state.configuredProjects.first(where: { $0.path == projectPath })?.name
-                            ?? (projectPath as NSString).lastPathComponent
-                        Text("No sessions yet for \(name)")
-                            .font(.app(.title3))
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("No sessions found")
-                            .font(.app(.title3))
-                            .foregroundStyle(.secondary)
-                    }
-                    Text("Create a new task or start a Claude session to get going.")
+        .overlay { emptyStateOverlay }
+    }
+
+    private var listContent: some View {
+        ScrollViewReader { proxy in
+            scrollView(proxy: proxy)
+        }
+    }
+
+    private func scrollView(proxy: ScrollViewProxy) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 18, pinnedViews: [.sectionHeaders]) {
+                ForEach(sections, id: \.column) { section in
+                    sectionView(for: section)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 52)
+            .padding(.bottom, 16)
+        }
+        .onChange(of: store.state.selectedCardId) {
+            guard let selectedId = store.state.selectedCardId else { return }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                proxy.scrollTo(selectedId, anchor: .center)
+            }
+        }
+    }
+
+    private func sectionView(for section: ListBoardSection) -> some View {
+        ListBoardSectionView(
+            section: section,
+            selectedCardId: store.state.selectedCardId,
+            isCollapsed: collapsedColumns.contains(section.column),
+            isRefreshingBacklog: store.state.isRefreshingBacklog,
+            availableProjects: availableProjects,
+            onSelectCard: handleCardSelection,
+            onStartCard: onStartCard,
+            onResumeCard: onResumeCard,
+            onForkCard: onForkCard,
+            onCopyResumeCmd: onCopyResumeCmd,
+            onCleanupWorktree: onCleanupWorktree,
+            canCleanupWorktree: canCleanupWorktree,
+            onArchiveCard: onArchiveCard,
+            onDeleteCard: onDeleteCard,
+            onMoveToProject: onMoveToProject,
+            onRefreshBacklog: onRefreshBacklog,
+            onToggleCollapse: { toggleCollapse(for: section.column) }
+        )
+    }
+
+    private func handleCardSelection(_ cardId: String) {
+        let newId = store.state.selectedCardId == cardId ? nil : cardId
+        store.dispatch(.selectCard(cardId: newId))
+        if newId != nil { onCardClicked(cardId) }
+    }
+
+    private func toggleCollapse(for column: KanbanCodeColumn) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            var updated = collapsedColumns
+            if updated.contains(column) {
+                updated.remove(column)
+            } else {
+                updated.insert(column)
+            }
+            collapsedColumns = updated
+        }
+    }
+
+    @ViewBuilder
+    private var errorOverlay: some View {
+        if let error = store.state.error {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.app(.title3))
+                    .foregroundStyle(.orange.opacity(0.7))
+                Text(error)
+                    .font(.app(.body, weight: .medium))
+                    .lineLimit(2)
+                Spacer()
+                Button("Dismiss") {
+                    store.dispatch(.setError(nil))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    @ViewBuilder
+    private var emptyStateOverlay: some View {
+        if store.state.filteredCards.isEmpty && !store.state.isLoading {
+            VStack(spacing: 12) {
+                if let projectPath = store.state.selectedProjectPath {
+                    let name = store.state.configuredProjects.first(where: { $0.path == projectPath })?.name
+                        ?? (projectPath as NSString).lastPathComponent
+                    Text("No sessions yet for \(name)")
+                        .font(.app(.title3))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("No sessions found")
+                        .font(.app(.title3))
+                        .foregroundStyle(.secondary)
+                }
+                Text("Create a new task or start a Claude session to get going.")
+                    .font(.app(.caption))
+                    .foregroundStyle(.tertiary)
+
+                Button(action: onNewTask) {
+                    Label("New Task", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+        }
+    }
+}
+
+private struct ListBoardSectionView: View {
+    let section: ListBoardSection
+    let selectedCardId: String?
+    let isCollapsed: Bool
+    let isRefreshingBacklog: Bool
+    let availableProjects: [(name: String, path: String)]
+    let onSelectCard: (String) -> Void
+    let onStartCard: (String) -> Void
+    let onResumeCard: (String) -> Void
+    let onForkCard: (String) -> Void
+    let onCopyResumeCmd: (String) -> Void
+    let onCleanupWorktree: (String) -> Void
+    let canCleanupWorktree: (String) -> Bool
+    let onArchiveCard: (String) -> Void
+    let onDeleteCard: (String) -> Void
+    let onMoveToProject: (String, String) -> Void
+    let onRefreshBacklog: () -> Void
+    let onToggleCollapse: () -> Void
+
+    var body: some View {
+        Section {
+            if !isCollapsed {
+                sectionBody
+                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+            }
+        } header: {
+            ListSectionHeader(
+                column: section.column,
+                count: section.cards.count,
+                isCollapsed: isCollapsed,
+                isRefreshingBacklog: isRefreshingBacklog,
+                onRefreshBacklog: section.column == .backlog ? onRefreshBacklog : nil,
+                onToggleCollapse: onToggleCollapse
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var sectionBody: some View {
+        if section.cards.isEmpty {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.primary.opacity(0.03))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.secondary.opacity(0.12), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                )
+                .frame(height: 52)
+                .overlay {
+                    Text("No cards")
                         .font(.app(.caption))
                         .foregroundStyle(.tertiary)
-
-                    Button(action: onNewTask) {
-                        Label("New Task", systemImage: "plus")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+        } else {
+            VStack(spacing: 6) {
+                ForEach(section.cards) { card in
+                    ListCardRowView(
+                        card: card,
+                        isSelected: card.id == selectedCardId,
+                        onSelect: { onSelectCard(card.id) },
+                        onStart: { onStartCard(card.id) },
+                        onResume: { onResumeCard(card.id) },
+                        onFork: { onForkCard(card.id) },
+                        onCopyResumeCmd: { onCopyResumeCmd(card.id) },
+                        onCleanupWorktree: { onCleanupWorktree(card.id) },
+                        canCleanupWorktree: canCleanupWorktree(card.id),
+                        onArchive: { onArchiveCard(card.id) },
+                        onDelete: { onDeleteCard(card.id) },
+                        availableProjects: availableProjects,
+                        onMoveToProject: { projectPath in onMoveToProject(card.id, projectPath) }
+                    )
+                    .id(card.id)
                 }
             }
+            .padding(8)
+            .glassColumn()
         }
     }
 }
@@ -163,30 +248,38 @@ private struct ListSectionHeader: View {
     let onToggleCollapse: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "chevron.right")
-                .font(.app(size: 10, weight: .bold))
-                .rotationEffect(.degrees(isCollapsed ? 0 : 90))
-                .foregroundStyle(.secondary)
+        HStack(spacing: 0) {
+            Button(action: onToggleCollapse) {
+                HStack(spacing: 10) {
+                    Image(systemName: "chevron.right")
+                        .font(.app(size: 10, weight: .bold))
+                        .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                        .foregroundStyle(.secondary)
 
-            Circle()
-                .fill(column.accentColor)
-                .frame(width: 8, height: 8)
+                    Circle()
+                        .fill(column.accentColor)
+                        .frame(width: 8, height: 8)
 
-            Text(column.displayName)
-                .font(.app(.headline))
-                .foregroundStyle(.primary)
+                    Text(column.displayName)
+                        .font(.app(.headline))
+                        .foregroundStyle(.primary)
 
-            Text("\(count)")
-                .font(.app(.caption))
-                .fontWeight(.medium)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Capsule().fill(Color.secondary.opacity(0.16)))
-                .foregroundStyle(.secondary)
+                    Text("\(count)")
+                        .font(.app(.caption))
+                        .fontWeight(.medium)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.secondary.opacity(0.16)))
+                        .foregroundStyle(.secondary)
+
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
 
             if let onRefreshBacklog {
-                Spacer()
                 Button {
                     onRefreshBacklog()
                 } label: {
@@ -201,13 +294,13 @@ private struct ListSectionHeader: View {
                 .buttonStyle(.borderless)
                 .help("Refresh GitHub issues")
                 .disabled(isRefreshingBacklog)
+                .padding(.leading, 10)
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onToggleCollapse)
     }
 }
 

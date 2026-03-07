@@ -10,7 +10,7 @@ struct BoardViewModeTests {
         #expect(BoardViewMode.list.rawValue == "list")
     }
 
-    @Test("List sections keep column order and skip empty columns")
+    @Test("List sections keep column order and include empty columns")
     func listSectionsPreserveOrder() {
         let backlog = KanbanCodeCard(link: Link(id: "card_backlog", column: .backlog, updatedAt: .now))
         let waiting = KanbanCodeCard(link: Link(id: "card_waiting", column: .waiting, updatedAt: .now))
@@ -26,11 +26,15 @@ struct BoardViewModeTests {
             }
         )
 
-        #expect(sections.count == 2)
+        #expect(sections.count == 4)
         #expect(sections[0].column == .backlog)
         #expect(sections[0].cards.map(\.id) == ["card_backlog"])
-        #expect(sections[1].column == .waiting)
-        #expect(sections[1].cards.map(\.id) == ["card_waiting"])
+        #expect(sections[1].column == .inProgress)
+        #expect(sections[1].cards.isEmpty)
+        #expect(sections[2].column == .waiting)
+        #expect(sections[2].cards.map(\.id) == ["card_waiting"])
+        #expect(sections[3].column == .done)
+        #expect(sections[3].cards.isEmpty)
     }
 
     @Test("Collapsed list sections round-trip through storage")
@@ -39,5 +43,11 @@ struct BoardViewModeTests {
         let decoded = ListSectionCollapseState.decode(encoded)
 
         #expect(decoded == [.inReview, .waiting])
+    }
+
+    @Test("Collapsed list sections ignore empty persisted state")
+    func collapsedSectionsEmptyState() {
+        #expect(ListSectionCollapseState.encode([]) == "")
+        #expect(ListSectionCollapseState.decode("") == [])
     }
 }

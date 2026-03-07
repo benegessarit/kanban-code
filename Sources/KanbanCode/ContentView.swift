@@ -759,12 +759,13 @@ struct ContentView: View {
                 ToolbarItem(placement: .navigation) {
                     Picker("View", selection: boardViewModeBinding) {
                         ForEach(BoardViewMode.allCases, id: \.self) { mode in
-                            Label(mode.label, systemImage: mode.icon)
+                            Image(systemName: mode.icon)
                                 .tag(mode)
                         }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 170)
+                    .labelsHidden()
+                    .frame(width: 92)
                 }
 
                 ToolbarItem(placement: .navigation) {
@@ -1134,13 +1135,14 @@ struct ContentView: View {
     @ViewBuilder
     private var syncStatusView: some View {
         Button { showSyncPopover.toggle() } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 8) {
                 Image(systemName: syncStatusIcon(currentSyncStatus))
                     .foregroundStyle(syncStatusColor(currentSyncStatus))
                 Text("Sync Status")
                     .font(.app(.headline))
+                    .lineLimit(1)
             }
-            .padding(.horizontal, 4)
+            .frame(width: 132, alignment: .center)
         }
         .buttonStyle(.plain)
         .help("Mutagen file sync status")
