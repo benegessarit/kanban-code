@@ -1187,7 +1187,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
             }
-            .frame(maxHeight: 250)
+            .frame(height: 250)
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
 
             HStack(spacing: 4) {
