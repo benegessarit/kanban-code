@@ -1277,18 +1277,10 @@ public final class BoardStore: @unchecked Sendable {
         let reconcileStart = ContinuousClock.now
 
         do {
-            // Load settings for project filtering
-            var configuredProjects: [Project] = []
-            var excludedPaths: [String] = []
-            var globalRemoteSettings: RemoteSettings?
-            if let store = settingsStore {
-                let t = ContinuousClock.now
-                let settings = try await store.read()
-                configuredProjects = settings.projects
-                excludedPaths = settings.globalView.excludedPaths
-                globalRemoteSettings = settings.remote
-                KanbanCodeLog.info("reconcile", "settings: \(t.duration(to: .now))")
-            }
+            // Use in-memory settings (loaded at startup, updated via .settingsLoaded action)
+            let configuredProjects = state.configuredProjects
+            let excludedPaths = state.excludedPaths
+            let globalRemoteSettings = state.globalRemoteSettings
 
             // Show cached data immediately while discovery runs
             if state.links.isEmpty {
@@ -1313,14 +1305,27 @@ public final class BoardStore: @unchecked Sendable {
             // Deduplicate repo roots — multiple projects can share the same repo
             let uniqueRepoRoots = Set(configuredProjects.map(\.effectiveRepoRoot))
 
-            // Scan worktrees once per unique repo
+            // Scan worktrees once per unique repo (parallel)
             var worktreesByRepo: [String: [Worktree]] = [:]
             if let worktreeAdapter {
                 let t = ContinuousClock.now
-                for repoRoot in uniqueRepoRoots {
-                    if let worktrees = try? await worktreeAdapter.listWorktrees(repoRoot: repoRoot) {
-                        worktreesByRepo[repoRoot] = worktrees
+                let results = await withTaskGroup(of: (String, [Worktree])?.self) { group in
+                    for repoRoot in uniqueRepoRoots {
+                        group.addTask {
+                            guard let worktrees = try? await worktreeAdapter.listWorktrees(repoRoot: repoRoot) else {
+                                return nil
+                            }
+                            return (repoRoot, worktrees)
+                        }
                     }
+                    var collected: [(String, [Worktree])] = []
+                    for await result in group {
+                        if let result { collected.append(result) }
+                    }
+                    return collected
+                }
+                for (repo, worktrees) in results {
+                    worktreesByRepo[repo] = worktrees
                 }
                 let total = worktreesByRepo.values.flatMap { $0 }.count
                 KanbanCodeLog.info("reconcile", "worktrees: \(t.duration(to: .now)) (\(total) across \(uniqueRepoRoots.count) repos)")

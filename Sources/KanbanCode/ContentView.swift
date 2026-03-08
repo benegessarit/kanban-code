@@ -835,6 +835,7 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeSettingsChanged)) { _ in
                 Task {
+                    await store.loadSettingsAndCache()
                     await store.reconcile()
                     applyAppearance()
                     // Refresh notifier so Pushover credentials changes take effect immediately

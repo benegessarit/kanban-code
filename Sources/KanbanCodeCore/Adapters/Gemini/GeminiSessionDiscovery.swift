@@ -6,6 +6,15 @@ public final class GeminiSessionDiscovery: SessionDiscovery, @unchecked Sendable
     private let geminiDir: String
     private var lastScanTime: Date?
 
+    /// Cache: sessionId → parsed session
+    private var cachedSessions: [String: Session] = [:]
+    /// Per-chats-directory mtime to skip unchanged slug dirs
+    private var dirMtimes: [String: Date] = [:]
+    /// Per-file mtime to skip unchanged session files
+    private var fileMtimes: [String: Date] = [:]
+    /// Track which sessions came from which slug for eviction
+    private var slugSessionIds: [String: Set<String>] = [:]
+
     public init(geminiDir: String? = nil) {
         self.geminiDir = geminiDir
             ?? (NSHomeDirectory() as NSString).appendingPathComponent(".gemini")
@@ -17,10 +26,8 @@ public final class GeminiSessionDiscovery: SessionDiscovery, @unchecked Sendable
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: geminiDir) else { return [] }
 
-        // Read projects.json to get slug→path mapping
         let slugToPath = readProjectsMapping()
 
-        // Scan tmp/<slug>/chats/ directories for session files
         let tmpDir = (geminiDir as NSString).appendingPathComponent("tmp")
         guard fileManager.fileExists(atPath: tmpDir) else { return [] }
 
@@ -31,7 +38,7 @@ public final class GeminiSessionDiscovery: SessionDiscovery, @unchecked Sendable
             return []
         }
 
-        var sessions: [Session] = []
+        var seenSlugs: Set<String> = []
 
         for slug in slugDirs {
             let chatsDir = (tmpDir as NSString)
@@ -43,6 +50,15 @@ public final class GeminiSessionDiscovery: SessionDiscovery, @unchecked Sendable
                   isDir.boolValue else {
                 continue
             }
+            seenSlugs.insert(slug)
+
+            // Check directory mtime — skip if unchanged
+            let dirAttrs = try? fileManager.attributesOfItem(atPath: chatsDir)
+            let dirMtime = dirAttrs?[.modificationDate] as? Date
+            if let cached = dirMtimes[slug], dirMtime == cached {
+                continue
+            }
+            dirMtimes[slug] = dirMtime
 
             let projectPath = resolveProjectPath(slug: slug, slugToPath: slugToPath)
 
@@ -57,6 +73,8 @@ public final class GeminiSessionDiscovery: SessionDiscovery, @unchecked Sendable
                 $0.hasPrefix("session-") && $0.hasSuffix(".json")
             }
 
+            var slugSessions: Set<String> = []
+
             for fileName in sessionFiles {
                 let filePath = (chatsDir as NSString).appendingPathComponent(fileName)
 
@@ -64,6 +82,22 @@ public final class GeminiSessionDiscovery: SessionDiscovery, @unchecked Sendable
                       let mtime = attrs[.modificationDate] as? Date else {
                     continue
                 }
+
+                // Extract session ID for cache key
+                let sessionId: String
+                if let cached = cachedSessions.values.first(where: { $0.jsonlPath == filePath }) {
+                    sessionId = cached.id
+                    slugSessions.insert(sessionId)
+
+                    if let cachedMtime = fileMtimes[filePath], mtime == cachedMtime {
+                        continue
+                    }
+                } else {
+                    // Will be determined after parsing
+                    sessionId = ""
+                }
+
+                fileMtimes[filePath] = mtime
 
                 do {
                     if let metadata = try GeminiSessionParser.extractMetadata(from: filePath) {
@@ -77,23 +111,38 @@ public final class GeminiSessionDiscovery: SessionDiscovery, @unchecked Sendable
                             jsonlPath: filePath,
                             assistant: .gemini
                         )
-                        sessions.append(session)
+                        cachedSessions[metadata.sessionId] = session
+                        slugSessions.insert(metadata.sessionId)
                     }
                 } catch {
-                    // File couldn't be parsed — skip it
                     continue
                 }
             }
+
+            // Evict sessions from this slug that no longer exist
+            if let oldIds = slugSessionIds[slug] {
+                for removedId in oldIds.subtracting(slugSessions) {
+                    cachedSessions.removeValue(forKey: removedId)
+                }
+            }
+            slugSessionIds[slug] = slugSessions
         }
 
-        // Sort by most recently modified first
+        // Evict slugs that were removed
+        for removedSlug in Set(dirMtimes.keys).subtracting(seenSlugs) {
+            dirMtimes.removeValue(forKey: removedSlug)
+            if let ids = slugSessionIds.removeValue(forKey: removedSlug) {
+                for id in ids { cachedSessions.removeValue(forKey: id) }
+            }
+        }
+
+        var sessions = Array(cachedSessions.values)
         sessions.sort { $0.modifiedTime > $1.modifiedTime }
         lastScanTime = Date()
         return sessions
     }
 
     public func discoverNewOrModified(since: Date) async throws -> [Session] {
-        // For now, full scan. Incremental optimization deferred.
         return try await discoverSessions()
     }
 
