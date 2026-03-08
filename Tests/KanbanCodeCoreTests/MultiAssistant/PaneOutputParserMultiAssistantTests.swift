@@ -19,29 +19,43 @@ struct PaneOutputParserMultiAssistantTests {
 
     @Test("isReady does not detect Gemini prompt as Claude ready")
     func claudeNotReadyWithGeminiPrompt() {
-        let output = "> "
+        let output = " *   Type your message or @path/to/file"
         #expect(PaneOutputParser.isReady(output, assistant: .claude) == false)
     }
 
     // MARK: - isReady with Gemini
 
-    @Test("isReady detects Gemini prompt character")
+    @Test("isReady detects Gemini prompt")
     func isReadyGemini() {
-        // Gemini's prompt character is "> " (with trailing space)
-        let output = "Gemini CLI v1.0\nConnected to project.\n> "
+        // Gemini shows "Type your message" when ready for input
+        let output = """
+        YOLO ctrl+y
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         *   Type your message or @path/to/file
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+        """
         #expect(PaneOutputParser.isReady(output, assistant: .gemini) == true)
     }
 
     @Test("isReady does not detect Claude prompt as Gemini ready")
     func geminiNotReadyWithClaudePrompt() {
         let output = "❯"
-        // "❯" does not contain "> " — so Gemini should not be ready
         #expect(PaneOutputParser.isReady(output, assistant: .gemini) == false)
     }
 
     @Test("Gemini not ready during startup")
     func geminiNotReadyDuringStartup() {
         let output = "Loading Gemini CLI..."
+        #expect(PaneOutputParser.isReady(output, assistant: .gemini) == false)
+    }
+
+    @Test("Gemini not ready when showing ASCII art banner")
+    func geminiNotReadyDuringBanner() {
+        let output = """
+         ███            █████████  ██████████
+        ░░░███         ███░░░░░███░░███░░░░░█
+        Logged in with Google: user@example.com
+        """
         #expect(PaneOutputParser.isReady(output, assistant: .gemini) == false)
     }
 
@@ -61,11 +75,5 @@ struct PaneOutputParserMultiAssistantTests {
     func emptyOutputNotReady() {
         #expect(PaneOutputParser.isReady("", assistant: .claude) == false)
         #expect(PaneOutputParser.isReady("", assistant: .gemini) == false)
-    }
-
-    @Test("Gemini prompt in middle of output is detected")
-    func geminiPromptInMiddle() {
-        let output = "Previous response...\n> \nwaiting for input"
-        #expect(PaneOutputParser.isReady(output, assistant: .gemini) == true)
     }
 }

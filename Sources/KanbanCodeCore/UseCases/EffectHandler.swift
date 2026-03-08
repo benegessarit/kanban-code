@@ -96,16 +96,17 @@ public actor EffectHandler {
                 KanbanCodeLog.warn("effect", "sendPromptToTmux failed: \(error)")
             }
 
-        case .sendPromptWithImagesToTmux(let sessionName, let promptBody, let imagePaths):
+        case .sendPromptWithImagesToTmux(let sessionName, let promptBody, let imagePaths, let assistant):
             do {
                 guard let tmux = tmuxAdapter, let setClipboard = setClipboardImage else { return }
                 let images = imagePaths.compactMap { ImageAttachment.fromPath($0) }
                 if !images.isEmpty {
                     let sender = ImageSender(tmux: tmux)
-                    try await sender.waitForReady(sessionName: sessionName)
+                    try await sender.waitForReady(sessionName: sessionName, assistant: assistant)
                     try await sender.sendImages(
                         sessionName: sessionName,
                         images: images,
+                        assistant: assistant,
                         setClipboard: setClipboard
                     )
                 }

@@ -250,7 +250,7 @@ public enum Effect: Sendable {
     case updateSessionIndex(sessionId: String, name: String)
     case moveSessionFile(cardId: String, sessionId: String, oldPath: String, newProjectPath: String)
     case sendPromptToTmux(sessionName: String, promptBody: String)
-    case sendPromptWithImagesToTmux(sessionName: String, promptBody: String, imagePaths: [String])
+    case sendPromptWithImagesToTmux(sessionName: String, promptBody: String, imagePaths: [String], assistant: CodingAssistant)
     case deleteFiles([String])
 }
 
@@ -613,7 +613,7 @@ public enum Reducer {
             state.links[cardId] = link
             let sendEffect: Effect
             if let imagePaths = prompt.imagePaths, !imagePaths.isEmpty, link.effectiveAssistant.supportsImageUpload {
-                sendEffect = .sendPromptWithImagesToTmux(sessionName: sessionName, promptBody: prompt.body, imagePaths: imagePaths)
+                sendEffect = .sendPromptWithImagesToTmux(sessionName: sessionName, promptBody: prompt.body, imagePaths: imagePaths, assistant: link.effectiveAssistant)
             } else {
                 sendEffect = .sendPromptToTmux(sessionName: sessionName, promptBody: prompt.body)
             }

@@ -1942,8 +1942,8 @@ struct ContentView: View {
                 }
 
                 // Detect new session by polling for new session file
-                // Worktree launches need more attempts (git worktree + assistant startup)
-                let maxAttempts = worktreeName != nil ? 12 : 6
+                // Worktree launches and Gemini need more attempts (slower startup)
+                let maxAttempts = (worktreeName != nil || assistant == .gemini) ? 12 : 6
                 var sessionLink: SessionLink?
                 for attempt in 0..<maxAttempts {
                     try? await Task.sleep(for: .milliseconds(500))

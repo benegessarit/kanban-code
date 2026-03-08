@@ -19,11 +19,11 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         }
     }
 
-    /// The character(s) shown in the TUI when the assistant is ready for input.
+    /// Text shown in the TUI when the assistant is ready for input.
     public var promptCharacter: String {
         switch self {
         case .claude: "❯"
-        case .gemini: "> "
+        case .gemini: "Type your message"
         }
     }
 

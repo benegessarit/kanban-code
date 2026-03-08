@@ -36,9 +36,9 @@ struct CodingAssistantTests {
         #expect(CodingAssistant.claude.promptCharacter == "❯")
     }
 
-    @Test("Gemini prompt character is '> '")
+    @Test("Gemini prompt character detects input prompt")
     func geminiPromptCharacter() {
-        #expect(CodingAssistant.gemini.promptCharacter == "> ")
+        #expect(CodingAssistant.gemini.promptCharacter == "Type your message")
     }
 
     // MARK: - Auto-Approve Flags

@@ -2,15 +2,15 @@ import Foundation
 
 /// Errors from image sending operations.
 public enum ImageSendError: Error, LocalizedError {
-    case claudeNotReady
-    case imageUploadTimeout(expected: Int)
+    case assistantNotReady(CodingAssistant)
+    case imageUploadTimeout(expected: Int, assistant: CodingAssistant)
 
     public var errorDescription: String? {
         switch self {
-        case .claudeNotReady:
-            "Claude Code did not become ready within the timeout period"
-        case .imageUploadTimeout(let n):
-            "Timed out waiting for image #\(n) to be accepted by Claude Code"
+        case .assistantNotReady(let assistant):
+            "\(assistant.displayName) did not become ready within the timeout period"
+        case .imageUploadTimeout(let n, let assistant):
+            "Timed out waiting for image #\(n) to be accepted by \(assistant.displayName)"
         }
     }
 }
@@ -33,15 +33,17 @@ public actor ImageSender {
         sessionName: String,
         assistant: CodingAssistant = .claude,
         pollInterval: Duration = .milliseconds(500),
-        timeout: Duration = .seconds(30)
+        timeout: Duration? = nil
     ) async throws {
+        // Gemini takes longer to start (ASCII art banner, auth, plan info)
+        let effectiveTimeout = timeout ?? (assistant == .gemini ? .seconds(60) : .seconds(30))
         let start = ContinuousClock.now
-        while ContinuousClock.now - start < timeout {
+        while ContinuousClock.now - start < effectiveTimeout {
             let output = try await tmux.capturePane(sessionName: sessionName)
             if PaneOutputParser.isReady(output, assistant: assistant) { return }
             try await Task.sleep(for: pollInterval)
         }
-        throw ImageSendError.claudeNotReady
+        throw ImageSendError.assistantNotReady(assistant)
     }
 
     /// Send images one by one, confirming each before sending the next.
@@ -55,6 +57,7 @@ public actor ImageSender {
     public func sendImages(
         sessionName: String,
         images: [ImageAttachment],
+        assistant: CodingAssistant = .claude,
         setClipboard: @Sendable (Data) -> Void,
         pollInterval: Duration = .milliseconds(500),
         timeout: Duration = .seconds(30)
@@ -76,7 +79,7 @@ public actor ImageSender {
                     break
                 }
                 if ContinuousClock.now - start >= timeout {
-                    throw ImageSendError.imageUploadTimeout(expected: index + 1)
+                    throw ImageSendError.imageUploadTimeout(expected: index + 1, assistant: assistant)
                 }
             }
         }
