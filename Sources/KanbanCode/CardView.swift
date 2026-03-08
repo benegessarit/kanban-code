@@ -17,6 +17,9 @@ struct CardView: View {
     var onDelete: () -> Void = {}
     var availableProjects: [(name: String, path: String)] = []
     var onMoveToProject: (String) -> Void = { _ in }
+    var onMoveToFolder: () -> Void = {}
+    var enabledAssistants: [CodingAssistant] = []
+    var onMigrateAssistant: (CodingAssistant) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -193,19 +196,38 @@ struct CardView: View {
                     Label("Cleanup Worktree", systemImage: "trash")
                 }
             }
-            if !availableProjects.isEmpty {
+            if card.link.sessionLink != nil {
                 let currentPath = card.link.projectPath
                 let otherProjects = availableProjects.filter { $0.path != currentPath }
-                if !otherProjects.isEmpty {
+                Divider()
+                Menu {
+                    ForEach(otherProjects, id: \.path) { project in
+                        Button(project.name) {
+                            onMoveToProject(project.path)
+                        }
+                    }
+                    if !otherProjects.isEmpty {
+                        Divider()
+                    }
+                    Button("Select Folder...") {
+                        onMoveToFolder()
+                    }
+                } label: {
+                    Label("Move to Project", systemImage: "folder.badge.arrow.forward")
+                }
+            }
+            if card.link.sessionLink != nil {
+                let migrationTargets = enabledAssistants.filter { $0 != card.link.effectiveAssistant }
+                if !migrationTargets.isEmpty {
                     Divider()
                     Menu {
-                        ForEach(otherProjects, id: \.path) { project in
-                            Button(project.name) {
-                                onMoveToProject(project.path)
+                        ForEach(migrationTargets, id: \.rawValue) { target in
+                            Button(target.displayName) {
+                                onMigrateAssistant(target)
                             }
                         }
                     } label: {
-                        Label("Move to Project", systemImage: "folder.badge.arrow.forward")
+                        Label("Migrate to Assistant", systemImage: "arrow.triangle.swap")
                     }
                 }
             }
@@ -250,7 +272,7 @@ struct SessionIcon: View {
         if let src = Self.sourceImage {
             if let size {
                 // Pre-sized image for contexts like Menu Labels that ignore .frame()
-                Image(nsImage: Self.resized(src, to: size))
+                Image(nsImage: Self.resizedForMenu(src, to: size))
             } else {
                 Image(nsImage: src)
                     .resizable()
@@ -259,7 +281,8 @@ struct SessionIcon: View {
         }
     }
 
-    private static func resized(_ img: NSImage, to size: CGFloat) -> NSImage {
+    /// Resize the source image for use in NSMenuItems. Internal so AssistantIcon can use it.
+    static func resizedForMenu(_ img: NSImage, to size: CGFloat) -> NSImage {
         let result = NSImage(size: NSSize(width: size, height: size))
         result.lockFocus()
         img.draw(in: NSRect(x: 0, y: 0, width: size, height: size),
@@ -285,10 +308,13 @@ struct AssistantIcon: View {
     }
 
     /// NSImage for use in NSMenuItems — template mode for dark mode support.
+    /// NOTE: The `size` parameter must be applied for Claude too (clawd PNG is high-res).
+    /// Do not remove the resize call — without it the menu icon renders at full PNG resolution.
     static func menuImage(for assistant: CodingAssistant, size: CGFloat = 16) -> NSImage? {
         switch assistant {
         case .claude:
-            return SessionIcon.menuImage
+            guard let src = SessionIcon.menuImage else { return nil }
+            return SessionIcon.resizedForMenu(src, to: size)
         case .gemini:
             return geminiMenuImage(size: size)
         }

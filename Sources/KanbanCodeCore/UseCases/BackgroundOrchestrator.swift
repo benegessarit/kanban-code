@@ -25,6 +25,9 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
     private var didInitialLoad = false
     private var dispatch: (@MainActor @Sendable (Action) -> Void)?
 
+    /// Prompt IDs currently being edited in the UI — skip auto-send for these.
+    private var editingQueuedPromptIds: Set<String> = []
+
     public init(
         discovery: SessionDiscovery,
         coordinationStore: CoordinationStore,
@@ -64,6 +67,16 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
     /// Update the notifier (e.g. when settings change).
     public func updateNotifier(_ newNotifier: NotifierPort?) {
         self.notifier = newNotifier
+    }
+
+    /// Mark a queued prompt as being edited — auto-send will skip it.
+    public func markPromptEditing(_ promptId: String) {
+        editingQueuedPromptIds.insert(promptId)
+    }
+
+    /// Clear the editing mark so auto-send can proceed.
+    public func clearPromptEditing(_ promptId: String) {
+        editingQueuedPromptIds.remove(promptId)
     }
 
     /// Set the dispatch callback for sending actions to the BoardStore.
@@ -327,7 +340,7 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 return
             }
             guard let prompts = link.queuedPrompts,
-                  let prompt = prompts.first(where: { $0.sendAutomatically }) else {
+                  let prompt = prompts.first(where: { $0.sendAutomatically && !editingQueuedPromptIds.contains($0.id) }) else {
                 return
             }
             guard link.tmuxLink?.sessionName != nil else {

@@ -71,6 +71,13 @@ public final class GeminiSessionStore: SessionStore, @unchecked Sendable {
                         kind: .toolUse(name: name, input: inputMap),
                         text: "\(description)\(resultPreview)"
                     ))
+                    // Add tool result block with full output for migration support
+                    if let result = call.result {
+                        blocks.append(ContentBlock(
+                            kind: .toolResult(toolName: name),
+                            text: result
+                        ))
+                    }
                 }
             }
 
@@ -132,6 +139,126 @@ public final class GeminiSessionStore: SessionStore, @unchecked Sendable {
         }
 
         return newSessionId
+    }
+
+    public func writeSession(turns: [ConversationTurn], sessionId: String, projectPath: String?) async throws -> String {
+        // Find slug for project path from ~/.gemini/projects.json
+        let slug = resolveSlug(for: projectPath)
+        let base = (NSHomeDirectory() as NSString).appendingPathComponent(".gemini/tmp/\(slug)/chats")
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+
+        let fileName = "session-migrated-\(sessionId).json"
+        let filePath = (base as NSString).appendingPathComponent(fileName)
+
+        let isoFormatter = ISO8601DateFormatter()
+        let now = isoFormatter.string(from: .now)
+        var messages: [[String: Any]] = []
+
+        for turn in turns {
+            let msgId = UUID().uuidString.lowercased()
+            var msg: [String: Any] = [
+                "id": msgId,
+                "timestamp": turn.timestamp ?? now
+            ]
+
+            if turn.role == "user" {
+                msg["type"] = "user"
+                let textParts = turn.contentBlocks.compactMap { block -> String? in
+                    if case .text = block.kind { return block.text }
+                    return nil
+                }
+                let text = textParts.isEmpty ? turn.textPreview : textParts.joined(separator: "\n")
+                msg["content"] = [["text": text]]
+            } else if turn.role == "assistant" {
+                msg["type"] = "gemini"
+                // Collect text content
+                var textParts: [String] = []
+                var toolCalls: [[String: Any]] = []
+
+                for block in turn.contentBlocks {
+                    switch block.kind {
+                    case .text:
+                        textParts.append(block.text)
+                    case .toolUse(let name, let input):
+                        toolCalls.append([
+                            "id": UUID().uuidString.lowercased(),
+                            "name": name,
+                            "displayName": name,
+                            "description": block.text,
+                            "args": input,
+                            "status": "completed"
+                        ])
+                    case .toolResult:
+                        // Attach result to last tool call if possible
+                        if !toolCalls.isEmpty {
+                            toolCalls[toolCalls.count - 1]["result"] = block.text
+                        }
+                    case .thinking:
+                        // Skip thinking blocks
+                        break
+                    }
+                }
+
+                msg["content"] = textParts.joined(separator: "\n")
+                if !toolCalls.isEmpty {
+                    msg["toolCalls"] = toolCalls
+                }
+            } else {
+                // System message -> info type
+                let text = turn.contentBlocks.compactMap { block -> String? in
+                    if case .text = block.kind { return block.text }
+                    return nil
+                }.joined(separator: "\n")
+                msg["type"] = "info"
+                msg["content"] = text.isEmpty ? turn.textPreview : text
+            }
+
+            messages.append(msg)
+        }
+
+        let sessionObj: [String: Any] = [
+            "sessionId": sessionId,
+            "startTime": turns.first?.timestamp ?? now,
+            "lastUpdated": turns.last?.timestamp ?? now,
+            "messages": messages,
+            "kind": "main"
+        ]
+
+        let data = try JSONSerialization.data(withJSONObject: sessionObj, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: URL(fileURLWithPath: filePath))
+        return filePath
+    }
+
+    // MARK: - Slug Resolution
+
+    /// Resolve the Gemini project slug for a given project path.
+    /// Reads `~/.gemini/projects.json` which maps `{ "projects": { "/path": "slug" } }`.
+    /// Falls back to the last path component if no mapping is found.
+    private func resolveSlug(for projectPath: String?) -> String {
+        guard let projectPath else { return "unknown" }
+
+        let projectsJsonPath = (NSHomeDirectory() as NSString).appendingPathComponent(".gemini/projects.json")
+        guard let data = FileManager.default.contents(atPath: projectsJsonPath) else {
+            // No projects.json — derive slug from path
+            return (projectPath as NSString).lastPathComponent
+        }
+
+        // projects.json schema: { "projects": { "/absolute/path": "slug" } }
+        struct ProjectsFile: Codable {
+            let projects: [String: String]
+        }
+
+        do {
+            let decoded = try JSONDecoder().decode(ProjectsFile.self, from: data)
+            if let slug = decoded.projects[projectPath] {
+                return slug
+            }
+        } catch {
+            // Fall through
+        }
+
+        // Not found — derive from path
+        return (projectPath as NSString).lastPathComponent
     }
 
     public func truncateSession(sessionPath: String, afterTurn: ConversationTurn) async throws {

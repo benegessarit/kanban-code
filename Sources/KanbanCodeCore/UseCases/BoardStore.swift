@@ -159,6 +159,10 @@ public enum Action: Sendable {
     case addIssueLinkToCard(cardId: String, issueNumber: Int)
     case addPRToCard(cardId: String, prNumber: Int)
     case moveCardToProject(cardId: String, projectPath: String)
+    case moveCardToFolder(cardId: String, folderPath: String, parentProjectPath: String)
+    case beginMigration(cardId: String)
+    case migrateSession(cardId: String, newAssistant: CodingAssistant, newSessionId: String, newSessionPath: String)
+    case migrationFailed(cardId: String, error: String)
     case markPRMerged(cardId: String, prNumber: Int)
     case mergeCards(sourceId: String, targetId: String)
     case updatePrompt(cardId: String, body: String, imagePaths: [String]?)
@@ -249,7 +253,7 @@ public enum Effect: Sendable {
     case refreshDiscovery
     case updateSessionIndex(sessionId: String, name: String)
     case moveSessionFile(cardId: String, sessionId: String, oldPath: String, newProjectPath: String)
-    case sendPromptToTmux(sessionName: String, promptBody: String)
+    case sendPromptToTmux(sessionName: String, promptBody: String, assistant: CodingAssistant)
     case sendPromptWithImagesToTmux(sessionName: String, promptBody: String, imagePaths: [String], assistant: CodingAssistant)
     case deleteFiles([String])
 }
@@ -615,7 +619,7 @@ public enum Reducer {
             if let imagePaths = prompt.imagePaths, !imagePaths.isEmpty, link.effectiveAssistant.supportsImageUpload {
                 sendEffect = .sendPromptWithImagesToTmux(sessionName: sessionName, promptBody: prompt.body, imagePaths: imagePaths, assistant: link.effectiveAssistant)
             } else {
-                sendEffect = .sendPromptToTmux(sessionName: sessionName, promptBody: prompt.body)
+                sendEffect = .sendPromptToTmux(sessionName: sessionName, promptBody: prompt.body, assistant: link.effectiveAssistant)
             }
             return [.upsertLink(link), sendEffect]
 
@@ -651,6 +655,79 @@ public enum Reducer {
             }
             KanbanCodeLog.info("store", "MoveToProject: card=\(cardId.prefix(12)) → \(projectPath)")
             return effects
+
+        case .moveCardToFolder(let cardId, let folderPath, let parentProjectPath):
+            guard var link = state.links[cardId] else { return [] }
+            let oldProjectPath = link.projectPath
+            link.projectPath = parentProjectPath
+            // Only clear repo-specific links if the parent project actually changed
+            if oldProjectPath != parentProjectPath {
+                link.worktreeLink = nil
+                link.prLinks = []
+                link.discoveredBranches = nil
+                link.discoveredRepos = nil
+            }
+            var effects: [Effect] = []
+            if let tmux = link.tmuxLink {
+                effects.append(.killTmuxSessions(tmux.allSessionNames))
+                effects.append(.cleanupTerminalCache(sessionNames: tmux.allSessionNames))
+                link.tmuxLink = nil
+            }
+            link.updatedAt = .now
+            state.links[cardId] = link
+            effects.insert(.upsertLink(link), at: 0)
+            // Move the session file — use folderPath for file location (not parentProjectPath)
+            if let sessionId = link.sessionLink?.sessionId,
+               let oldPath = link.sessionLink?.sessionPath {
+                effects.append(.moveSessionFile(
+                    cardId: cardId,
+                    sessionId: sessionId,
+                    oldPath: oldPath,
+                    newProjectPath: folderPath
+                ))
+            }
+            KanbanCodeLog.info("store", "MoveToFolder: card=\(cardId.prefix(12)) folder=\(folderPath) project=\(parentProjectPath)")
+            return effects
+
+        case .beginMigration(let cardId):
+            guard var link = state.links[cardId] else { return [] }
+            link.isLaunching = true
+            link.updatedAt = .now
+            state.links[cardId] = link
+            state.busyCards.insert(cardId)
+            return []
+
+        case .migrateSession(let cardId, let newAssistant, let newSessionId, let newSessionPath):
+            guard var link = state.links[cardId] else { return [] }
+            // Mark old session as deleted so reconciler won't recreate a card for it
+            if let oldSessionId = link.sessionLink?.sessionId {
+                state.deletedSessionIds.insert(oldSessionId)
+            }
+            link.assistant = newAssistant
+            link.sessionLink = SessionLink(sessionId: newSessionId, sessionPath: newSessionPath)
+            // Kill tmux sessions — the old assistant process must stop
+            var effects: [Effect] = []
+            if let tmux = link.tmuxLink {
+                effects.append(.killTmuxSessions(tmux.allSessionNames))
+                effects.append(.cleanupTerminalCache(sessionNames: tmux.allSessionNames))
+                link.tmuxLink = nil
+            }
+            link.isLaunching = nil
+            link.updatedAt = .now
+            state.links[cardId] = link
+            state.busyCards.remove(cardId)
+            KanbanCodeLog.info("store", "MigrateSession: card=\(cardId.prefix(12)) → \(newAssistant)")
+            effects.insert(.upsertLink(link), at: 0)
+            return effects
+
+        case .migrationFailed(let cardId, let error):
+            guard var link = state.links[cardId] else { return [] }
+            link.isLaunching = nil
+            link.updatedAt = .now
+            state.links[cardId] = link
+            state.busyCards.remove(cardId)
+            state.error = "Migration failed: \(error)"
+            return []
 
         case .mergeCards(let sourceId, let targetId):
             guard let source = state.links[sourceId],

@@ -69,6 +69,7 @@ struct ContentView: View {
     @State private var isSyncRefreshing = false
     @State private var showSyncPopover = false
     @State private var rawSyncOutput = ""
+    @State private var editingQueuedPromptId: String?
     @AppStorage("selectedProject") private var selectedProjectPersisted: String = ""
     @AppStorage("defaultAssistant") private var defaultAssistantRaw: String = CodingAssistant.claude.rawValue
     private var defaultAssistant: CodingAssistant {
@@ -252,6 +253,11 @@ struct ContentView: View {
                 let name = projectList.first(where: { $0.path == projectPath })?.name ?? (projectPath as NSString).lastPathComponent
                 pendingMoveToProject = (cardId: cardId, projectPath: projectPath, projectName: name)
             },
+            onMoveToFolder: { cardId in selectFolderForMove(cardId: cardId) },
+            enabledAssistants: assistantRegistry.available,
+            onMigrateAssistant: { cardId, target in
+                pendingMigration = (cardId: cardId, targetAssistant: target)
+            },
             onRefreshBacklog: { Task { await store.refreshBacklog() } },
             onDropCard: { cardId, column in handleDrop(cardId: cardId, to: column) },
             onMergeCards: { sourceId, targetId in
@@ -298,6 +304,11 @@ struct ContentView: View {
             onMoveToProject: { cardId, projectPath in
                 let name = projectList.first(where: { $0.path == projectPath })?.name ?? (projectPath as NSString).lastPathComponent
                 pendingMoveToProject = (cardId: cardId, projectPath: projectPath, projectName: name)
+            },
+            onMoveToFolder: { cardId in selectFolderForMove(cardId: cardId) },
+            enabledAssistants: assistantRegistry.available,
+            onMigrateAssistant: { cardId, target in
+                pendingMigration = (cardId: cardId, targetAssistant: target)
             },
             onRefreshBacklog: { Task { await store.refreshBacklog() } },
             onNewTask: { showNewTask = true },
@@ -383,6 +394,16 @@ struct ContentView: View {
                 onSendQueuedPrompt: { promptId in
                     store.dispatch(.sendQueuedPrompt(cardId: card.id, promptId: promptId))
                 },
+                onEditingQueuedPrompt: { promptId in
+                    // Clear previous editing mark if any
+                    if let prev = editingQueuedPromptId {
+                        orchestrator.clearPromptEditing(prev)
+                    }
+                    editingQueuedPromptId = promptId
+                    if let promptId {
+                        orchestrator.markPromptEditing(promptId)
+                    }
+                },
                 onDiscover: {
                     Task {
                         store.dispatch(.setBusy(cardId: card.id, busy: true))
@@ -401,6 +422,11 @@ struct ContentView: View {
                 onMoveToProject: { projectPath in
                     let name = projectList.first(where: { $0.path == projectPath })?.name ?? (projectPath as NSString).lastPathComponent
                     pendingMoveToProject = (cardId: card.id, projectPath: projectPath, projectName: name)
+                },
+                onMoveToFolder: { selectFolderForMove(cardId: card.id) },
+                enabledAssistants: assistantRegistry.available,
+                onMigrateAssistant: { target in
+                    pendingMigration = (cardId: card.id, targetAssistant: target)
                 },
                 focusTerminal: $shouldFocusTerminal
             )
@@ -663,6 +689,61 @@ struct ContentView: View {
             } message: {
                 if let pending = pendingMoveToProject {
                     Text("Move this card to \(pending.projectName)?")
+                }
+            }
+            .alert(
+                "Move to Folder?",
+                isPresented: Binding(
+                    get: { pendingMoveToFolder != nil },
+                    set: { if !$0 { pendingMoveToFolder = nil } }
+                )
+            ) {
+                Button("Cancel", role: .cancel) {
+                    pendingMoveToFolder = nil
+                }
+                Button("Move") {
+                    if let pending = pendingMoveToFolder {
+                        store.dispatch(.moveCardToFolder(
+                            cardId: pending.cardId,
+                            folderPath: pending.folderPath,
+                            parentProjectPath: pending.parentProjectPath
+                        ))
+                    }
+                    pendingMoveToFolder = nil
+                }
+            } message: {
+                if let pending = pendingMoveToFolder {
+                    let relative = pending.folderPath.hasPrefix(pending.parentProjectPath + "/")
+                        ? String(pending.folderPath.dropFirst(pending.parentProjectPath.count + 1))
+                        : pending.folderPath
+                    if pending.folderPath != pending.parentProjectPath {
+                        Text("Move session to \(relative) (under \(pending.displayName))?")
+                    } else {
+                        Text("Move session to \(pending.displayName)?")
+                    }
+                }
+            }
+            .alert(
+                "Migrate Session?",
+                isPresented: Binding(
+                    get: { pendingMigration != nil },
+                    set: { if !$0 { pendingMigration = nil } }
+                )
+            ) {
+                Button("Cancel", role: .cancel) {
+                    pendingMigration = nil
+                }
+                Button("Migrate") {
+                    if let pending = pendingMigration {
+                        Task { await executeMigration(cardId: pending.cardId, targetAssistant: pending.targetAssistant) }
+                    }
+                    pendingMigration = nil
+                }
+            } message: {
+                if let pending = pendingMigration {
+                    let card = store.state.cards.first(where: { $0.id == pending.cardId })
+                    let source = card?.link.effectiveAssistant.displayName ?? "current assistant"
+                    Text("Migrate this session from \(source) to \(pending.targetAssistant.displayName)? A backup of the original session will be kept.")
                 }
             }
             .alert(
@@ -1891,7 +1972,14 @@ struct ContentView: View {
                 if runRemotely, let remote = globalRemote, projectPath.hasPrefix(remote.localPath) {
                     try? RemoteShellManager.deploy()
                     shellOverride = RemoteShellManager.shellOverridePath()
-                    extraEnv = RemoteShellManager.setupEnvironment(remote: remote, projectPath: projectPath)
+                    var env = RemoteShellManager.setupEnvironment(remote: remote, projectPath: projectPath)
+                    // Gemini CLI uses `bash -c` directly (not $SHELL), so prepend
+                    // our remote dir to PATH so it finds our bash wrapper first.
+                    if assistant == .gemini {
+                        let remoteDir = RemoteShellManager.remoteDirPath()
+                        env["PATH"] = "\(remoteDir):$PATH"
+                    }
+                    extraEnv = env
                     isRemote = true
 
                     let syncName = "kanban-code-sync"
@@ -1980,7 +2068,11 @@ struct ContentView: View {
                     }
 
                     if !prompt.isEmpty {
-                        try await self.tmuxAdapter.sendPrompt(to: tmuxName, text: prompt)
+                        if assistant == .gemini {
+                            try await self.tmuxAdapter.pastePrompt(to: tmuxName, text: prompt)
+                        } else {
+                            try await self.tmuxAdapter.sendPrompt(to: tmuxName, text: prompt)
+                        }
                     }
                 }
 
@@ -2102,6 +2194,8 @@ struct ContentView: View {
     @State private var pendingArchiveCardId: String?
     @State private var pendingForkCardId: String?
     @State private var pendingMoveToProject: (cardId: String, projectPath: String, projectName: String)?
+    @State private var pendingMoveToFolder: (cardId: String, folderPath: String, parentProjectPath: String, displayName: String)?
+    @State private var pendingMigration: (cardId: String, targetAssistant: CodingAssistant)?
     @State private var pendingWorktreeCleanupCardId: String?
     @State private var shouldFocusTerminal = false
     @State private var keyMonitor: Any?
@@ -2112,6 +2206,90 @@ struct ContentView: View {
         let remotePath: String
         let localPath: String
         let errorMessage: String
+    }
+
+    private func selectFolderForMove(cardId: String) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Select folder to move this session to"
+        panel.prompt = "Select"
+
+        // Start in the card's current project folder if available
+        if let card = store.state.cards.first(where: { $0.id == cardId }),
+           let projectPath = card.link.projectPath {
+            panel.directoryURL = URL(fileURLWithPath: projectPath)
+        }
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let folderPath = url.path
+
+        // Detect if this folder is nested inside a registered project
+        let parentProject = projectList
+            .filter { folderPath.hasPrefix($0.path + "/") || folderPath == $0.path }
+            .max(by: { $0.path.count < $1.path.count }) // longest prefix = most specific parent
+
+        let parentProjectPath = parentProject?.path ?? folderPath
+        let displayName = parentProject?.name ?? (folderPath as NSString).lastPathComponent
+
+        if folderPath == parentProjectPath {
+            // Moving to a project root — use the regular move flow
+            pendingMoveToProject = (cardId: cardId, projectPath: folderPath, projectName: displayName)
+        } else {
+            // Moving to a subfolder — use the folder-specific flow
+            pendingMoveToFolder = (cardId: cardId, folderPath: folderPath, parentProjectPath: parentProjectPath, displayName: displayName)
+        }
+    }
+
+    /// Returns assistants the card can be migrated to (excludes current, requires both registered).
+    private func migrationTargets(for card: KanbanCodeCard) -> [CodingAssistant] {
+        guard card.link.sessionLink != nil else { return [] }
+        let current = card.link.effectiveAssistant
+        return assistantRegistry.available.filter { $0 != current }
+    }
+
+    private func executeMigration(cardId: String, targetAssistant: CodingAssistant) async {
+        guard let card = store.state.cards.first(where: { $0.id == cardId }),
+              let sessionLink = card.link.sessionLink,
+              let sessionPath = sessionLink.sessionPath else { return }
+        let sourceAssistant = card.link.effectiveAssistant
+        let runRemotely = card.link.isRemote
+        guard let sourceStore = assistantRegistry.store(for: sourceAssistant),
+              let targetStore = assistantRegistry.store(for: targetAssistant) else { return }
+
+        // Mark card as "launching" to prevent the reconciler from touching it
+        // while migration is in progress (avoids race where the new session file
+        // is discovered before migrateSession updates the sessionId).
+        store.dispatch(.beginMigration(cardId: cardId))
+        do {
+            let result = try await SessionMigrator.migrate(
+                sourceSessionPath: sessionPath,
+                sourceStore: sourceStore,
+                targetStore: targetStore,
+                projectPath: card.link.projectPath
+            )
+            // Update the card's link to point to the new session and kill tmux
+            store.dispatch(.migrateSession(
+                cardId: cardId,
+                newAssistant: targetAssistant,
+                newSessionId: result.newSessionId,
+                newSessionPath: result.newSessionPath
+            ))
+            KanbanCodeLog.info("migrate", "Migrated card=\(cardId.prefix(12)) from \(sourceAssistant) to \(targetAssistant), backup=\(result.backupPath)")
+
+            // Resume the session with the new assistant right away
+            executeResume(
+                cardId: cardId,
+                runRemotely: runRemotely,
+                skipPermissions: true,
+                commandOverride: nil,
+                assistant: targetAssistant
+            )
+        } catch {
+            store.dispatch(.migrationFailed(cardId: cardId, error: error.localizedDescription))
+            KanbanCodeLog.info("migrate", "Migration failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
+        }
     }
 
     private func cleanupWorktree(cardId: String) async {
@@ -2338,7 +2516,14 @@ struct ContentView: View {
                 if runRemotely, let remote = globalRemote, projectPath.hasPrefix(remote.localPath) {
                     try? RemoteShellManager.deploy()
                     shellOverride = RemoteShellManager.shellOverridePath()
-                    extraEnv = RemoteShellManager.setupEnvironment(remote: remote, projectPath: projectPath)
+                    var env = RemoteShellManager.setupEnvironment(remote: remote, projectPath: projectPath)
+                    // Gemini CLI uses `bash -c` directly (not $SHELL), so prepend
+                    // our remote dir to PATH so it finds our bash wrapper first.
+                    if assistant == .gemini {
+                        let remoteDir = RemoteShellManager.remoteDirPath()
+                        env["PATH"] = "\(remoteDir):$PATH"
+                    }
+                    extraEnv = env
                     isRemote = true
 
                     let syncName = "kanban-code-sync"

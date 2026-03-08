@@ -284,6 +284,9 @@ struct NewTaskDialog: View {
 
         if runRemotely && hasRemoteConfig {
             parts.append("SHELL=~/.kanban-code/remote/zsh")
+            if selectedAssistant == .gemini {
+                parts.append("PATH=~/.kanban-code/remote:$PATH")
+            }
         }
 
         var cmd = selectedAssistant.cliCommand

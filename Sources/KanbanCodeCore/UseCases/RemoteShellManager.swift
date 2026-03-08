@@ -6,8 +6,10 @@ public enum RemoteShellManager {
 
     // MARK: - Public API
 
-    /// Deploy the remote shell script and create the zsh symlink.
+    /// Deploy the remote shell script and create symlinks for zsh and bash.
     /// Call once at app startup (idempotent — overwrites with latest version).
+    /// Both symlinks are needed because Claude Code uses `$SHELL -c` (zsh)
+    /// while Gemini CLI uses `bash -c` directly via PATH lookup.
     public static func deploy() throws {
         let fm = FileManager.default
         let remoteDir = Self.remoteDir()
@@ -18,17 +20,26 @@ public enum RemoteShellManager {
         try remoteShellScript.write(toFile: scriptPath, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptPath)
 
-        // Create symlink: ~/.kanban-code/remote/zsh -> remote-shell.sh
-        let symlinkPath = Self.symlinkPath()
-        if fm.fileExists(atPath: symlinkPath) || (try? fm.attributesOfItem(atPath: symlinkPath)) != nil {
-            try? fm.removeItem(atPath: symlinkPath)
+        // Create symlinks: ~/.kanban-code/remote/{zsh,bash} -> remote-shell.sh
+        for name in ["zsh", "bash"] {
+            let link = (remoteDir as NSString).appendingPathComponent(name)
+            if fm.fileExists(atPath: link) || (try? fm.attributesOfItem(atPath: link)) != nil {
+                try? fm.removeItem(atPath: link)
+            }
+            try fm.createSymbolicLink(atPath: link, withDestinationPath: scriptPath)
         }
-        try fm.createSymbolicLink(atPath: symlinkPath, withDestinationPath: scriptPath)
     }
 
-    /// Returns the path to use as SHELL override for remote execution.
+    /// Returns the path to use as SHELL override for remote execution (zsh symlink).
     public static func shellOverridePath() -> String {
-        symlinkPath()
+        (remoteDir() as NSString).appendingPathComponent("zsh")
+    }
+
+    /// Returns the remote directory path, for prepending to PATH.
+    /// Gemini CLI uses `bash -c` directly, so we need our `bash` wrapper
+    /// to appear before the system bash in PATH.
+    public static func remoteDirPath() -> String {
+        remoteDir()
     }
 
     /// Returns environment variables needed for remote execution.
@@ -46,10 +57,6 @@ public enum RemoteShellManager {
 
     private static func scriptPath() -> String {
         (remoteDir() as NSString).appendingPathComponent("remote-shell.sh")
-    }
-
-    private static func symlinkPath() -> String {
-        (remoteDir() as NSString).appendingPathComponent("zsh")
     }
 
     // MARK: - Embedded Script
