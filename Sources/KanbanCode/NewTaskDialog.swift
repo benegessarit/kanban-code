@@ -7,8 +7,8 @@ struct NewTaskDialog: View {
     var defaultProjectPath: String?
     var globalRemoteSettings: RemoteSettings?
     var defaultAssistant: CodingAssistant = .claude
-    /// (prompt, projectPath, title, startImmediately, images, assistant) — creates task, optionally starts via LaunchConfirmation
-    var onCreate: (String, String?, String?, Bool, [ImageAttachment], CodingAssistant) -> Void = { _, _, _, _, _, _ in }
+    /// (prompt, projectPath, title, startImmediately, images) — creates task without an assistant set
+    var onCreate: (String, String?, String?, Bool, [ImageAttachment]) -> Void = { _, _, _, _, _ in }
     /// (prompt, projectPath, title, createWorktree, runRemotely, skipPermissions, commandOverride, images, assistant) — creates and launches directly (skips LaunchConfirmation)
     var onCreateAndLaunch: (String, String?, String?, Bool, Bool, Bool, String?, [ImageAttachment], CodingAssistant) -> Void = { _, _, _, _, _, _, _, _, _ in }
 
@@ -145,7 +145,7 @@ struct NewTaskDialog: View {
                 if startImmediately {
                     Picker(selection: $selectedAssistant) {
                         ForEach(CodingAssistant.allCases, id: \.self) { assistant in
-                            Label(assistant.displayName, systemImage: assistant.iconName)
+                            Text(assistant.displayName)
                                 .tag(assistant)
                         }
                     } label: {
@@ -233,7 +233,7 @@ struct NewTaskDialog: View {
                 selectedAssistant
             )
         } else {
-            onCreate(prompt, proj, titleOrNil, false, images, selectedAssistant)
+            onCreate(prompt, proj, titleOrNil, false, images)
         }
         isPresented = false
     }

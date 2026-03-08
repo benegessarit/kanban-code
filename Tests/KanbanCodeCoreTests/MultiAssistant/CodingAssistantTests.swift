@@ -107,18 +107,6 @@ struct CodingAssistantTests {
         #expect(CodingAssistant.gemini.installCommand.contains("gemini-cli"))
     }
 
-    // MARK: - Icon Names
-
-    @Test("Claude icon name")
-    func claudeIconName() {
-        #expect(CodingAssistant.claude.iconName == "c.circle.fill")
-    }
-
-    @Test("Gemini icon name")
-    func geminiIconName() {
-        #expect(CodingAssistant.gemini.iconName == "g.circle.fill")
-    }
-
     // MARK: - Codable
 
     @Test("CodingAssistant Codable round-trip")

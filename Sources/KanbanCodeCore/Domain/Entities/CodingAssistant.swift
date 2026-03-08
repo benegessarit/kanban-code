@@ -27,14 +27,6 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         }
     }
 
-    /// SF Symbol name for UI badges.
-    public var iconName: String {
-        switch self {
-        case .claude: "c.circle.fill"
-        case .gemini: "g.circle.fill"
-        }
-    }
-
     /// CLI flag to auto-approve all tool calls.
     public var autoApproveFlag: String {
         switch self {

@@ -446,8 +446,8 @@ struct ContentView: View {
                     defaultProjectPath: store.state.selectedProjectPath,
                     globalRemoteSettings: store.state.globalRemoteSettings,
                     defaultAssistant: defaultAssistant,
-                    onCreate: { prompt, projectPath, title, startImmediately, images, assistant in
-                        createManualTask(prompt: prompt, projectPath: projectPath, title: title, startImmediately: startImmediately, images: images, assistant: assistant)
+                    onCreate: { prompt, projectPath, title, startImmediately, images in
+                        createManualTask(prompt: prompt, projectPath: projectPath, title: title, startImmediately: startImmediately, images: images)
                     },
                     onCreateAndLaunch: { prompt, projectPath, title, createWorktree, runRemotely, skipPermissions, commandOverride, images, assistant in
                         createManualTaskAndLaunch(prompt: prompt, projectPath: projectPath, title: title, createWorktree: createWorktree, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: assistant)
@@ -1636,7 +1636,7 @@ struct ContentView: View {
         presentNewTask()
     }
 
-    private func createManualTask(prompt: String, projectPath: String?, title: String? = nil, startImmediately: Bool = false, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude) {
+    private func createManualTask(prompt: String, projectPath: String?, title: String? = nil, startImmediately: Bool = false, images: [ImageAttachment] = []) {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let name: String
         if let title, !title.isEmpty {
@@ -1655,8 +1655,7 @@ struct ContentView: View {
             column: startImmediately ? .inProgress : .backlog,
             source: .manual,
             promptBody: trimmed,
-            promptImagePaths: imagePaths,
-            assistant: assistant
+            promptImagePaths: imagePaths
         )
 
         store.dispatch(.createManualTask(link))
