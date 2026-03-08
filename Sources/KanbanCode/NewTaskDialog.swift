@@ -6,13 +6,16 @@ struct NewTaskDialog: View {
     var projects: [Project] = []
     var defaultProjectPath: String?
     var globalRemoteSettings: RemoteSettings?
-    var defaultAssistant: CodingAssistant = .claude
     /// (prompt, projectPath, title, startImmediately, images) — creates task without an assistant set
     var onCreate: (String, String?, String?, Bool, [ImageAttachment]) -> Void = { _, _, _, _, _ in }
     /// (prompt, projectPath, title, createWorktree, runRemotely, skipPermissions, commandOverride, images, assistant) — creates and launches directly (skips LaunchConfirmation)
     var onCreateAndLaunch: (String, String?, String?, Bool, Bool, Bool, String?, [ImageAttachment], CodingAssistant) -> Void = { _, _, _, _, _, _, _, _, _ in }
 
-    @State private var selectedAssistant: CodingAssistant = .claude
+    @AppStorage("selectedAssistant") private var selectedAssistantRaw: String = CodingAssistant.claude.rawValue
+    private var selectedAssistant: CodingAssistant {
+        get { CodingAssistant(rawValue: selectedAssistantRaw) ?? .claude }
+        nonmutating set { selectedAssistantRaw = newValue.rawValue }
+    }
     @State private var prompt = ""
     @State private var images: [ImageAttachment] = []
     @State private var title = ""
@@ -143,10 +146,10 @@ struct NewTaskDialog: View {
             // Buttons
             HStack {
                 if startImmediately {
-                    Picker(selection: $selectedAssistant) {
+                    Picker(selection: $selectedAssistantRaw) {
                         ForEach(CodingAssistant.allCases, id: \.self) { assistant in
                             Text(assistant.displayName)
-                                .tag(assistant)
+                                .tag(assistant.rawValue)
                         }
                     } label: {
                         EmptyView()
@@ -169,7 +172,6 @@ struct NewTaskDialog: View {
         .padding(20)
         .frame(width: 450)
         .onAppear {
-            selectedAssistant = defaultAssistant
             if let defaultPath = defaultProjectPath,
                projects.contains(where: { $0.path == defaultPath }) {
                 selectedProjectPath = defaultPath
@@ -208,7 +210,7 @@ struct NewTaskDialog: View {
         .onChange(of: dangerouslySkipPermissions) {
             if !commandEdited { command = commandPreview }
         }
-        .onChange(of: selectedAssistant) {
+        .onChange(of: selectedAssistantRaw) {
             if !commandEdited { command = commandPreview }
         }
     }
