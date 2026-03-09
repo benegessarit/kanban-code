@@ -4,7 +4,9 @@ import { create } from "zustand";
 import type {
   BoardStateDto,
   CardDto,
+  DependencyStatus,
   KanbanColumn,
+  QueuedPrompt,
   Session,
   Settings,
   TranscriptPage,
@@ -240,4 +242,39 @@ export async function openInEditor(
   editor?: string
 ): Promise<void> {
   return invoke("open_in_editor", { path, editor: editor ?? null });
+}
+
+export async function addQueuedPrompt(
+  cardId: string,
+  body: string,
+  sendAutomatically: boolean
+): Promise<QueuedPrompt> {
+  return invoke<QueuedPrompt>("add_queued_prompt", { cardId, body, sendAutomatically });
+}
+
+export async function updateQueuedPrompt(
+  cardId: string,
+  promptId: string,
+  body: string,
+  sendAutomatically: boolean
+): Promise<void> {
+  return invoke("update_queued_prompt", { cardId, promptId, body, sendAutomatically });
+}
+
+export async function removeQueuedPrompt(
+  cardId: string,
+  promptId: string
+): Promise<void> {
+  return invoke("remove_queued_prompt", { cardId, promptId });
+}
+
+export async function checkDependencies(): Promise<DependencyStatus> {
+  return invoke<DependencyStatus>("check_dependencies");
+}
+
+export async function searchTranscript(
+  sessionId: string,
+  query: string
+): Promise<number[]> {
+  return invoke<number[]>("search_transcript", { sessionId, query });
 }

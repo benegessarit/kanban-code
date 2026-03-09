@@ -5,6 +5,16 @@ use std::path::PathBuf;
 use tokio::fs;
 use uuid::Uuid;
 
+// ── Queued Prompt ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedPrompt {
+    pub id: String,
+    pub body: String,
+    pub send_automatically: bool,
+}
+
 // ── Sub-structs ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +101,8 @@ pub struct Link {
     #[serde(default = "default_false")]
     pub is_remote: bool,
     pub is_launching: Option<bool>,
+    #[serde(default)]
+    pub queued_prompts: Option<Vec<QueuedPrompt>>,
 }
 
 fn default_source() -> String {
@@ -155,6 +167,17 @@ impl Link {
             discovered_branches: None,
             is_remote: false,
             is_launching: None,
+            queued_prompts: None,
+        }
+    }
+}
+
+impl QueuedPrompt {
+    pub fn new(body: String, send_automatically: bool) -> Self {
+        Self {
+            id: format!("prompt_{}", Uuid::new_v4().simple()),
+            body,
+            send_automatically,
         }
     }
 }
@@ -281,6 +304,97 @@ impl CoordinationStore {
         if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
             link.name = Some(name.to_string());
             link.manual_overrides.name = true;
+            link.updated_at = Utc::now();
+        }
+        self.write_links(&links).await
+    }
+
+    pub async fn add_queued_prompt(
+        &self,
+        card_id: &str,
+        prompt: QueuedPrompt,
+    ) -> Result<QueuedPrompt> {
+        let mut links = self.read_links().await?;
+        if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
+            let prompts = link.queued_prompts.get_or_insert_with(Vec::new);
+            prompts.push(prompt.clone());
+            link.updated_at = Utc::now();
+        }
+        self.write_links(&links).await?;
+        Ok(prompt)
+    }
+
+    pub async fn update_queued_prompt(
+        &self,
+        card_id: &str,
+        prompt_id: &str,
+        body: &str,
+        send_automatically: bool,
+    ) -> Result<()> {
+        let mut links = self.read_links().await?;
+        if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
+            if let Some(prompts) = &mut link.queued_prompts {
+                if let Some(p) = prompts.iter_mut().find(|p| p.id == prompt_id) {
+                    p.body = body.to_string();
+                    p.send_automatically = send_automatically;
+                }
+            }
+            link.updated_at = Utc::now();
+        }
+        self.write_links(&links).await
+    }
+
+    /// Create a card from a GitHub issue, returning the new Link.
+    pub async fn create_issue_card(
+        &self,
+        project_path: &str,
+        issue_number: i64,
+        issue_title: &str,
+        issue_url: &str,
+        issue_body: Option<&str>,
+        prompt_body: &str,
+    ) -> Result<Link> {
+        let now = Utc::now();
+        let id = format!("card_{}", Uuid::new_v4().simple());
+        let link = Link {
+            id,
+            name: Some(format!("#{}: {}", issue_number, issue_title)),
+            project_path: Some(project_path.to_string()),
+            column: "backlog".to_string(),
+            created_at: now,
+            updated_at: now,
+            last_activity: None,
+            manual_overrides: ManualOverrides::default(),
+            manually_archived: false,
+            source: "github_issue".to_string(),
+            prompt_body: Some(prompt_body.to_string()),
+            session_link: None,
+            worktree_link: None,
+            pr_links: vec![],
+            issue_link: Some(IssueLink {
+                number: issue_number,
+                url: Some(issue_url.to_string()),
+                title: Some(issue_title.to_string()),
+                body: issue_body.map(|s| s.to_string()),
+            }),
+            discovered_branches: None,
+            is_remote: false,
+            is_launching: None,
+            queued_prompts: None,
+        };
+        self.upsert_link(&link).await?;
+        Ok(link)
+    }
+
+    pub async fn remove_queued_prompt(&self, card_id: &str, prompt_id: &str) -> Result<()> {
+        let mut links = self.read_links().await?;
+        if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
+            if let Some(prompts) = &mut link.queued_prompts {
+                prompts.retain(|p| p.id != prompt_id);
+                if prompts.is_empty() {
+                    link.queued_prompts = None;
+                }
+            }
             link.updated_at = Utc::now();
         }
         self.write_links(&links).await

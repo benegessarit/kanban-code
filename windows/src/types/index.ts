@@ -66,6 +66,12 @@ export interface ManualOverrides {
   branchWatermark?: number;
 }
 
+export interface QueuedPrompt {
+  id: string;
+  body: string;
+  sendAutomatically: boolean;
+}
+
 export interface Link {
   id: string;
   name?: string;
@@ -85,6 +91,7 @@ export interface Link {
   discoveredBranches?: string[];
   isRemote: boolean;
   isLaunching?: boolean;
+  queuedPrompts?: QueuedPrompt[];
 }
 
 export interface Session {
@@ -160,6 +167,14 @@ export interface Settings {
   githubIssuePromptTemplate: string;
   hasCompletedOnboarding: boolean;
   editor: string;
+  terminalFontSize: number;
+}
+
+export interface DependencyStatus {
+  claudeAvailable: boolean;
+  gitAvailable: boolean;
+  ghAvailable: boolean;
+  ghAuthenticated: boolean;
 }
 
 export interface ContentBlock {

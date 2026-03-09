@@ -1,4 +1,4 @@
-use crate::activity_detector::{detect_activity, ActivityState};
+use crate::activity_detector::{ActivityState, ActivityTracker};
 use crate::assign_column::update_card_column;
 use crate::card_reconciler::reconcile;
 use crate::coordination_store::{CoordinationStore, Link};
@@ -7,7 +7,7 @@ use crate::settings_store::SettingsStore;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +35,8 @@ pub struct BoardState {
     pub last_refresh: Option<DateTime<Utc>>,
     /// Previous activity state per card id, used to detect transitions
     prev_activity: HashMap<String, String>,
+    /// Tracks JSONL mtime changes across polls to detect active vs stopped
+    activity_tracker: ActivityTracker,
 }
 
 impl BoardState {
@@ -51,37 +53,50 @@ impl BoardState {
         // --- Reconcile: merge sessions into links without duplicates ---
         let mut all_links = reconcile(existing_links.clone(), sessions.clone());
 
-        // --- Detect activity + assign columns ---
+        // --- Detect activity once per session, cache results ---
         let sessions_by_id: HashMap<String, Session> =
             sessions.into_iter().map(|s| (s.id.clone(), s)).collect();
 
-        for link in &mut all_links {
-            let session_path = link
+        let mut activity_map: HashMap<String, ActivityState> = HashMap::new();
+        for link in &all_links {
+            if let Some(path) = link
                 .session_link
                 .as_ref()
-                .and_then(|sl| sl.session_path.as_deref());
+                .and_then(|sl| sl.session_path.as_deref())
+            {
+                activity_map
+                    .entry(link.id.clone())
+                    .or_insert_with(|| self.activity_tracker.detect(path));
+            }
+        }
 
-            let activity = session_path.map(detect_activity);
-
-            // has_worktree = worktree_link exists with a non-empty path
+        // --- Assign columns using cached activity ---
+        for link in &mut all_links {
+            let activity = activity_map.get(&link.id);
             let has_worktree = link
                 .worktree_link
                 .as_ref()
                 .map(|wl| !wl.path.is_empty())
                 .unwrap_or(false);
 
-            update_card_column(link, activity.as_ref(), has_worktree);
+            update_card_column(link, activity, has_worktree);
         }
 
-        // --- Persist if anything changed ---
-        let old_ids: HashSet<String> = existing_links.iter().map(|l| l.id.clone()).collect();
-        let has_changes = all_links.iter().any(|l| !old_ids.contains(&l.id))
-            || all_links.len() != existing_links.len();
+        // --- Always persist — column changes must be written back ---
+        let old_map: HashMap<String, &Link> =
+            existing_links.iter().map(|l| (l.id.clone(), l)).collect();
+        let has_changes = all_links.len() != existing_links.len()
+            || all_links.iter().any(|l| {
+                old_map
+                    .get(&l.id)
+                    .map(|old| old.column != l.column || old.updated_at != l.updated_at)
+                    .unwrap_or(true)
+            });
         if has_changes {
             let _ = store.write_links(&all_links).await;
         }
 
-        // --- Build CardDtos ---
+        // --- Build CardDtos using cached activity ---
         let mut cards = Vec::new();
         for link in &all_links {
             let session = link
@@ -90,13 +105,8 @@ impl BoardState {
                 .and_then(|sl| sessions_by_id.get(&sl.session_id))
                 .cloned();
 
-            let activity = link
-                .session_link
-                .as_ref()
-                .and_then(|sl| sl.session_path.as_deref())
-                .map(detect_activity);
-
-            let activity_str = activity.as_ref().map(ActivityState::as_str);
+            let activity = activity_map.get(&link.id);
+            let activity_str = activity.map(ActivityState::as_str);
 
             let display_title = if let Some(name) = &link.name {
                 if !name.is_empty() {
@@ -121,7 +131,7 @@ impl BoardState {
             let relative_time =
                 format_relative_time(link.last_activity.unwrap_or(link.updated_at));
 
-            let show_spinner = activity == Some(ActivityState::ActivelyWorking)
+            let show_spinner = activity == Some(&ActivityState::ActivelyWorking)
                 || link.is_launching == Some(true);
 
             cards.push(CardDto {

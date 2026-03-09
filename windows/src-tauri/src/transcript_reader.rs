@@ -102,6 +102,47 @@ pub async fn read_transcript(file_path: &str, offset: usize) -> Result<Transcrip
     })
 }
 
+/// Search all turns for a query string (case-insensitive).
+/// Returns indices of matching turns.
+pub async fn search_transcript_turns(file_path: &str, query: &str) -> Result<Vec<usize>> {
+    let path = std::path::Path::new(file_path);
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+
+    let q = query.to_lowercase();
+    let file = tokio::fs::File::open(path).await?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+    let mut matches = Vec::new();
+    let mut turn_index = 0;
+
+    while let Some(line) = lines.next_line().await? {
+        if line.is_empty() {
+            continue;
+        }
+        let obj: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let msg_type = obj["type"].as_str().unwrap_or("");
+        if msg_type != "user" && msg_type != "assistant" {
+            continue;
+        }
+
+        let blocks = parse_content_blocks(&obj);
+        let has_match = blocks.iter().any(|b| b.text.to_lowercase().contains(&q));
+
+        if has_match {
+            matches.push(turn_index);
+        }
+        turn_index += 1;
+    }
+
+    Ok(matches)
+}
+
 fn parse_content_blocks(obj: &Value) -> Vec<ContentBlock> {
     let mut blocks = Vec::new();
     let content = match obj["message"]["content"].as_array() {

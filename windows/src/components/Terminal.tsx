@@ -15,6 +15,10 @@ interface Props {
   initialInput?: string;
   /** Called when the PTY process exits */
   onExit?: () => void;
+  /** Ref that will be populated with a function to write text to the PTY */
+  writeRef?: React.MutableRefObject<((text: string) => void) | null>;
+  /** Terminal font size (default 15) */
+  fontSize?: number;
 }
 
 const DARK_THEME = {
@@ -65,7 +69,7 @@ const LIGHT_THEME = {
   brightWhite: "#8c959f",
 };
 
-export default function TerminalView({ ptyId, command, initialInput, onExit }: Props) {
+export default function TerminalView({ ptyId, command, initialInput, onExit, writeRef, fontSize = 15 }: Props) {
   const termRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -91,11 +95,11 @@ export default function TerminalView({ ptyId, command, initialInput, onExit }: P
 
     const xterm = new XTerm({
       fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
-      fontSize: 13,
+      fontSize,
       lineHeight: 1.3,
       cursorBlink: true,
       cursorStyle: "bar",
-      theme: theme === "dark" ? DARK_THEME : LIGHT_THEME,
+      theme: DARK_THEME,
       allowProposedApi: true,
       scrollback: 5000,
     });
@@ -129,6 +133,11 @@ export default function TerminalView({ ptyId, command, initialInput, onExit }: P
         pty.onData((data: Uint8Array) => {
           xterm.write(data);
         });
+
+        // Expose write function to parent
+        if (writeRef) {
+          writeRef.current = (text: string) => pty.write(text);
+        }
 
         pty.onExit((_info: { exitCode: number; signal?: number }) => {
           xterm.writeln("\r\n\x1b[90m[Process exited]\x1b[0m");
@@ -168,24 +177,23 @@ export default function TerminalView({ ptyId, command, initialInput, onExit }: P
 
     return () => {
       observer.disconnect();
+      if (writeRef) writeRef.current = null;
       ptyRef.current?.kill();
       ptyRef.current = null;
       xterm.dispose();
     };
   }, []); // Only mount once
 
-  // Update theme without remounting
-  useEffect(() => {
-    if (xtermRef.current) {
-      xtermRef.current.options.theme = theme === "dark" ? DARK_THEME : LIGHT_THEME;
-    }
-  }, [theme]);
 
   return (
     <div
-      ref={termRef}
-      className="flex-1 min-h-0"
-      style={{ padding: "4px", height: "100%", minHeight: 200 }}
-    />
+      className="flex-1 min-h-0 overflow-hidden m-2"
+      style={{ background: "#0a0a0c", borderRadius: "12px" }}
+    >
+      <div
+        ref={termRef}
+        style={{ padding: "8px", height: "100%", minHeight: 200 }}
+      />
+    </div>
   );
 }

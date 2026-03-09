@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { getSettings, saveSettings, useBoardStore } from "../store/boardStore";
 import type { Settings } from "../types";
 
@@ -8,7 +9,6 @@ export default function SettingsView() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [activeSection, setActiveSection] = useState<"projects" | "general" | "github" | "notifications">("general");
-  const [newProjectPath, setNewProjectPath] = useState("");
 
   useEffect(() => {
     getSettings().then(setSettings).catch(console.error);
@@ -115,8 +115,6 @@ export default function SettingsView() {
             <ProjectsSection
               settings={settings}
               onChange={setSettings}
-              newPath={newProjectPath}
-              setNewPath={setNewProjectPath}
             />
           )}
           {activeSection === "github" && (
@@ -170,6 +168,28 @@ function GeneralSection({
         />
       </FieldGroup>
 
+      <FieldGroup label="Terminal font size">
+        <div className="flex items-center gap-3">
+          <input
+            type="range"
+            min={8}
+            max={24}
+            step={1}
+            value={settings.terminalFontSize || 15}
+            onChange={(e) =>
+              onChange({ ...settings, terminalFontSize: parseInt(e.target.value) })
+            }
+            className="flex-1 accent-[#4f8ef7] h-1.5 rounded-full cursor-pointer"
+          />
+          <span className="text-sm text-zinc-300 font-mono w-8 text-right">
+            {settings.terminalFontSize || 15}
+          </span>
+        </div>
+        <p className="text-[11px] text-zinc-500 mt-1">
+          Adjust the font size in embedded terminals (8–24pt). Takes effect on next terminal launch.
+        </p>
+      </FieldGroup>
+
       <FieldGroup label="Prompt template">
         <textarea
           rows={3}
@@ -188,22 +208,18 @@ function GeneralSection({
 function ProjectsSection({
   settings,
   onChange,
-  newPath,
-  setNewPath,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
-  newPath: string;
-  setNewPath: (p: string) => void;
 }) {
-  const addProject = () => {
-    if (!newPath.trim()) return;
-    if (settings.projects.find((p) => p.path === newPath.trim())) return;
+  const addProjectViaDialog = async () => {
+    const selected = await open({ directory: true, multiple: false, title: "Select project folder" });
+    if (!selected || typeof selected !== "string") return;
+    if (settings.projects.find((p) => p.path === selected)) return;
     onChange({
       ...settings,
-      projects: [...settings.projects, { path: newPath.trim() }],
+      projects: [...settings.projects, { path: selected }],
     });
-    setNewPath("");
   };
 
   const removeProject = (path: string) => {
@@ -215,22 +231,15 @@ function ProjectsSection({
 
   return (
     <div className="flex flex-col gap-4 max-w-lg">
-      <div className="flex gap-2">
-        <input
-          type="text"
-          value={newPath}
-          onChange={(e) => setNewPath(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addProject()}
-          placeholder="C:\path\to\project"
-          className="flex-1 bg-white/[0.03] border border-white/[0.08] focus:border-[#4f8ef7]/40 rounded-xl px-3 py-2.5 text-sm text-zinc-200 placeholder-zinc-600 outline-none transition-colors"
-        />
-        <button
-          onClick={addProject}
-          className="px-4 py-2.5 rounded-xl bg-[#4f8ef7]/90 hover:bg-[#4f8ef7] text-white text-xs font-medium transition-all shadow-lg shadow-[#4f8ef7]/15"
-        >
-          Add
-        </button>
-      </div>
+      <button
+        onClick={addProjectViaDialog}
+        className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#4f8ef7]/90 hover:bg-[#4f8ef7] text-white text-xs font-medium transition-all shadow-lg shadow-[#4f8ef7]/15"
+      >
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+        </svg>
+        Add Project Folder
+      </button>
 
       {settings.projects.length === 0 && (
         <div className="text-center py-8">
