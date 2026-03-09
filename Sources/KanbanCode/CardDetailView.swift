@@ -1537,8 +1537,8 @@ struct CardDetailView: View {
         guard let path = card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath else { return }
         if turns.isEmpty { isLoadingHistory = true }
         do {
-            if card.link.effectiveAssistant == .gemini {
-                // Gemini uses JSON format — load all turns via session store
+            if card.link.effectiveAssistant != .claude {
+                // Non-Claude assistants load the full transcript via their session store.
                 let allTurns = try await sessionStore.readTranscript(sessionPath: path)
                 turns = allTurns
                 hasMoreTurns = false
