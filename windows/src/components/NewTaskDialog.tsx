@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useBoardStore } from "../store/boardStore";
+import { getSettings, useBoardStore } from "../store/boardStore";
 
 export default function NewTaskDialog() {
   const { createCard, setNewTaskOpen, selectCard, cards } = useBoardStore();
@@ -8,18 +8,33 @@ export default function NewTaskDialog() {
   const [project, setProject] = useState("");
   const [launch, setLaunch] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [settingsProjects, setSettingsProjects] = useState<string[]>([]);
   const promptRef = useRef<HTMLTextAreaElement>(null);
 
-  const projects = [...new Set(
-    cards
-      .map((c) => c.link.projectPath ?? c.session?.projectPath)
-      .filter(Boolean) as string[]
-  )].slice(0, 20);
+  const cardProjects = [
+    ...new Set(
+      cards
+        .map((c) => c.link.projectPath ?? c.session?.projectPath)
+        .filter(Boolean) as string[]
+    ),
+  ];
+
+  // Merge settings projects + card projects, deduplicated
+  const projects = [...new Set([...settingsProjects, ...cardProjects])].slice(0, 30);
 
   useEffect(() => {
     promptRef.current?.focus();
-    if (projects.length > 0 && !project) {
-      setProject(projects[0]);
+    getSettings()
+      .then((s) => {
+        const paths = s.projects.map((p) => p.path).filter(Boolean);
+        setSettingsProjects(paths);
+        if (!project && paths.length > 0) {
+          setProject(paths[0]);
+        }
+      })
+      .catch(console.error);
+    if (cardProjects.length > 0 && !project) {
+      setProject(cardProjects[0]);
     }
   }, []);
 
