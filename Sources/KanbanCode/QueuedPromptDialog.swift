@@ -4,31 +4,21 @@ import KanbanCodeCore
 struct QueuedPromptDialog: View {
     @Binding var isPresented: Bool
     var existingPrompt: QueuedPrompt?
-    var assistant: CodingAssistant = .claude
-    var onSave: (String, Bool, [ImageAttachment]) -> Void // (body, sendAutomatically, images)
+    var onSave: (String, Bool) -> Void // (body, sendAutomatically)
 
-    @AppStorage("queuedPromptSendAutomatically") private var lastSendAutomatically: Bool = true
     @State private var promptText: String
     @State private var sendAutomatically: Bool
-    @State private var images: [ImageAttachment]
 
     init(
         isPresented: Binding<Bool>,
         existingPrompt: QueuedPrompt? = nil,
-        assistant: CodingAssistant = .claude,
-        onSave: @escaping (String, Bool, [ImageAttachment]) -> Void
+        onSave: @escaping (String, Bool) -> Void
     ) {
         self._isPresented = isPresented
         self.existingPrompt = existingPrompt
-        self.assistant = assistant
         self.onSave = onSave
         self._promptText = State(initialValue: existingPrompt?.body ?? "")
-        // For existing prompts, use the saved value; for new prompts, use last selection
-        let defaultAuto = UserDefaults.standard.object(forKey: "queuedPromptSendAutomatically") as? Bool ?? true
-        self._sendAutomatically = State(initialValue: existingPrompt?.sendAutomatically ?? defaultAuto)
-        // Load images from existing prompt's temp paths
-        let loaded: [ImageAttachment] = (existingPrompt?.imagePaths ?? []).compactMap { ImageAttachment.fromPath($0) }
-        self._images = State(initialValue: loaded)
+        self._sendAutomatically = State(initialValue: existingPrompt?.sendAutomatically ?? true)
     }
 
     var body: some View {
@@ -37,15 +27,24 @@ struct QueuedPromptDialog: View {
                 .font(.app(.title3))
                 .fontWeight(.semibold)
 
-            PromptSection(
-                text: $promptText,
-                images: $images,
-                placeholder: "Type the next prompt for \(assistant.displayName)...",
-                maxHeight: 300,
-                onSubmit: submit
-            )
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Prompt")
+                    .font(.app(.caption))
+                    .foregroundStyle(.secondary)
 
-            Toggle("Send automatically when \(assistant.displayName) finishes", isOn: $sendAutomatically)
+                PromptEditor(
+                    text: $promptText,
+                    placeholder: "Type the next prompt for Claude...",
+                    maxHeight: 300,
+                    onSubmit: submit
+                )
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(minHeight: 80, maxHeight: 300)
+                .padding(4)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+            }
+
+            Toggle("Send automatically when Claude finishes", isOn: $sendAutomatically)
                 .font(.app(.callout))
 
             HStack {
@@ -65,8 +64,7 @@ struct QueuedPromptDialog: View {
     private func submit() {
         let trimmed = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        lastSendAutomatically = sendAutomatically
-        onSave(trimmed, sendAutomatically, images)
+        onSave(trimmed, sendAutomatically)
         isPresented = false
     }
 }

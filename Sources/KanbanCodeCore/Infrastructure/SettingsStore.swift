@@ -12,8 +12,6 @@ public struct Settings: Codable, Sendable {
     public var githubIssuePromptTemplate: String
     public var columnOrder: [KanbanCodeColumn]
     public var hasCompletedOnboarding: Bool
-    public var defaultAssistant: CodingAssistant?
-    public var enabledAssistants: [CodingAssistant]
 
     public init(
         projects: [Project] = [],
@@ -25,9 +23,7 @@ public struct Settings: Codable, Sendable {
         promptTemplate: String = "",
         githubIssuePromptTemplate: String = "#${number}: ${title}\n\n${body}",
         columnOrder: [KanbanCodeColumn] = KanbanCodeColumn.allCases,
-        hasCompletedOnboarding: Bool = false,
-        defaultAssistant: CodingAssistant? = nil,
-        enabledAssistants: [CodingAssistant] = CodingAssistant.allCases
+        hasCompletedOnboarding: Bool = false
     ) {
         self.projects = projects
         self.globalView = globalView
@@ -39,14 +35,11 @@ public struct Settings: Codable, Sendable {
         self.githubIssuePromptTemplate = githubIssuePromptTemplate
         self.columnOrder = columnOrder
         self.hasCompletedOnboarding = hasCompletedOnboarding
-        self.defaultAssistant = defaultAssistant
-        self.enabledAssistants = enabledAssistants
     }
 
     private enum CodingKeys: String, CodingKey {
         case projects, globalView, github, notifications, remote, sessionTimeout
-        case promptTemplate, githubIssuePromptTemplate, columnOrder, hasCompletedOnboarding, defaultAssistant
-        case enabledAssistants
+        case promptTemplate, githubIssuePromptTemplate, columnOrder, hasCompletedOnboarding
         case skill // backward-compat: old name for promptTemplate
     }
 
@@ -66,9 +59,6 @@ public struct Settings: Codable, Sendable {
             ?? "#${number}: ${title}\n\n${body}"
         columnOrder = try container.decodeIfPresent([KanbanCodeColumn].self, forKey: .columnOrder) ?? KanbanCodeColumn.allCases
         hasCompletedOnboarding = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? false
-        defaultAssistant = try container.decodeIfPresent(CodingAssistant.self, forKey: .defaultAssistant)
-        enabledAssistants = try container.decodeIfPresent([CodingAssistant].self, forKey: .enabledAssistants)
-            ?? CodingAssistant.allCases
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -83,8 +73,6 @@ public struct Settings: Codable, Sendable {
         try container.encode(githubIssuePromptTemplate, forKey: .githubIssuePromptTemplate)
         try container.encode(columnOrder, forKey: .columnOrder)
         try container.encode(hasCompletedOnboarding, forKey: .hasCompletedOnboarding)
-        try container.encodeIfPresent(defaultAssistant, forKey: .defaultAssistant)
-        try container.encode(enabledAssistants, forKey: .enabledAssistants)
         // Note: "skill" is NOT encoded — only read for backward-compat
     }
 }
@@ -163,13 +151,10 @@ public struct SessionTimeoutSettings: Codable, Sendable {
 }
 
 /// Reads and writes ~/.kanban-code/settings.json.
-/// Caches settings in memory and only re-reads from disk when mtime changes.
 public actor SettingsStore {
     private let filePath: String
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
-    private var cachedSettings: Settings?
-    private var cachedMtime: Date?
 
     public init(basePath: String? = nil) {
         let base = basePath ?? (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code")
@@ -182,14 +167,7 @@ public actor SettingsStore {
         self.decoder = JSONDecoder()
     }
 
-    /// Invalidate the in-memory cache so the next read() re-reads from disk.
-    public func invalidateCache() {
-        cachedSettings = nil
-        cachedMtime = nil
-    }
-
     /// Read settings, creating defaults if file doesn't exist.
-    /// Returns cached value if the file hasn't changed since last read.
     public func read() throws -> Settings {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: filePath) else {
@@ -198,18 +176,8 @@ public actor SettingsStore {
             return defaults
         }
 
-        // Check mtime — return cached if unchanged
-        let attrs = try? fileManager.attributesOfItem(atPath: filePath)
-        let mtime = attrs?[.modificationDate] as? Date
-        if let cached = cachedSettings, let cachedMtime, mtime == cachedMtime {
-            return cached
-        }
-
         let data = try Data(contentsOf: URL(fileURLWithPath: filePath))
-        let settings = try decoder.decode(Settings.self, from: data)
-        cachedSettings = settings
-        cachedMtime = mtime
-        return settings
+        return try decoder.decode(Settings.self, from: data)
     }
 
     /// Write settings atomically.
@@ -223,10 +191,6 @@ public actor SettingsStore {
         try data.write(to: URL(fileURLWithPath: tmpPath))
         _ = try? fileManager.removeItem(atPath: filePath)
         try fileManager.moveItem(atPath: tmpPath, toPath: filePath)
-
-        // Update cache with the just-written value
-        cachedSettings = settings
-        cachedMtime = (try? fileManager.attributesOfItem(atPath: filePath))?[.modificationDate] as? Date
     }
 
     /// The file path for external access.
@@ -261,13 +225,6 @@ public actor SettingsStore {
             throw SettingsError.projectNotFound(path)
         }
         settings.projects.removeAll { $0.path == path }
-        try write(settings)
-    }
-
-    /// Save the reordered projects list.
-    public func reorderProjects(_ projects: [Project]) throws {
-        var settings = try read()
-        settings.projects = projects
         try write(settings)
     }
 }

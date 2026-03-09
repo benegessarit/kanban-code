@@ -13,31 +13,26 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
 
     private let discovery: SessionDiscovery
     private let coordinationStore: CoordinationStore
-    private let activityDetector: any ActivityDetector
+    private let activityDetector: ClaudeCodeActivityDetector
     private let hookEventStore: HookEventStore
     private let tmux: TmuxManagerPort?
     private let prTracker: PRTrackerPort?
     private let notificationDedup: NotificationDeduplicator
     private var notifier: NotifierPort?
-    private let registry: CodingAssistantRegistry?
 
     private var backgroundTask: Task<Void, Never>?
     private var didInitialLoad = false
     private var dispatch: (@MainActor @Sendable (Action) -> Void)?
 
-    /// Prompt IDs currently being edited in the UI — skip auto-send for these.
-    private var editingQueuedPromptIds: Set<String> = []
-
     public init(
         discovery: SessionDiscovery,
         coordinationStore: CoordinationStore,
-        activityDetector: any ActivityDetector,
+        activityDetector: ClaudeCodeActivityDetector = .init(),
         hookEventStore: HookEventStore = .init(),
         tmux: TmuxManagerPort? = nil,
         prTracker: PRTrackerPort? = nil,
         notificationDedup: NotificationDeduplicator = .init(),
-        notifier: NotifierPort? = nil,
-        registry: CodingAssistantRegistry? = nil
+        notifier: NotifierPort? = nil
     ) {
         self.discovery = discovery
         self.coordinationStore = coordinationStore
@@ -47,7 +42,6 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
         self.prTracker = prTracker
         self.notificationDedup = notificationDedup
         self.notifier = notifier
-        self.registry = registry
     }
 
     /// Start the slow background loop (columns, PRs, activity polling).
@@ -67,16 +61,6 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
     /// Update the notifier (e.g. when settings change).
     public func updateNotifier(_ newNotifier: NotifierPort?) {
         self.notifier = newNotifier
-    }
-
-    /// Mark a queued prompt as being edited — auto-send will skip it.
-    public func markPromptEditing(_ promptId: String) {
-        editingQueuedPromptIds.insert(promptId)
-    }
-
-    /// Clear the editing mark so auto-send can proceed.
-    public func clearPromptEditing(_ promptId: String) {
-        editingQueuedPromptIds.remove(promptId)
     }
 
     /// Set the dispatch callback for sending actions to the BoardStore.
@@ -203,35 +187,33 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 // Notification logic — mirrors claude-pushover, adapted for batch processing.
                 // Uses EVENT TIMESTAMPS (not wall-clock) so batch-processed events
                 // behave identically to claude-pushover's one-event-per-process model.
-                // Normalize Gemini event names (AfterAgent → Stop, BeforeAgent → UserPromptSubmit).
-                let eventName = HookManager.normalizeEventName(event.eventName)
-                switch eventName {
+                switch event.eventName {
                 case "Stop":
-                    // claude-pushover: sleep 0.5s, check if user prompted, send if not.
+                    // claude-pushover: sleep 1s, check if user prompted, send if not.
                     // NO 62s dedup — Stop always sends (dedup only applies to Notification events).
                     KanbanCodeLog.info("notify", "Stop event for session \(event.sessionId.prefix(8)) at \(event.timestamp)")
                     let stopTime = event.timestamp
                     let sessionId = event.sessionId
                     Task { [weak self] in
-                        try? await Task.sleep(for: .milliseconds(500))
+                        try? await Task.sleep(for: .seconds(1))
                         guard let self else {
                             KanbanCodeLog.info("notify", "Stop handler: self deallocated")
                             return
                         }
-                        // Check if user sent a prompt within 0.5s after this Stop
+                        // Check if user sent a prompt within 1s after this Stop
                         let prompted = await notificationDedup.hasPromptedWithin(
                             sessionId: sessionId, after: stopTime
                         )
                         if prompted {
-                            KanbanCodeLog.info("notify", "Stop skipped: user prompted within 0.5s after stop")
+                            KanbanCodeLog.info("notify", "Stop skipped: user prompted within 1s after stop")
                             return
                         }
                         // Send directly — no dedup for Stop events (matches claude-pushover)
                         await self.doNotify(sessionId: sessionId)
 
-                        // Auto-send queued prompt: wait 0.5 more seconds (1s total from Stop),
+                        // Auto-send queued prompt: wait 1 more second (2s total from Stop),
                         // re-check that user hasn't prompted, then send first auto prompt.
-                        try? await Task.sleep(for: .milliseconds(500))
+                        try? await Task.sleep(for: .seconds(1))
                         let promptedAgain = await notificationDedup.hasPromptedWithin(
                             sessionId: sessionId, after: stopTime
                         )
@@ -297,17 +279,7 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
         let renderMarkdown = (try? await SettingsStore().read())?.notifications.renderMarkdownImage ?? false
 
         if let transcriptPath = link?.sessionLink?.sessionPath {
-            // Use the correct session store for the assistant (Gemini=JSON, Claude=JSONL)
-            let assistant = link?.assistant ?? .claude
-            let lastText: String?
-            if let store = registry?.store(for: assistant),
-               let turns = try? await store.readTranscript(sessionPath: transcriptPath) {
-                lastText = TranscriptNotificationReader.lastAssistantText(from: turns)
-            } else {
-                lastText = await TranscriptNotificationReader.lastAssistantText(transcriptPath: transcriptPath)
-            }
-
-            if let lastText {
+            if let lastText = await TranscriptNotificationReader.lastAssistantText(transcriptPath: transcriptPath) {
                 let lineCount = lastText.components(separatedBy: "\n").count
                 if lineCount > 1 {
                     if renderMarkdown {
@@ -340,7 +312,7 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 return
             }
             guard let prompts = link.queuedPrompts,
-                  let prompt = prompts.first(where: { $0.sendAutomatically && !editingQueuedPromptIds.contains($0.id) }) else {
+                  let prompt = prompts.first(where: { $0.sendAutomatically }) else {
                 return
             }
             guard link.tmuxLink?.sessionName != nil else {

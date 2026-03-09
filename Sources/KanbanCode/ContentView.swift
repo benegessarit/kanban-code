@@ -16,8 +16,6 @@ struct LaunchConfig: Identifiable {
     let remoteHost: String?
     let isResume: Bool
     let sessionId: String?
-    let promptImagePaths: [String]
-    let assistant: CodingAssistant
 
     init(
         cardId: String,
@@ -29,9 +27,7 @@ struct LaunchConfig: Identifiable {
         hasRemoteConfig: Bool = false,
         remoteHost: String? = nil,
         isResume: Bool = false,
-        sessionId: String? = nil,
-        promptImagePaths: [String] = [],
-        assistant: CodingAssistant = .claude
+        sessionId: String? = nil
     ) {
         self.cardId = cardId
         self.projectPath = projectPath
@@ -43,8 +39,6 @@ struct LaunchConfig: Identifiable {
         self.remoteHost = remoteHost
         self.isResume = isResume
         self.sessionId = sessionId
-        self.promptImagePaths = promptImagePaths
-        self.assistant = assistant
     }
 }
 
@@ -55,7 +49,6 @@ struct ContentView: View {
     @State private var showNewTask = false
     @State private var showOnboarding = false
     @AppStorage("appearanceMode") private var appearanceMode: AppearanceMode = .auto
-    @AppStorage("boardViewMode") private var boardViewModeRaw = BoardViewMode.kanban.rawValue
     @State private var showProcessManager = false
     @State private var showQuitConfirmation = false
     @State private var quitOwnedSessions: [TmuxSession] = []
@@ -69,31 +62,13 @@ struct ContentView: View {
     @State private var isSyncRefreshing = false
     @State private var showSyncPopover = false
     @State private var rawSyncOutput = ""
-    @State private var editingQueuedPromptId: String?
     @AppStorage("selectedProject") private var selectedProjectPersisted: String = ""
-    @AppStorage("defaultAssistant") private var defaultAssistantRaw: String = CodingAssistant.claude.rawValue
-    private var defaultAssistant: CodingAssistant {
-        CodingAssistant(rawValue: defaultAssistantRaw) ?? .claude
-    }
     private let settingsStore: SettingsStore
-    private let assistantRegistry: CodingAssistantRegistry
     private let launcher: LaunchSession
-    private let tmuxAdapter: TmuxAdapter
     private let systemTray = SystemTray()
     private let mutagenAdapter = MutagenAdapter()
     private let hookEventsPath: String
     private let settingsFilePath: String
-
-    private var boardViewMode: BoardViewMode {
-        BoardViewMode(rawValue: boardViewModeRaw) ?? .kanban
-    }
-
-    private var boardViewModeBinding: Binding<BoardViewMode> {
-        Binding(
-            get: { boardViewMode },
-            set: { boardViewModeRaw = $0.rawValue }
-        )
-    }
 
     private var showInspector: Binding<Bool> {
         Binding(
@@ -103,36 +78,15 @@ struct ContentView: View {
     }
 
     init() {
-        let claudeDiscovery = ClaudeCodeSessionDiscovery()
-        let claudeDetector = ClaudeCodeActivityDetector()
-        let claudeStore = ClaudeCodeSessionStore()
-        let geminiDiscovery = GeminiSessionDiscovery()
-        let geminiDetector = GeminiActivityDetector()
-        let geminiStore = GeminiSessionStore()
-
-        let enabledAssistants = Self.loadEnabledAssistants()
-        let registry = CodingAssistantRegistry()
-        if enabledAssistants.contains(.claude) {
-            registry.register(.claude, discovery: claudeDiscovery, detector: claudeDetector, store: claudeStore)
-        }
-        if enabledAssistants.contains(.gemini) {
-            registry.register(.gemini, discovery: geminiDiscovery, detector: geminiDetector, store: geminiStore)
-        }
-
-        let discovery = CompositeSessionDiscovery(registry: registry)
-        let activityDetector = CompositeActivityDetector(registry: registry, defaultDetector: claudeDetector)
-
+        let discovery = ClaudeCodeSessionDiscovery()
         let coordination = CoordinationStore()
         let settings = SettingsStore()
+        let activityDetector = ClaudeCodeActivityDetector()
         let tmux = TmuxAdapter()
 
         let effectHandler = EffectHandler(
             coordinationStore: coordination,
-            tmuxAdapter: tmux,
-            setClipboardImage: { data in
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setData(data, forType: .png)
-            }
+            tmuxAdapter: tmux
         )
 
         let boardStore = BoardStore(
@@ -156,8 +110,7 @@ struct ContentView: View {
             activityDetector: activityDetector,
             tmux: tmux,
             prTracker: GhCliAdapter(),
-            notifier: notifier,
-            registry: registry
+            notifier: notifier
         )
 
         let launch = LaunchSession(tmux: tmux)
@@ -169,23 +122,11 @@ struct ContentView: View {
         _store = State(initialValue: boardStore)
         _orchestrator = State(initialValue: orch)
         self.settingsStore = settings
-        self.assistantRegistry = registry
         self.launcher = launch
-        self.tmuxAdapter = tmux
         self.hookEventsPath = (NSHomeDirectory() as NSString)
             .appendingPathComponent(".kanban-code/hook-events.jsonl")
         self.settingsFilePath = (NSHomeDirectory() as NSString)
             .appendingPathComponent(".kanban-code/settings.json")
-    }
-
-    private static func loadEnabledAssistants() -> [CodingAssistant] {
-        let settingsPath = (NSHomeDirectory() as NSString)
-            .appendingPathComponent(".kanban-code/settings.json")
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
-              let settings = try? JSONDecoder().decode(Settings.self, from: data) else {
-            return CodingAssistant.allCases
-        }
-        return settings.enabledAssistants
     }
 
     private static func loadPushoverConfig() -> PushoverClient? {
@@ -203,24 +144,6 @@ struct ContentView: View {
             return nil
         }
         return PushoverClient(token: token, userKey: user)
-    }
-
-    private func updateRegisteredAssistants(_ enabled: [CodingAssistant]) {
-        for assistant in CodingAssistant.allCases {
-            if enabled.contains(assistant) {
-                // Re-register if not already registered
-                if assistantRegistry.discovery(for: assistant) == nil {
-                    switch assistant {
-                    case .claude:
-                        assistantRegistry.register(.claude, discovery: ClaudeCodeSessionDiscovery(), detector: ClaudeCodeActivityDetector(), store: ClaudeCodeSessionStore())
-                    case .gemini:
-                        assistantRegistry.register(.gemini, discovery: GeminiSessionDiscovery(), detector: GeminiActivityDetector(), store: GeminiSessionStore())
-                    }
-                }
-            } else {
-                assistantRegistry.unregister(assistant)
-            }
-        }
     }
 
     private var boardView: some View {
@@ -253,64 +176,11 @@ struct ContentView: View {
                 let name = projectList.first(where: { $0.path == projectPath })?.name ?? (projectPath as NSString).lastPathComponent
                 pendingMoveToProject = (cardId: cardId, projectPath: projectPath, projectName: name)
             },
-            onMoveToFolder: { cardId in selectFolderForMove(cardId: cardId) },
-            enabledAssistants: assistantRegistry.available,
-            onMigrateAssistant: { cardId, target in
-                pendingMigration = (cardId: cardId, targetAssistant: target)
-            },
             onRefreshBacklog: { Task { await store.refreshBacklog() } },
             onDropCard: { cardId, column in handleDrop(cardId: cardId, to: column) },
             onMergeCards: { sourceId, targetId in
                 store.dispatch(.mergeCards(sourceId: sourceId, targetId: targetId))
             },
-            onNewTask: { presentNewTask() },
-            onCardClicked: { cardId in
-                if store.state.cards.first(where: { $0.id == cardId })?.link.tmuxLink != nil {
-                    shouldFocusTerminal = true
-                }
-            },
-            onColumnBackgroundClick: { column in
-                handleColumnBackgroundClick(column)
-            }
-        )
-    }
-
-    private var listBoardView: some View {
-        ListBoardView(
-            store: store,
-            onStartCard: { cardId in startCard(cardId: cardId) },
-            onResumeCard: { cardId in resumeCard(cardId: cardId) },
-            onForkCard: { cardId in pendingForkCardId = cardId },
-            onCopyResumeCmd: { cardId in
-                guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
-                var cmd = ""
-                if let projectPath = card.link.projectPath {
-                    cmd += "cd \(projectPath) && "
-                }
-                if let sessionId = card.link.sessionLink?.sessionId {
-                    cmd += "claude --resume \(sessionId)"
-                }
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(cmd, forType: .string)
-            },
-            onCleanupWorktree: { cardId in Task { await cleanupWorktree(cardId: cardId) } },
-            canCleanupWorktree: { cardId in
-                guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return false }
-                return canCleanupWorktree(for: card)
-            },
-            onArchiveCard: { cardId in archiveCard(cardId: cardId) },
-            onDeleteCard: { cardId in pendingDeleteCardId = cardId },
-            availableProjects: projectList,
-            onMoveToProject: { cardId, projectPath in
-                let name = projectList.first(where: { $0.path == projectPath })?.name ?? (projectPath as NSString).lastPathComponent
-                pendingMoveToProject = (cardId: cardId, projectPath: projectPath, projectName: name)
-            },
-            onMoveToFolder: { cardId in selectFolderForMove(cardId: cardId) },
-            enabledAssistants: assistantRegistry.available,
-            onMigrateAssistant: { cardId, target in
-                pendingMigration = (cardId: cardId, targetAssistant: target)
-            },
-            onRefreshBacklog: { Task { await store.refreshBacklog() } },
             onNewTask: { showNewTask = true },
             onCardClicked: { cardId in
                 if store.state.cards.first(where: { $0.id == cardId })?.link.tmuxLink != nil {
@@ -321,21 +191,11 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var activeBoardView: some View {
-        switch boardViewMode {
-        case .kanban:
-            boardView
-        case .list:
-            listBoardView
-        }
-    }
-
-    @ViewBuilder
     private var inspectorContent: some View {
         if let card = store.state.cards.first(where: { $0.id == store.state.selectedCardId }) {
             CardDetailView(
                 card: card,
-                sessionStore: assistantRegistry.store(for: card.link.effectiveAssistant) ?? store.sessionStore,
+                sessionStore: store.sessionStore,
                 onResume: {
                     if card.link.sessionLink != nil {
                         resumeCard(cardId: card.id)
@@ -373,9 +233,6 @@ struct ContentView: View {
                 onKillTerminal: { sessionName in
                     store.dispatch(.killTerminal(cardId: card.id, sessionName: sessionName))
                 },
-                onRenameTerminal: { sessionName, label in
-                    store.dispatch(.renameTerminalTab(cardId: card.id, sessionName: sessionName, label: label))
-                },
                 onPRMerged: { prNumber in
                     store.dispatch(.markPRMerged(cardId: card.id, prNumber: prNumber))
                 },
@@ -394,16 +251,6 @@ struct ContentView: View {
                 onSendQueuedPrompt: { promptId in
                     store.dispatch(.sendQueuedPrompt(cardId: card.id, promptId: promptId))
                 },
-                onEditingQueuedPrompt: { promptId in
-                    // Clear previous editing mark if any
-                    if let prev = editingQueuedPromptId {
-                        orchestrator.clearPromptEditing(prev)
-                    }
-                    editingQueuedPromptId = promptId
-                    if let promptId {
-                        orchestrator.markPromptEditing(promptId)
-                    }
-                },
                 onDiscover: {
                     Task {
                         store.dispatch(.setBusy(cardId: card.id, busy: true))
@@ -415,18 +262,10 @@ struct ContentView: View {
                         store.dispatch(.setBusy(cardId: card.id, busy: false))
                     }
                 },
-                onUpdatePrompt: { body, imagePaths in
-                    store.dispatch(.updatePrompt(cardId: card.id, body: body, imagePaths: imagePaths))
-                },
                 availableProjects: projectList,
                 onMoveToProject: { projectPath in
                     let name = projectList.first(where: { $0.path == projectPath })?.name ?? (projectPath as NSString).lastPathComponent
                     pendingMoveToProject = (cardId: card.id, projectPath: projectPath, projectName: name)
-                },
-                onMoveToFolder: { selectFolderForMove(cardId: card.id) },
-                enabledAssistants: assistantRegistry.available,
-                onMigrateAssistant: { target in
-                    pendingMigration = (cardId: card.id, targetAssistant: target)
                 },
                 focusTerminal: $shouldFocusTerminal
             )
@@ -435,7 +274,7 @@ struct ContentView: View {
     }
 
     private var boardWithOverlays: some View {
-        activeBoardView
+        boardView
             .ignoresSafeArea(edges: .top)
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .navigationTitle("")
@@ -507,12 +346,11 @@ struct ContentView: View {
                     projects: store.state.configuredProjects,
                     defaultProjectPath: store.state.selectedProjectPath,
                     globalRemoteSettings: store.state.globalRemoteSettings,
-                    enabledAssistants: assistantRegistry.available,
-                    onCreate: { prompt, projectPath, title, startImmediately, images in
-                        createManualTask(prompt: prompt, projectPath: projectPath, title: title, startImmediately: startImmediately, images: images)
+                    onCreate: { prompt, projectPath, title, startImmediately in
+                        createManualTask(prompt: prompt, projectPath: projectPath, title: title, startImmediately: startImmediately)
                     },
-                    onCreateAndLaunch: { prompt, projectPath, title, createWorktree, runRemotely, skipPermissions, commandOverride, images, assistant in
-                        createManualTaskAndLaunch(prompt: prompt, projectPath: projectPath, title: title, createWorktree: createWorktree, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: assistant)
+                    onCreateAndLaunch: { prompt, projectPath, title, createWorktree, runRemotely, skipPermissions, commandOverride in
+                        createManualTaskAndLaunch(prompt: prompt, projectPath: projectPath, title: title, createWorktree: createWorktree, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride)
                     }
                 )
             }
@@ -531,18 +369,16 @@ struct ContentView: View {
                     remoteHost: config.remoteHost,
                     isResume: config.isResume,
                     sessionId: config.sessionId,
-                    promptImagePaths: config.promptImagePaths,
-                    assistant: config.assistant,
                     isPresented: Binding(
                         get: { launchConfig != nil },
                         set: { if !$0 { launchConfig = nil } }
                     )
-                ) { editedPrompt, createWorktree, worktreeBranch, runRemotely, skipPermissions, commandOverride, images in
+                ) { editedPrompt, createWorktree, runRemotely, skipPermissions, commandOverride in
                     if config.isResume {
-                        executeResume(cardId: config.cardId, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, assistant: config.assistant)
+                        executeResume(cardId: config.cardId, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride)
                     } else {
-                        let wtName: String? = createWorktree ? (worktreeBranch ?? config.worktreeName ?? "") : nil
-                        executeLaunch(cardId: config.cardId, prompt: editedPrompt, projectPath: config.projectPath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: config.assistant)
+                        let wtName: String? = createWorktree ? (config.worktreeName ?? "") : nil
+                        executeLaunch(cardId: config.cardId, prompt: editedPrompt, projectPath: config.projectPath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride)
                     }
                 }
             }
@@ -692,61 +528,6 @@ struct ContentView: View {
                 }
             }
             .alert(
-                "Move to Folder?",
-                isPresented: Binding(
-                    get: { pendingMoveToFolder != nil },
-                    set: { if !$0 { pendingMoveToFolder = nil } }
-                )
-            ) {
-                Button("Cancel", role: .cancel) {
-                    pendingMoveToFolder = nil
-                }
-                Button("Move") {
-                    if let pending = pendingMoveToFolder {
-                        store.dispatch(.moveCardToFolder(
-                            cardId: pending.cardId,
-                            folderPath: pending.folderPath,
-                            parentProjectPath: pending.parentProjectPath
-                        ))
-                    }
-                    pendingMoveToFolder = nil
-                }
-            } message: {
-                if let pending = pendingMoveToFolder {
-                    let relative = pending.folderPath.hasPrefix(pending.parentProjectPath + "/")
-                        ? String(pending.folderPath.dropFirst(pending.parentProjectPath.count + 1))
-                        : pending.folderPath
-                    if pending.folderPath != pending.parentProjectPath {
-                        Text("Move session to \(relative) (under \(pending.displayName))?")
-                    } else {
-                        Text("Move session to \(pending.displayName)?")
-                    }
-                }
-            }
-            .alert(
-                "Migrate Session?",
-                isPresented: Binding(
-                    get: { pendingMigration != nil },
-                    set: { if !$0 { pendingMigration = nil } }
-                )
-            ) {
-                Button("Cancel", role: .cancel) {
-                    pendingMigration = nil
-                }
-                Button("Migrate") {
-                    if let pending = pendingMigration {
-                        Task { await executeMigration(cardId: pending.cardId, targetAssistant: pending.targetAssistant) }
-                    }
-                    pendingMigration = nil
-                }
-            } message: {
-                if let pending = pendingMigration {
-                    let card = store.state.cards.first(where: { $0.id == pending.cardId })
-                    let source = card?.link.effectiveAssistant.displayName ?? "current assistant"
-                    Text("Migrate this session from \(source) to \(pending.targetAssistant.displayName)? A backup of the original session will be kept.")
-                }
-            }
-            .alert(
                 "Cleanup Worktree?",
                 isPresented: Binding(
                     get: { pendingWorktreeCleanupCardId != nil },
@@ -819,7 +600,7 @@ struct ContentView: View {
                 showSearch.toggle()
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeNewTask)) { _ in
-                presentNewTask()
+                showNewTask = true
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeHookEvent)) { _ in
                 Task {
@@ -835,17 +616,12 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeSettingsChanged)) { _ in
                 Task {
-                    await store.loadSettingsAndCache()
                     await store.reconcile()
                     applyAppearance()
                     // Refresh notifier so Pushover credentials changes take effect immediately
                     let pushover = Self.loadPushoverConfig()
                     let newNotifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient())
                     orchestrator.updateNotifier(newNotifier)
-                    // Update registry for enabled/disabled assistants
-                    if let settings = try? await settingsStore.read() {
-                        updateRegisteredAssistants(settings.enabledAssistants)
-                    }
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeQuitRequested)) { _ in
@@ -888,7 +664,7 @@ struct ContentView: View {
         boardWithHandlers
             .toolbar {
                 ToolbarItemGroup(placement: .navigation) {
-                    Button { presentNewTask() } label: {
+                    Button { showNewTask = true } label: {
                         Image(systemName: "square.and.pencil")
                     }
                     .help("New task (⌘N)")
@@ -910,17 +686,6 @@ struct ContentView: View {
 
                 ToolbarItem(placement: .navigation) {
                     projectSelectorMenu
-                }
-
-                ToolbarItem(placement: .navigation) {
-                    Picker("View", selection: boardViewModeBinding) {
-                        ForEach(BoardViewMode.allCases, id: \.self) { mode in
-                            Image(systemName: mode.icon)
-                                .tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
                 }
 
                 ToolbarItem(placement: .navigation) {
@@ -1049,8 +814,6 @@ struct ContentView: View {
     }
 
     /// Watch ~/.kanban-code/settings.json for changes → hot-reload.
-    /// Only needed for external edits (e.g. manual file editing).
-    /// In-app settings changes post `.kanbanCodeSettingsChanged` directly.
     private nonisolated func watchSettingsFile(path: String) async {
         guard FileManager.default.fileExists(atPath: path) else { return }
 
@@ -1192,7 +955,6 @@ struct ContentView: View {
     private var currentSyncStatus: SyncStatus {
         if syncStatuses.isEmpty { return .notRunning }
         if syncStatuses.values.contains(.error) { return .error }
-        if syncStatuses.values.contains(.conflicts) { return .conflicts }
         if syncStatuses.values.contains(.paused) { return .paused }
         if syncStatuses.values.contains(.staging) { return .staging }
         if syncStatuses.values.contains(.watching) { return .watching }
@@ -1261,19 +1023,11 @@ struct ContentView: View {
                 Button("Quit Kanban") {
                     showQuitConfirmation = false
                     if killTmuxOnQuit {
-                        Task {
-                            // Kill tmux sessions and remove terminal associations from cards
-                            let killedNames = Set(quitOwnedSessions.map(\.name))
-                            for card in store.state.cards {
-                                if let tmux = card.link.tmuxLink, killedNames.contains(tmux.sessionName) {
-                                    await store.dispatchAndWait(.killTerminal(cardId: card.id, sessionName: tmux.sessionName))
-                                }
-                            }
-                            NSApp.reply(toApplicationShouldTerminate: true)
+                        for session in quitOwnedSessions {
+                            AppDelegate.killTmuxSessionSync(name: session.name)
                         }
-                    } else {
-                        NSApp.reply(toApplicationShouldTerminate: true)
                     }
+                    NSApp.reply(toApplicationShouldTerminate: true)
                 }
                 .keyboardShortcut(.defaultAction)
             }
@@ -1295,33 +1049,17 @@ struct ContentView: View {
         Button { showSyncPopover.toggle() } label: {
             HStack(spacing: 4) {
                 Image(systemName: syncStatusIcon(currentSyncStatus))
-                    .foregroundStyle(currentSyncStatus == .watching ? .primary : syncStatusColor(currentSyncStatus))
-                Text(syncStatusLabel(currentSyncStatus))
+                    .foregroundStyle(syncStatusColor(currentSyncStatus))
+                Text("Sync Status")
                     .font(.app(.headline))
-                    .lineLimit(1)
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 4)
         }
         .buttonStyle(.plain)
         .help("Mutagen file sync status")
-        .task(id: currentSyncStatus) {
-            await refreshSyncStatus()
-            let interval: Duration = currentSyncStatus == .staging ? .seconds(1) : .seconds(10)
-            while !Task.isCancelled {
-                try? await Task.sleep(for: interval)
-                await refreshSyncStatus()
-            }
-        }
+        .task { await refreshSyncStatus() }
         .popover(isPresented: $showSyncPopover) {
             syncStatusPopover
-        }
-        .onChange(of: currentSyncStatus) {
-            if showSyncPopover {
-                showSyncPopover = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    showSyncPopover = true
-                }
-            }
         }
     }
 
@@ -1333,22 +1071,13 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack(spacing: 6) {
-                Image(systemName: syncStatusIcon(currentSyncStatus))
-                    .foregroundStyle(syncStatusColor(currentSyncStatus))
-                Text(syncStatusLabel(currentSyncStatus))
-                    .font(.app(.callout))
-            }
-
             ScrollView {
                 Text(rawSyncOutput)
                     .font(.app(.caption, design: .monospaced))
                     .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
             }
-            .id(rawSyncOutput.count)
             .frame(maxHeight: 250)
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
 
@@ -1372,7 +1101,6 @@ struct ContentView: View {
             HStack {
                 Button {
                     Task {
-                        isSyncRefreshing = true
                         try? await mutagenAdapter.flushSync()
                         await refreshSyncStatus()
                     }
@@ -1381,37 +1109,10 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(isSyncRefreshing)
-
-                if currentSyncStatus == .notRunning {
-                    Button {
-                        Task {
-                            isSyncRefreshing = true
-                            if let remote = store.state.globalRemoteSettings {
-                                let syncName = "kanban-code-sync"
-                                let remoteDest = "\(remote.host):\(remote.remotePath)"
-                                let ignores = remote.syncIgnores ?? MutagenAdapter.defaultIgnores
-                                try? await mutagenAdapter.startSync(
-                                    localPath: remote.localPath,
-                                    remotePath: remoteDest,
-                                    name: syncName,
-                                    ignores: ignores
-                                )
-                            }
-                            await refreshSyncStatus()
-                        }
-                    } label: {
-                        Label("Start", systemImage: "play.fill")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(isSyncRefreshing)
-                }
 
                 if currentSyncStatus == .error || currentSyncStatus == .paused {
                     Button {
                         Task {
-                            isSyncRefreshing = true
                             for name in syncStatuses.keys {
                                 try? await mutagenAdapter.resetSync(name: name)
                             }
@@ -1422,13 +1123,11 @@ struct ContentView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(isSyncRefreshing)
                 }
 
                 if !syncStatuses.isEmpty {
                     Button {
                         Task {
-                            isSyncRefreshing = true
                             for name in syncStatuses.keys {
                                 try? await mutagenAdapter.stopSync(name: name)
                             }
@@ -1439,7 +1138,6 @@ struct ContentView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(isSyncRefreshing)
                 }
 
                 Spacer()
@@ -1480,7 +1178,6 @@ struct ContentView: View {
         switch status {
         case .watching: "checkmark.circle.fill"
         case .staging: "arrow.triangle.2.circlepath"
-        case .conflicts: "exclamationmark.triangle.fill"
         case .paused: "pause.circle.fill"
         case .error: "exclamationmark.triangle.fill"
         case .notRunning: "circle.dashed"
@@ -1490,22 +1187,10 @@ struct ContentView: View {
     private func syncStatusColor(_ status: SyncStatus) -> Color {
         switch status {
         case .watching: .green
-        case .staging: .secondary
-        case .conflicts: .yellow
+        case .staging: .blue
         case .paused: .yellow
         case .error: .red
         case .notRunning: .secondary
-        }
-    }
-
-    private func syncStatusLabel(_ status: SyncStatus) -> String {
-        switch status {
-        case .watching: "Files in Sync"
-        case .staging: "Syncing Files…"
-        case .conflicts: "Conflicts Detected"
-        case .paused: "Sync Paused"
-        case .error: "Sync Error"
-        case .notRunning: "Sync Not Running"
         }
     }
 
@@ -1751,16 +1436,7 @@ struct ContentView: View {
         }
     }
 
-    private func presentNewTask() {
-        showNewTask = true
-    }
-
-    private func handleColumnBackgroundClick(_ column: KanbanCodeColumn) {
-        guard column.allowsBoardTaskCreation else { return }
-        presentNewTask()
-    }
-
-    private func createManualTask(prompt: String, projectPath: String?, title: String? = nil, startImmediately: Bool = false, images: [ImageAttachment] = []) {
+    private func createManualTask(prompt: String, projectPath: String?, title: String? = nil, startImmediately: Bool = false) {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let name: String
         if let title, !title.isEmpty {
@@ -1769,17 +1445,12 @@ struct ContentView: View {
             let firstLine = trimmed.components(separatedBy: .newlines).first ?? trimmed
             name = String(firstLine.prefix(100))
         }
-        let imagePaths: [String]? = images.isEmpty ? nil : images.compactMap { img in
-            var mutable = img
-            return try? mutable.saveToPersistent()
-        }
         let link = Link(
             name: name,
             projectPath: projectPath,
             column: startImmediately ? .inProgress : .backlog,
             source: .manual,
-            promptBody: trimmed,
-            promptImagePaths: imagePaths
+            promptBody: trimmed
         )
 
         store.dispatch(.createManualTask(link))
@@ -1790,7 +1461,7 @@ struct ContentView: View {
         }
     }
 
-    private func createManualTaskAndLaunch(prompt: String, projectPath: String?, title: String? = nil, createWorktree: Bool, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude) {
+    private func createManualTaskAndLaunch(prompt: String, projectPath: String?, title: String? = nil, createWorktree: Bool, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String? = nil) {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let name: String
         if let title, !title.isEmpty {
@@ -1799,18 +1470,12 @@ struct ContentView: View {
             let firstLine = trimmed.components(separatedBy: .newlines).first ?? trimmed
             name = String(firstLine.prefix(100))
         }
-        let imagePaths: [String]? = images.isEmpty ? nil : images.compactMap { img in
-            var mutable = img
-            return try? mutable.saveToPersistent()
-        }
         let link = Link(
             name: name,
             projectPath: projectPath,
             column: .inProgress,
             source: .manual,
-            promptBody: trimmed,
-            promptImagePaths: imagePaths,
-            assistant: assistant
+            promptBody: trimmed
         )
         let effectivePath = projectPath ?? NSHomeDirectory()
 
@@ -1822,8 +1487,8 @@ struct ContentView: View {
             let project = settings?.projects.first(where: { $0.path == effectivePath })
             let builtPrompt = PromptBuilder.buildPrompt(card: link, project: project, settings: settings)
 
-            let wtName: String? = (createWorktree && assistant.supportsWorktree) ? "" : nil
-            executeLaunch(cardId: link.id, prompt: builtPrompt, projectPath: effectivePath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: assistant)
+            let wtName: String? = createWorktree ? "" : nil
+            executeLaunch(cardId: link.id, prompt: builtPrompt, projectPath: effectivePath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride)
         }
     }
 
@@ -1945,14 +1610,12 @@ struct ContentView: View {
                 hasExistingWorktree: card.link.worktreeLink != nil,
                 isGitRepo: isGitRepo,
                 hasRemoteConfig: projectIsUnderRemote,
-                remoteHost: globalRemote?.host,
-                promptImagePaths: card.link.promptImagePaths ?? [],
-                assistant: card.link.effectiveAssistant
+                remoteHost: globalRemote?.host
             )
         }
     }
 
-    private func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude) {
+    private func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, skipPermissions: Bool = true, commandOverride: String? = nil) {
         // IMMEDIATE state update via reducer — no more dual memory+disk writes
         store.dispatch(.launchCard(cardId: cardId, prompt: prompt, projectPath: projectPath, worktreeName: worktreeName, runRemotely: runRemotely, commandOverride: commandOverride))
         shouldFocusTerminal = true
@@ -1973,17 +1636,10 @@ struct ContentView: View {
                 if runRemotely, let remote = globalRemote, projectPath.hasPrefix(remote.localPath) {
                     try? RemoteShellManager.deploy()
                     shellOverride = RemoteShellManager.shellOverridePath()
-                    var env = RemoteShellManager.setupEnvironment(remote: remote, projectPath: projectPath)
-                    // Gemini CLI uses `bash -c` directly (not $SHELL), so prepend
-                    // our remote dir to PATH so it finds our bash wrapper first.
-                    if assistant == .gemini {
-                        let remoteDir = RemoteShellManager.remoteDirPath()
-                        env["PATH"] = "\(remoteDir):$PATH"
-                    }
-                    extraEnv = env
+                    extraEnv = RemoteShellManager.setupEnvironment(remote: remote, projectPath: projectPath)
                     isRemote = true
 
-                    let syncName = "kanban-code-sync"
+                    let syncName = "kanban-code-\((projectPath as NSString).lastPathComponent)"
                     let remoteDest = "\(remote.host):\(remote.remotePath)"
                     let ignores = remote.syncIgnores ?? MutagenAdapter.defaultIgnores
                     try? await mutagenAdapter.startSync(
@@ -2001,24 +1657,15 @@ struct ContentView: View {
                     preamble = nil
                 }
 
-                // Snapshot existing session files for detection
-                let sessionFileExt = assistant == .gemini ? ".json" : ".jsonl"
-                let configDir = (NSHomeDirectory() as NSString).appendingPathComponent(assistant.configDirName)
-                let claudeProjectsDir = (configDir as NSString).appendingPathComponent("projects")
+                // Snapshot existing .jsonl files for session detection
+                let claudeProjectsDir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/projects")
                 let encodedProject = projectPath.replacingOccurrences(of: "/", with: "-")
                 let sessionDir = (claudeProjectsDir as NSString).appendingPathComponent(encodedProject)
 
                 // When worktree is enabled, also snapshot worktree-related directories
                 // (worktrees create sessions in dirs like <encodedProject>-.claude-worktrees-<name>)
                 let dirsToSnapshot: [String]
-                if assistant == .gemini {
-                    // Gemini stores sessions in ~/.gemini/tmp/<slug>/chats/
-                    let tmpDir = (configDir as NSString).appendingPathComponent("tmp")
-                    let slugDirs = (try? FileManager.default.contentsOfDirectory(atPath: tmpDir)) ?? []
-                    dirsToSnapshot = slugDirs.map { slug in
-                        (tmpDir as NSString).appendingPathComponent(slug).appending("/chats")
-                    }
-                } else if worktreeName != nil {
+                if worktreeName != nil {
                     let allDirs = (try? FileManager.default.contentsOfDirectory(atPath: claudeProjectsDir)) ?? []
                     dirsToSnapshot = [sessionDir] + allDirs
                         .filter { $0.hasPrefix(encodedProject) && $0 != encodedProject }
@@ -2030,7 +1677,7 @@ struct ContentView: View {
                 for dir in dirsToSnapshot {
                     existingFilesByDir[dir] = Set(
                         ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? [])
-                            .filter { $0.hasSuffix(sessionFileExt) }
+                            .filter { $0.hasSuffix(".jsonl") }
                     )
                 }
 
@@ -2038,13 +1685,12 @@ struct ContentView: View {
                     sessionName: predictedTmuxName,
                     projectPath: projectPath,
                     prompt: prompt,
-                    worktreeName: assistant.supportsWorktree ? worktreeName : nil,
+                    worktreeName: worktreeName,
                     shellOverride: shellOverride,
                     extraEnv: extraEnv,
                     commandOverride: commandOverride,
                     skipPermissions: skipPermissions,
-                    preamble: preamble,
-                    assistant: assistant
+                    preamble: preamble
                 )
                 KanbanCodeLog.info("launch", "Tmux session created: \(tmuxName)")
 
@@ -2052,47 +1698,16 @@ struct ContentView: View {
                 // from spinner to terminal view without waiting for session detection.
                 store.dispatch(.launchTmuxReady(cardId: cardId))
 
-                // Send images + prompt via send-keys after assistant is ready
-                if !prompt.isEmpty || !images.isEmpty {
-                    let imageSender = ImageSender(tmux: self.tmuxAdapter)
-                    try await imageSender.waitForReady(sessionName: tmuxName, assistant: assistant)
-
-                    if !images.isEmpty && assistant.supportsImageUpload {
-                        try await imageSender.sendImages(
-                            sessionName: tmuxName,
-                            images: images,
-                            setClipboard: { data in
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setData(data, forType: .png)
-                            }
-                        )
-                    }
-
-                    if !prompt.isEmpty {
-                        if assistant == .gemini {
-                            try await self.tmuxAdapter.pastePrompt(to: tmuxName, text: prompt)
-                        } else {
-                            try await self.tmuxAdapter.sendPrompt(to: tmuxName, text: prompt)
-                        }
-                    }
-                }
-
-                // Detect new session by polling for new session file
-                // Worktree launches and Gemini need more attempts (slower startup)
-                let maxAttempts = (worktreeName != nil || assistant == .gemini) ? 12 : 6
+                // Detect new Claude session by polling for new .jsonl file
+                // Worktree launches need more attempts (git worktree + Claude startup)
+                let maxAttempts = worktreeName != nil ? 12 : 6
                 var sessionLink: SessionLink?
                 for attempt in 0..<maxAttempts {
                     try? await Task.sleep(for: .milliseconds(500))
 
                     // Build list of dirs to scan (re-list for worktree — dir may appear mid-poll)
                     let dirsToScan: [String]
-                    if assistant == .gemini {
-                        let tmpDir = (configDir as NSString).appendingPathComponent("tmp")
-                        let slugDirs = (try? FileManager.default.contentsOfDirectory(atPath: tmpDir)) ?? []
-                        dirsToScan = slugDirs.map { slug in
-                            (tmpDir as NSString).appendingPathComponent(slug).appending("/chats")
-                        }
-                    } else if worktreeName != nil {
+                    if worktreeName != nil {
                         let allDirs = (try? FileManager.default.contentsOfDirectory(atPath: claudeProjectsDir)) ?? []
                         dirsToScan = allDirs
                             .filter { $0.hasPrefix(encodedProject) }
@@ -2105,23 +1720,10 @@ struct ContentView: View {
                         let baseline = existingFilesByDir[dir] ?? [] // empty for newly-created dirs
                         let currentFiles = Set(
                             ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? [])
-                                .filter { $0.hasSuffix(sessionFileExt) }
+                                .filter { $0.hasSuffix(".jsonl") }
                         )
                         if let newFile = currentFiles.subtracting(baseline).first {
-                            let sessionId: String
-                            if assistant == .gemini {
-                                // Gemini: extract sessionId from inside the JSON file
-                                let filePath = (dir as NSString).appendingPathComponent(newFile)
-                                if let data = try? Data(contentsOf: URL(fileURLWithPath: filePath)),
-                                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                                   let sid = obj["sessionId"] as? String {
-                                    sessionId = sid
-                                } else {
-                                    sessionId = (newFile as NSString).deletingPathExtension
-                                }
-                            } else {
-                                sessionId = (newFile as NSString).deletingPathExtension
-                            }
+                            let sessionId = (newFile as NSString).deletingPathExtension
                             let sessionPath = (dir as NSString).appendingPathComponent(newFile)
                             KanbanCodeLog.info("launch", "Detected session file after \(attempt+1) attempts in \((dir as NSString).lastPathComponent): \(sessionId.prefix(8))")
                             sessionLink = SessionLink(sessionId: sessionId, sessionPath: sessionPath)
@@ -2145,40 +1747,29 @@ struct ContentView: View {
         }
     }
 
-    /// Extract worktreeLink from a newly-created session file by reading its first line for gitBranch and cwd.
+    /// Extract worktreeLink from a newly-created session file by reading its first line for gitBranch.
     private static func extractWorktreeLink(sessionPath: String, projectPath: String) -> WorktreeLink? {
-        // Read metadata from the first line of the .jsonl — it has the actual cwd and gitBranch
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: sessionPath)),
-              let firstNewline = data.firstIndex(of: UInt8(ascii: "\n")),
-              let firstLine = String(data: data[data.startIndex..<firstNewline], encoding: .utf8),
-              let lineData = firstLine.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
-            return nil
-        }
+        // Derive worktree path from the session's directory encoding
+        // Session dir: ~/.claude/projects/<encodedProject>-.claude-worktrees-<name>/
+        // Worktree path: <projectPath>/.claude/worktrees/<name>
+        let sessionDir = (sessionPath as NSString).deletingLastPathComponent
+        let dirName = (sessionDir as NSString).lastPathComponent
+        let encodedProject = projectPath.replacingOccurrences(of: "/", with: "-")
 
-        // Use the cwd from the session metadata — it has the exact worktree path
-        // (avoids lossy decoding of the directory name which mangles dashes in worktree names)
-        let worktreePath: String
-        if let cwd = obj["cwd"] as? String,
-           cwd.contains("/.claude/worktrees/") || cwd.contains("/.claude-worktrees/") {
-            worktreePath = cwd
-        } else {
-            // Fallback: derive from directory name structure
-            // suffix is like ".claude-worktrees-<name>" or "claude-worktrees-<name>"
-            let sessionDir = (sessionPath as NSString).deletingLastPathComponent
-            let dirName = (sessionDir as NSString).lastPathComponent
-            let encodedProject = projectPath.replacingOccurrences(of: "/", with: "-")
-            guard dirName.hasPrefix(encodedProject) else { return nil }
-            let rest = String(dirName.dropFirst(encodedProject.count))
-            // Match known pattern: [-.]claude-worktrees-<worktreeName>
-            // Only convert the structural separators, keep worktree name dashes intact
-            guard let wtRange = rest.range(of: "claude-worktrees-") else { return nil }
-            let worktreeName = String(rest[wtRange.upperBound...])
-            worktreePath = projectPath + "/.claude/worktrees/" + worktreeName
-        }
+        guard dirName.hasPrefix(encodedProject + "-") else { return nil }
+        let suffix = String(dirName.dropFirst(encodedProject.count + 1))
+        // suffix is like ".claude-worktrees-<name>", decode path separators
+        let worktreeSubpath = suffix.replacingOccurrences(of: "-", with: "/")
+        let worktreePath = (projectPath as NSString).appendingPathComponent(worktreeSubpath)
 
+        // Try to read gitBranch from the first line of the .jsonl
         var branchName: String?
-        if let branch = obj["gitBranch"] as? String {
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: sessionPath)),
+           let firstNewline = data.firstIndex(of: UInt8(ascii: "\n")),
+           let firstLine = String(data: data[data.startIndex..<firstNewline], encoding: .utf8),
+           let lineData = firstLine.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+           let branch = obj["gitBranch"] as? String {
             branchName = branch.replacingOccurrences(of: "refs/heads/", with: "")
         }
 
@@ -2186,7 +1777,7 @@ struct ContentView: View {
         if branchName == nil {
             let components = worktreePath.components(separatedBy: "/.claude/worktrees/")
             if components.count == 2 {
-                branchName = components[1]
+                branchName = components[1].components(separatedBy: "/").first
             }
         }
 
@@ -2198,7 +1789,7 @@ struct ContentView: View {
     /// Build a shell preamble that flushes mutagen and shows remote uname before launching claude.
     private static func remotePreamble(host: String) -> String {
         // Use ; instead of && so a flush failure doesn't block claude from starting
-        "printf '\\e[2mSyncing files...\\e[0m' && mutagen sync flush --label-selector kanban=true 2>/dev/null; printf '\\e[2mRemote: %s\\e[0m\\n' \"$(ssh -o ConnectTimeout=5 \(host) uname -snr 2>/dev/null || echo 'unavailable')\""
+        "printf '\\e[2mSyncing files...\\e[0m' && mutagen sync flush 2>/dev/null; printf '\\e[2mRemote: %s\\e[0m\\n' \"$(ssh -o ConnectTimeout=5 \(host) uname -snr 2>/dev/null || echo 'unavailable')\""
     }
 
     @State private var pendingWorktreeCleanup: WorktreeCleanupInfo?
@@ -2206,8 +1797,6 @@ struct ContentView: View {
     @State private var pendingArchiveCardId: String?
     @State private var pendingForkCardId: String?
     @State private var pendingMoveToProject: (cardId: String, projectPath: String, projectName: String)?
-    @State private var pendingMoveToFolder: (cardId: String, folderPath: String, parentProjectPath: String, displayName: String)?
-    @State private var pendingMigration: (cardId: String, targetAssistant: CodingAssistant)?
     @State private var pendingWorktreeCleanupCardId: String?
     @State private var shouldFocusTerminal = false
     @State private var keyMonitor: Any?
@@ -2218,90 +1807,6 @@ struct ContentView: View {
         let remotePath: String
         let localPath: String
         let errorMessage: String
-    }
-
-    private func selectFolderForMove(cardId: String) {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.message = "Select folder to move this session to"
-        panel.prompt = "Select"
-
-        // Start in the card's current project folder if available
-        if let card = store.state.cards.first(where: { $0.id == cardId }),
-           let projectPath = card.link.projectPath {
-            panel.directoryURL = URL(fileURLWithPath: projectPath)
-        }
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let folderPath = url.path
-
-        // Detect if this folder is nested inside a registered project
-        let parentProject = projectList
-            .filter { folderPath.hasPrefix($0.path + "/") || folderPath == $0.path }
-            .max(by: { $0.path.count < $1.path.count }) // longest prefix = most specific parent
-
-        let parentProjectPath = parentProject?.path ?? folderPath
-        let displayName = parentProject?.name ?? (folderPath as NSString).lastPathComponent
-
-        if folderPath == parentProjectPath {
-            // Moving to a project root — use the regular move flow
-            pendingMoveToProject = (cardId: cardId, projectPath: folderPath, projectName: displayName)
-        } else {
-            // Moving to a subfolder — use the folder-specific flow
-            pendingMoveToFolder = (cardId: cardId, folderPath: folderPath, parentProjectPath: parentProjectPath, displayName: displayName)
-        }
-    }
-
-    /// Returns assistants the card can be migrated to (excludes current, requires both registered).
-    private func migrationTargets(for card: KanbanCodeCard) -> [CodingAssistant] {
-        guard card.link.sessionLink != nil else { return [] }
-        let current = card.link.effectiveAssistant
-        return assistantRegistry.available.filter { $0 != current }
-    }
-
-    private func executeMigration(cardId: String, targetAssistant: CodingAssistant) async {
-        guard let card = store.state.cards.first(where: { $0.id == cardId }),
-              let sessionLink = card.link.sessionLink,
-              let sessionPath = sessionLink.sessionPath else { return }
-        let sourceAssistant = card.link.effectiveAssistant
-        let runRemotely = card.link.isRemote
-        guard let sourceStore = assistantRegistry.store(for: sourceAssistant),
-              let targetStore = assistantRegistry.store(for: targetAssistant) else { return }
-
-        // Mark card as "launching" to prevent the reconciler from touching it
-        // while migration is in progress (avoids race where the new session file
-        // is discovered before migrateSession updates the sessionId).
-        store.dispatch(.beginMigration(cardId: cardId))
-        do {
-            let result = try await SessionMigrator.migrate(
-                sourceSessionPath: sessionPath,
-                sourceStore: sourceStore,
-                targetStore: targetStore,
-                projectPath: card.link.projectPath
-            )
-            // Update the card's link to point to the new session and kill tmux
-            store.dispatch(.migrateSession(
-                cardId: cardId,
-                newAssistant: targetAssistant,
-                newSessionId: result.newSessionId,
-                newSessionPath: result.newSessionPath
-            ))
-            KanbanCodeLog.info("migrate", "Migrated card=\(cardId.prefix(12)) from \(sourceAssistant) to \(targetAssistant), backup=\(result.backupPath)")
-
-            // Resume the session with the new assistant right away
-            executeResume(
-                cardId: cardId,
-                runRemotely: runRemotely,
-                skipPermissions: true,
-                commandOverride: nil,
-                assistant: targetAssistant
-            )
-        } catch {
-            store.dispatch(.migrationFailed(cardId: cardId, error: error.localizedDescription))
-            KanbanCodeLog.info("migrate", "Migration failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
-        }
     }
 
     private func cleanupWorktree(cardId: String) async {
@@ -2408,12 +1913,7 @@ struct ContentView: View {
         guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
         let sessionId = card.link.sessionLink?.sessionId ?? card.link.id
         // For worktree cards, cd into the worktree — that's where Claude stored the session data.
-        let projectPath: String
-        if let worktreePath = card.link.worktreeLink?.path, !worktreePath.isEmpty {
-            projectPath = worktreePath
-        } else {
-            projectPath = card.link.projectPath ?? NSHomeDirectory()
-        }
+        let projectPath = card.link.worktreeLink?.path ?? card.link.projectPath ?? NSHomeDirectory()
 
         let globalRemote = store.state.globalRemoteSettings
         let projectIsUnderRemote = globalRemote.map { projectPath.hasPrefix($0.localPath) } ?? false
@@ -2426,8 +1926,7 @@ struct ContentView: View {
             hasRemoteConfig: projectIsUnderRemote,
             remoteHost: globalRemote?.host,
             isResume: true,
-            sessionId: sessionId,
-            assistant: card.link.effectiveAssistant
+            sessionId: sessionId
         )
     }
 
@@ -2455,13 +1954,11 @@ struct ContentView: View {
                     }
                 }
 
-                let cardStore = assistantRegistry.store(for: card.link.effectiveAssistant) ?? store.sessionStore
-                let newSessionId = try await cardStore.forkSession(
+                let newSessionId = try await store.sessionStore.forkSession(
                     sessionPath: sessionPath, targetDirectory: targetDir
                 )
                 let dir = targetDir ?? (sessionPath as NSString).deletingLastPathComponent
-                let ext = card.link.effectiveAssistant == .gemini ? "json" : "jsonl"
-                let newPath = (dir as NSString).appendingPathComponent("\(newSessionId).\(ext)")
+                let newPath = (dir as NSString).appendingPathComponent("\(newSessionId).jsonl")
                 var newLink = Link(
                     name: (card.link.name ?? card.link.displayTitle) + " (fork)",
                     projectPath: forkProjectPath,
@@ -2489,22 +1986,15 @@ struct ContentView: View {
         }
     }
 
-    private func executeResume(cardId: String, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String?, assistant: CodingAssistant = .claude) {
+    private func executeResume(cardId: String, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String?) {
         guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
         let sessionId = card.link.sessionLink?.sessionId ?? card.link.id
         // For worktree cards, cd into the worktree — that's where Claude stored the session data.
-        let projectPath: String
-        if let worktreePath = card.link.worktreeLink?.path, !worktreePath.isEmpty {
-            projectPath = worktreePath
-        } else {
-            projectPath = card.link.projectPath ?? NSHomeDirectory()
-        }
+        let projectPath = card.link.worktreeLink?.path ?? card.link.projectPath ?? NSHomeDirectory()
 
         // If the session file lives under a different project key (e.g. a cleaned-up worktree),
         // move it to the current projectPath so `claude --resume` can find it.
-        // Only applicable to Claude Code sessions (Gemini uses its own path scheme).
-        if assistant == .claude,
-           let sessionLink = card.link.sessionLink,
+        if let sessionLink = card.link.sessionLink,
            let sessionPath = sessionLink.sessionPath {
             let expectedDir = NSHomeDirectory() + "/.claude/projects/" + projectPath.replacingOccurrences(of: "/", with: "-")
             let expectedPath = expectedDir + "/" + sessionId + ".jsonl"
@@ -2538,17 +2028,10 @@ struct ContentView: View {
                 if runRemotely, let remote = globalRemote, projectPath.hasPrefix(remote.localPath) {
                     try? RemoteShellManager.deploy()
                     shellOverride = RemoteShellManager.shellOverridePath()
-                    var env = RemoteShellManager.setupEnvironment(remote: remote, projectPath: projectPath)
-                    // Gemini CLI uses `bash -c` directly (not $SHELL), so prepend
-                    // our remote dir to PATH so it finds our bash wrapper first.
-                    if assistant == .gemini {
-                        let remoteDir = RemoteShellManager.remoteDirPath()
-                        env["PATH"] = "\(remoteDir):$PATH"
-                    }
-                    extraEnv = env
+                    extraEnv = RemoteShellManager.setupEnvironment(remote: remote, projectPath: projectPath)
                     isRemote = true
 
-                    let syncName = "kanban-code-sync"
+                    let syncName = "kanban-code-\((projectPath as NSString).lastPathComponent)"
                     let remoteDest = "\(remote.host):\(remote.remotePath)"
                     let ignores = remote.syncIgnores ?? MutagenAdapter.defaultIgnores
                     try? await mutagenAdapter.startSync(
@@ -2573,8 +2056,7 @@ struct ContentView: View {
                     extraEnv: extraEnv,
                     commandOverride: commandOverride,
                     skipPermissions: skipPermissions,
-                    preamble: preamble,
-                    assistant: assistant
+                    preamble: preamble
                 )
                 KanbanCodeLog.info("resume", "Resume launched for card=\(cardId.prefix(12)) actualTmux=\(actualTmuxName)")
 

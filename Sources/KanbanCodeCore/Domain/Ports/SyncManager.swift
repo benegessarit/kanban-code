@@ -4,7 +4,6 @@ import Foundation
 public enum SyncStatus: String, Sendable {
     case watching
     case staging
-    case conflicts
     case paused
     case error
     case notRunning = "not_running"

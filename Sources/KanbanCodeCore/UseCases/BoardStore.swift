@@ -47,12 +47,9 @@ public struct AppState: Sendable {
 
     // MARK: - Derived
 
-    /// Cached cards array — rebuilt by BoardStore after each dispatch.
-    public internal(set) var cards: [KanbanCodeCard] = []
-
-    /// Rebuild the cached cards array from current state.
-    mutating func rebuildCards() {
-        cards = links.values.map { link in
+    /// All cards, built from links + sessions + activity.
+    public var cards: [KanbanCodeCard] {
+        links.values.map { link in
             let session = link.sessionLink.flatMap { sessions[$0.sessionId] }
             let activity = link.sessionLink.flatMap { activityMap[$0.sessionId] }
             let rateLimited = link.projectPath.map { rateLimitedRepos.contains($0) } ?? false
@@ -65,20 +62,14 @@ public struct AppState: Sendable {
         cards.filter { cardMatchesProjectFilter($0) }
     }
 
-    /// Cards for a specific column, sorted by manual sortOrder then last activity (newest first).
+    /// Cards for a specific column, sorted by last activity (newest first).
     public func cards(in column: KanbanCodeColumn) -> [KanbanCodeCard] {
         filteredCards.filter { $0.column == column }
             .sorted {
-                switch ($0.link.sortOrder, $1.link.sortOrder) {
-                case (let a?, let b?): return a < b
-                case (_?, nil): return true
-                case (nil, _?): return false
-                case (nil, nil):
-                    let t0 = $0.link.lastActivity ?? $0.link.updatedAt
-                    let t1 = $1.link.lastActivity ?? $1.link.updatedAt
-                    if t0 != t1 { return t0 > t1 }
-                    return $0.id < $1.id
-                }
+                let t0 = $0.link.lastActivity ?? $0.link.updatedAt
+                let t1 = $1.link.lastActivity ?? $1.link.updatedAt
+                if t0 != t1 { return t0 > t1 }
+                return $0.id < $1.id
             }
     }
 
@@ -162,14 +153,8 @@ public enum Action: Sendable {
     case addIssueLinkToCard(cardId: String, issueNumber: Int)
     case addPRToCard(cardId: String, prNumber: Int)
     case moveCardToProject(cardId: String, projectPath: String)
-    case moveCardToFolder(cardId: String, folderPath: String, parentProjectPath: String)
-    case beginMigration(cardId: String)
-    case migrateSession(cardId: String, newAssistant: CodingAssistant, newSessionId: String, newSessionPath: String)
-    case migrationFailed(cardId: String, error: String)
     case markPRMerged(cardId: String, prNumber: Int)
     case mergeCards(sourceId: String, targetId: String)
-    case updatePrompt(cardId: String, body: String, imagePaths: [String]?)
-    case reorderCard(cardId: String, targetCardId: String, above: Bool)
 
     // Queued prompts
     case addQueuedPrompt(cardId: String, prompt: QueuedPrompt)
@@ -186,7 +171,6 @@ public enum Action: Sendable {
     case terminalCreated(cardId: String, tmuxName: String)
     case terminalFailed(cardId: String, error: String)
     case extraTerminalCreated(cardId: String, sessionName: String)
-    case renameTerminalTab(cardId: String, sessionName: String, label: String)
 
     // Background reconciliation
     case reconciled(ReconciliationResult)
@@ -256,9 +240,7 @@ public enum Effect: Sendable {
     case refreshDiscovery
     case updateSessionIndex(sessionId: String, name: String)
     case moveSessionFile(cardId: String, sessionId: String, oldPath: String, newProjectPath: String)
-    case sendPromptToTmux(sessionName: String, promptBody: String, assistant: CodingAssistant)
-    case sendPromptWithImagesToTmux(sessionName: String, promptBody: String, imagePaths: [String], assistant: CodingAssistant)
-    case deleteFiles([String])
+    case sendPromptToTmux(sessionName: String, promptBody: String)
 }
 
 // MARK: - Reducer
@@ -328,7 +310,7 @@ public enum Reducer {
         case .resumeCard(let cardId):
             guard var link = state.links[cardId] else { return [] }
             let sid = link.sessionLink?.sessionId ?? link.id
-            let tmuxName = "\(link.effectiveAssistant.cliCommand)-\(String(sid.prefix(8)))"
+            let tmuxName = "claude-\(String(sid.prefix(8)))"
             // Preserve existing shell sessions as extras
             var extras = link.tmuxLink?.extraSessions ?? []
             if link.tmuxLink?.isShellOnly == true, let oldPrimary = link.tmuxLink?.sessionName {
@@ -346,8 +328,6 @@ public enum Reducer {
 
         case .moveCard(let cardId, let column):
             guard var link = state.links[cardId] else { return [] }
-            // Clear sortOrder when moving to a different column
-            link.sortOrder = nil
             link.column = column
             link.manualOverrides.column = true
             if column == .allSessions {
@@ -359,33 +339,6 @@ public enum Reducer {
             state.links[cardId] = link
             return [.upsertLink(link)]
 
-        case .reorderCard(let cardId, let targetCardId, let above):
-            guard let link = state.links[cardId] else { return [] }
-            let column = link.column
-            // Get current sorted order for the column
-            var columnCards = state.cards(in: column)
-            // Remove the dragged card
-            columnCards.removeAll { $0.id == cardId }
-            // Find insertion index
-            let insertIndex: Int
-            if let targetIdx = columnCards.firstIndex(where: { $0.id == targetCardId }) {
-                insertIndex = above ? targetIdx : targetIdx + 1
-            } else {
-                insertIndex = columnCards.count
-            }
-            // Re-insert the dragged card as a placeholder (we only need the id)
-            let draggedCard = state.cards.first { $0.id == cardId }!
-            columnCards.insert(draggedCard, at: insertIndex)
-            // Assign sortOrder 0, 1, 2, ... to all cards in the column
-            var effects: [Effect] = []
-            for (i, card) in columnCards.enumerated() {
-                if state.links[card.id] != nil {
-                    state.links[card.id]!.sortOrder = i
-                    effects.append(.upsertLink(state.links[card.id]!))
-                }
-            }
-            return effects
-
         case .renameCard(let cardId, let name):
             guard var link = state.links[cardId] else { return [] }
             link.name = name
@@ -395,21 +348,6 @@ public enum Reducer {
             var effects: [Effect] = [.upsertLink(link)]
             if let sessionId = link.sessionLink?.sessionId {
                 effects.append(.updateSessionIndex(sessionId: sessionId, name: name))
-            }
-            return effects
-
-        case .updatePrompt(let cardId, let body, let imagePaths):
-            guard var link = state.links[cardId] else { return [] }
-            let oldImages = link.promptImagePaths ?? []
-            let newImages = Set(imagePaths ?? [])
-            let removedImages = oldImages.filter { !newImages.contains($0) }
-            link.promptBody = body
-            link.promptImagePaths = imagePaths
-            link.updatedAt = .now
-            state.links[cardId] = link
-            var effects: [Effect] = [.upsertLink(link)]
-            if !removedImages.isEmpty {
-                effects.append(.deleteFiles(removedImages))
             }
             return effects
 
@@ -444,12 +382,6 @@ public enum Reducer {
             }
             if let sessionPath = link.sessionLink?.sessionPath {
                 effects.append(.deleteSessionFile(sessionPath))
-            }
-            // Clean up prompt and queued prompt images
-            var imagesToDelete = link.promptImagePaths ?? []
-            imagesToDelete += (link.queuedPrompts ?? []).flatMap { $0.imagePaths ?? [] }
-            if !imagesToDelete.isEmpty {
-                effects.append(.deleteFiles(imagesToDelete))
             }
             return effects
 
@@ -576,7 +508,6 @@ public enum Reducer {
             if let idx = link.prLinks.firstIndex(where: { $0.number == prNumber }) {
                 link.prLinks[idx].status = .merged
             }
-            link.column = .done
             link.updatedAt = .now
             state.links[cardId] = link
             return [.upsertLink(link)]
@@ -618,13 +549,10 @@ public enum Reducer {
             if link.queuedPrompts?.isEmpty == true { link.queuedPrompts = nil }
             link.updatedAt = .now
             state.links[cardId] = link
-            let sendEffect: Effect
-            if let imagePaths = prompt.imagePaths, !imagePaths.isEmpty, link.effectiveAssistant.supportsImageUpload {
-                sendEffect = .sendPromptWithImagesToTmux(sessionName: sessionName, promptBody: prompt.body, imagePaths: imagePaths, assistant: link.effectiveAssistant)
-            } else {
-                sendEffect = .sendPromptToTmux(sessionName: sessionName, promptBody: prompt.body, assistant: link.effectiveAssistant)
-            }
-            return [.upsertLink(link), sendEffect]
+            return [
+                .upsertLink(link),
+                .sendPromptToTmux(sessionName: sessionName, promptBody: prompt.body)
+            ]
 
         case .moveCardToProject(let cardId, let projectPath):
             guard var link = state.links[cardId] else { return [] }
@@ -658,79 +586,6 @@ public enum Reducer {
             }
             KanbanCodeLog.info("store", "MoveToProject: card=\(cardId.prefix(12)) → \(projectPath)")
             return effects
-
-        case .moveCardToFolder(let cardId, let folderPath, let parentProjectPath):
-            guard var link = state.links[cardId] else { return [] }
-            let oldProjectPath = link.projectPath
-            link.projectPath = parentProjectPath
-            // Only clear repo-specific links if the parent project actually changed
-            if oldProjectPath != parentProjectPath {
-                link.worktreeLink = nil
-                link.prLinks = []
-                link.discoveredBranches = nil
-                link.discoveredRepos = nil
-            }
-            var effects: [Effect] = []
-            if let tmux = link.tmuxLink {
-                effects.append(.killTmuxSessions(tmux.allSessionNames))
-                effects.append(.cleanupTerminalCache(sessionNames: tmux.allSessionNames))
-                link.tmuxLink = nil
-            }
-            link.updatedAt = .now
-            state.links[cardId] = link
-            effects.insert(.upsertLink(link), at: 0)
-            // Move the session file — use folderPath for file location (not parentProjectPath)
-            if let sessionId = link.sessionLink?.sessionId,
-               let oldPath = link.sessionLink?.sessionPath {
-                effects.append(.moveSessionFile(
-                    cardId: cardId,
-                    sessionId: sessionId,
-                    oldPath: oldPath,
-                    newProjectPath: folderPath
-                ))
-            }
-            KanbanCodeLog.info("store", "MoveToFolder: card=\(cardId.prefix(12)) folder=\(folderPath) project=\(parentProjectPath)")
-            return effects
-
-        case .beginMigration(let cardId):
-            guard var link = state.links[cardId] else { return [] }
-            link.isLaunching = true
-            link.updatedAt = .now
-            state.links[cardId] = link
-            state.busyCards.insert(cardId)
-            return []
-
-        case .migrateSession(let cardId, let newAssistant, let newSessionId, let newSessionPath):
-            guard var link = state.links[cardId] else { return [] }
-            // Mark old session as deleted so reconciler won't recreate a card for it
-            if let oldSessionId = link.sessionLink?.sessionId {
-                state.deletedSessionIds.insert(oldSessionId)
-            }
-            link.assistant = newAssistant
-            link.sessionLink = SessionLink(sessionId: newSessionId, sessionPath: newSessionPath)
-            // Kill tmux sessions — the old assistant process must stop
-            var effects: [Effect] = []
-            if let tmux = link.tmuxLink {
-                effects.append(.killTmuxSessions(tmux.allSessionNames))
-                effects.append(.cleanupTerminalCache(sessionNames: tmux.allSessionNames))
-                link.tmuxLink = nil
-            }
-            link.isLaunching = nil
-            link.updatedAt = .now
-            state.links[cardId] = link
-            state.busyCards.remove(cardId)
-            KanbanCodeLog.info("store", "MigrateSession: card=\(cardId.prefix(12)) → \(newAssistant)")
-            effects.insert(.upsertLink(link), at: 0)
-            return effects
-
-        case .migrationFailed(let cardId, let error):
-            guard var link = state.links[cardId] else { return [] }
-            link.isLaunching = nil
-            link.updatedAt = .now
-            state.links[cardId] = link
-            state.busyCards.remove(cardId)
-            state.error = "Migration failed: \(error)"
-            return []
 
         case .mergeCards(let sourceId, let targetId):
             guard let source = state.links[sourceId],
@@ -874,21 +729,6 @@ public enum Reducer {
         case .extraTerminalCreated(let cardId, _):
             state.busyCards.remove(cardId)
             return []
-
-        case .renameTerminalTab(let cardId, let sessionName, let label):
-            guard var link = state.links[cardId],
-                  var tmux = link.tmuxLink else { return [] }
-            var names = tmux.tabNames ?? [:]
-            if label.isEmpty {
-                names.removeValue(forKey: sessionName)
-            } else {
-                names[sessionName] = label
-            }
-            tmux.tabNames = names.isEmpty ? nil : names
-            link.tmuxLink = tmux
-            link.updatedAt = .now
-            state.links[cardId] = link
-            return [.upsertLink(link)]
 
         // MARK: Background Reconciliation
 
@@ -1141,11 +981,9 @@ public final class BoardStore: @unchecked Sendable {
     private var lastGHLookup: ContinuousClock.Instant = .now - .seconds(600)
     private var ghRateLimitedUntil: ContinuousClock.Instant = .now
     public var appIsActive: Bool = true
-    /// Cached worktree results by repo root, with directory mtime for invalidation
-    private var worktreeCache: [String: (mtime: Date?, worktrees: [Worktree])] = [:]
     private let discovery: SessionDiscovery
     private let coordinationStore: CoordinationStore
-    private let activityDetector: (any ActivityDetector)?
+    private let activityDetector: ClaudeCodeActivityDetector?
     private let settingsStore: SettingsStore?
     private let ghAdapter: GhCliAdapter?
     private let worktreeAdapter: GitWorktreeAdapter?
@@ -1157,7 +995,7 @@ public final class BoardStore: @unchecked Sendable {
         effectHandler: EffectHandler,
         discovery: SessionDiscovery,
         coordinationStore: CoordinationStore,
-        activityDetector: (any ActivityDetector)? = nil,
+        activityDetector: ClaudeCodeActivityDetector? = nil,
         settingsStore: SettingsStore? = nil,
         ghAdapter: GhCliAdapter? = nil,
         worktreeAdapter: GitWorktreeAdapter? = nil,
@@ -1179,7 +1017,6 @@ public final class BoardStore: @unchecked Sendable {
     /// Dispatch an action. Reducer runs synchronously, effects run async.
     public func dispatch(_ action: Action) {
         let effects = Reducer.reduce(state: &state, action: action)
-        state.rebuildCards()
         for effect in effects {
             Task { [weak self] in
                 guard let self else { return }
@@ -1209,20 +1046,6 @@ public final class BoardStore: @unchecked Sendable {
             }
         default:
             break
-        }
-    }
-
-    /// Dispatch an action and wait for all its effects to complete.
-    public func dispatchAndWait(_ action: Action) async {
-        let effects = Reducer.reduce(state: &state, action: action)
-        state.rebuildCards()
-        await withTaskGroup(of: Void.self) { group in
-            for effect in effects {
-                group.addTask { [weak self] in
-                    guard let self else { return }
-                    await self.effectHandler.execute(effect, dispatch: self.dispatch)
-                }
-            }
         }
     }
 
@@ -1264,7 +1087,6 @@ public final class BoardStore: @unchecked Sendable {
                 for link in cached {
                     state.links[link.id] = link
                 }
-                state.rebuildCards()
             }
         }
     }
@@ -1285,18 +1107,17 @@ public final class BoardStore: @unchecked Sendable {
         let reconcileStart = ContinuousClock.now
 
         do {
-            // Use in-memory settings (loaded at startup, updated via .settingsLoaded action)
-            // Fall back to reading from disk if settings haven't been loaded yet
-            var configuredProjects = state.configuredProjects
-            var excludedPaths = state.excludedPaths
-            var globalRemoteSettings = state.globalRemoteSettings
-            if configuredProjects.isEmpty, let store = settingsStore {
-                if let settings = try? await store.read() {
-                    configuredProjects = settings.projects
-                    excludedPaths = settings.globalView.excludedPaths
-                    globalRemoteSettings = settings.remote
-                    dispatch(.settingsLoaded(projects: configuredProjects, excludedPaths: excludedPaths, remote: globalRemoteSettings))
-                }
+            // Load settings for project filtering
+            var configuredProjects: [Project] = []
+            var excludedPaths: [String] = []
+            var globalRemoteSettings: RemoteSettings?
+            if let store = settingsStore {
+                let t = ContinuousClock.now
+                let settings = try await store.read()
+                configuredProjects = settings.projects
+                excludedPaths = settings.globalView.excludedPaths
+                globalRemoteSettings = settings.remote
+                KanbanCodeLog.info("reconcile", "settings: \(t.duration(to: .now))")
             }
 
             // Show cached data immediately while discovery runs
@@ -1322,52 +1143,17 @@ public final class BoardStore: @unchecked Sendable {
             // Deduplicate repo roots — multiple projects can share the same repo
             let uniqueRepoRoots = Set(configuredProjects.map(\.effectiveRepoRoot))
 
-            // Scan worktrees once per unique repo (parallel, with mtime caching)
+            // Scan worktrees once per unique repo
             var worktreesByRepo: [String: [Worktree]] = [:]
             if let worktreeAdapter {
                 let t = ContinuousClock.now
-                let fm = FileManager.default
-
-                // Check which repos need re-scanning by checking .git/worktrees dir mtime
-                var reposToScan: [String] = []
                 for repoRoot in uniqueRepoRoots {
-                    let worktreesDir = (repoRoot as NSString).appendingPathComponent(".git/worktrees")
-                    let mtime = (try? fm.attributesOfItem(atPath: worktreesDir))?[.modificationDate] as? Date
-                    if let cached = worktreeCache[repoRoot], cached.mtime == mtime {
-                        worktreesByRepo[repoRoot] = cached.worktrees
-                    } else {
-                        reposToScan.append(repoRoot)
+                    if let worktrees = try? await worktreeAdapter.listWorktrees(repoRoot: repoRoot) {
+                        worktreesByRepo[repoRoot] = worktrees
                     }
                 }
-
-                if !reposToScan.isEmpty {
-                    let results = await withTaskGroup(of: (String, [Worktree])?.self) { group in
-                        for repoRoot in reposToScan {
-                            group.addTask {
-                                guard let worktrees = try? await worktreeAdapter.listWorktrees(repoRoot: repoRoot) else {
-                                    return nil
-                                }
-                                return (repoRoot, worktrees)
-                            }
-                        }
-                        var collected: [(String, [Worktree])] = []
-                        for await result in group {
-                            if let result { collected.append(result) }
-                        }
-                        return collected
-                    }
-                    for (repo, worktrees) in results {
-                        let worktreesDir = (repo as NSString).appendingPathComponent(".git/worktrees")
-                        let mtime = (try? fm.attributesOfItem(atPath: worktreesDir))?[.modificationDate] as? Date
-                        worktreeCache[repo] = (mtime: mtime, worktrees: worktrees)
-                        worktreesByRepo[repo] = worktrees
-                    }
-                }
-                // Evict repos no longer configured
-                worktreeCache = worktreeCache.filter { uniqueRepoRoots.contains($0.key) }
-
                 let total = worktreesByRepo.values.flatMap { $0 }.count
-                KanbanCodeLog.info("reconcile", "worktrees: \(t.duration(to: .now)) (\(total) across \(uniqueRepoRoots.count) repos, \(reposToScan.count) scanned)")
+                KanbanCodeLog.info("reconcile", "worktrees: \(t.duration(to: .now)) (\(total) across \(uniqueRepoRoots.count) repos)")
             }
 
             // Incremental branch scan for watermarked cards.

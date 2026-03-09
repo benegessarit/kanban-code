@@ -66,6 +66,12 @@ export interface ManualOverrides {
   branchWatermark?: number;
 }
 
+export interface QueuedPrompt {
+  id: string;
+  body: string;
+  sendAutomatically: boolean;
+}
+
 export interface Link {
   id: string;
   name?: string;
@@ -85,6 +91,7 @@ export interface Link {
   discoveredBranches?: string[];
   isRemote: boolean;
   isLaunching?: boolean;
+  queuedPrompts?: QueuedPrompt[];
 }
 
 export interface Session {

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Launches a coding assistant session inside a tmux session.
+/// Launches a new Claude Code session inside a tmux session.
 /// Does NOT manage Link records — the caller owns link lifecycle.
 public final class LaunchSession: SessionLauncher, @unchecked Sendable {
     private let tmux: TmuxManagerPort
@@ -18,8 +18,7 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
         extraEnv: [String: String] = [:],
         commandOverride: String? = nil,
         skipPermissions: Bool = false,
-        preamble: String? = nil,
-        assistant: CodingAssistant = .claude
+        preamble: String? = nil
     ) async throws -> String {
 
         let cmd: String
@@ -27,10 +26,12 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
             // User provided a custom command — use it as-is
             cmd = commandOverride
         } else {
-            // Build the CLI command (prompt is sent via send-keys after assistant is ready)
-            var built = assistant.cliCommand
-            if skipPermissions { built += " \(assistant.autoApproveFlag)" }
-            if assistant.supportsWorktree, let worktreeName {
+            // Build the claude command
+            // Prompt must come before --worktree so it's not mistaken for the worktree name
+            var built = "claude"
+            if skipPermissions { built += " --dangerously-skip-permissions" }
+            built += " \(shellEscape(prompt))"
+            if let worktreeName {
                 if worktreeName.isEmpty {
                     built += " --worktree"
                 } else {
@@ -68,8 +69,7 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
         extraEnv: [String: String] = [:],
         commandOverride: String? = nil,
         skipPermissions: Bool = false,
-        preamble: String? = nil,
-        assistant: CodingAssistant = .claude
+        preamble: String? = nil
     ) async throws -> String {
         // Kill stale tmux session if one exists — we always want a fresh resume
         let existing = try await tmux.listSessions()
@@ -78,14 +78,14 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
         }
 
         // Create new tmux session with resume command
-        let sessionName = "\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"
+        let sessionName = "claude-\(String(sessionId.prefix(8)))"
         let cmd: String
         if let commandOverride, !commandOverride.isEmpty {
             cmd = commandOverride
         } else {
-            var built = assistant.cliCommand
-            if skipPermissions { built += " \(assistant.autoApproveFlag)" }
-            built += " \(assistant.resumeFlag) \(sessionId)"
+            var built = "claude"
+            if skipPermissions { built += " --dangerously-skip-permissions" }
+            built += " --resume \(sessionId)"
             let envPrefix = buildEnvPrefix(shellOverride: shellOverride, extraEnv: extraEnv)
             if !envPrefix.isEmpty {
                 built = envPrefix + " " + built
@@ -117,13 +117,7 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
         // Sort for deterministic output
         for key in extraEnv.keys.sorted() {
             if let value = extraEnv[key] {
-                if value.contains("$") {
-                    // Use double quotes so shell variables like $PATH get expanded
-                    let escaped = value.replacingOccurrences(of: "\"", with: "\\\"")
-                    parts.append("\(key)=\"\(escaped)\"")
-                } else {
-                    parts.append("\(key)=\(shellEscape(value))")
-                }
+                parts.append("\(key)=\(shellEscape(value))")
             }
         }
 

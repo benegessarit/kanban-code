@@ -70,7 +70,7 @@ async fn create_card(
     launch: Option<bool>,
     state: tauri::State<'_, AppState>,
 ) -> Result<coordination_store::Link, String> {
-    let mut link = state
+    let link = state
         .coordination_store
         .create_card(prompt.clone(), title, project.clone())
         .await
@@ -215,6 +215,87 @@ async fn launch_session(session_id: String) -> Result<(), String> {
 #[tauri::command]
 async fn open_in_editor(path: String, editor: Option<String>) -> Result<(), String> {
     shell_command::open_in_editor(&path, editor.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn add_queued_prompt(
+    card_id: String,
+    body: String,
+    send_automatically: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<coordination_store::QueuedPrompt, String> {
+    let prompt = coordination_store::QueuedPrompt::new(body, send_automatically);
+    state
+        .coordination_store
+        .add_queued_prompt(&card_id, prompt)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn update_queued_prompt(
+    card_id: String,
+    prompt_id: String,
+    body: String,
+    send_automatically: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .coordination_store
+        .update_queued_prompt(&card_id, &prompt_id, &body, send_automatically)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn remove_queued_prompt(
+    card_id: String,
+    prompt_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .coordination_store
+        .remove_queued_prompt(&card_id, &prompt_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn search_transcript(
+    session_id: String,
+    query: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<usize>, String> {
+    let links = state
+        .coordination_store
+        .read_links()
+        .await
+        .map_err(|e| e.to_string())?;
+    let session_path = links
+        .iter()
+        .find(|l| l.session_link.as_ref().map(|s| &s.session_id) == Some(&session_id))
+        .and_then(|l| l.session_link.as_ref())
+        .and_then(|s| s.session_path.clone());
+
+    let path = match session_path {
+        Some(p) => p,
+        None => {
+            let sessions = state
+                .session_discovery
+                .discover_sessions()
+                .await
+                .map_err(|e| e.to_string())?;
+            sessions
+                .iter()
+                .find(|s| s.id == session_id)
+                .and_then(|s| s.jsonl_path.clone())
+                .ok_or_else(|| format!("Session {session_id} not found"))?
+        }
+    };
+
+    transcript_reader::search_transcript_turns(&path, &query)
         .await
         .map_err(|e| e.to_string())
 }
@@ -428,6 +509,10 @@ pub fn run() {
             search_sessions,
             launch_session,
             open_in_editor,
+            add_queued_prompt,
+            update_queued_prompt,
+            remove_queued_prompt,
+            search_transcript,
         ])
         .setup(|app| {
             build_tray(app)?;

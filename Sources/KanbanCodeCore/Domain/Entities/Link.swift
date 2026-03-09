@@ -19,7 +19,6 @@ public struct SessionLink: Codable, Sendable, Equatable {
 public struct TmuxLink: Codable, Sendable, Equatable {
     public var sessionName: String          // Primary tmux session
     public var extraSessions: [String]?     // User-created shell terminals
-    public var tabNames: [String: String]?  // Custom display names for terminal tabs (sessionName → label)
     public var isShellOnly: Bool?           // true if primary session is a plain shell (not Claude)
     public var isPrimaryDead: Bool?         // true when primary killed but extras survive
 
@@ -110,13 +109,11 @@ public struct QueuedPrompt: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public var body: String
     public var sendAutomatically: Bool
-    public var imagePaths: [String]?
 
-    public init(id: String = KSUID.generate(prefix: "prompt"), body: String, sendAutomatically: Bool = true, imagePaths: [String]? = nil) {
+    public init(id: String = KSUID.generate(prefix: "prompt"), body: String, sendAutomatically: Bool = true) {
         self.id = id
         self.body = body
         self.sendAutomatically = sendAutomatically
-        self.imagePaths = imagePaths
     }
 }
 
@@ -149,7 +146,6 @@ public struct Link: Identifiable, Codable, Sendable {
     public var manuallyArchived: Bool
     public var source: LinkSource
     public var promptBody: String?
-    public var promptImagePaths: [String]?
 
     // Typed links — each independently optional
     public var sessionLink: SessionLink?
@@ -169,16 +165,6 @@ public struct Link: Identifiable, Codable, Sendable {
 
     /// Whether this card's project is configured for remote execution.
     public var isRemote: Bool
-
-    /// Manual sort order within a column. Cards with sortOrder are sorted by it
-    /// (lower first); cards without fall back to time-based sort.
-    public var sortOrder: Int?
-
-    /// Which coding assistant this card uses. nil defaults to .claude for backward compat.
-    public var assistant: CodingAssistant?
-
-    /// The effective assistant (never nil).
-    public var effectiveAssistant: CodingAssistant { assistant ?? .claude }
 
     /// Launch lock — true while an async launch/resume is in progress.
     /// Prevents background reconciliation from overriding card state mid-launch.
@@ -276,17 +262,14 @@ public struct Link: Identifiable, Codable, Sendable {
         manuallyArchived: Bool = false,
         source: LinkSource = .discovered,
         promptBody: String? = nil,
-        promptImagePaths: [String]? = nil,
         sessionLink: SessionLink? = nil,
         tmuxLink: TmuxLink? = nil,
         worktreeLink: WorktreeLink? = nil,
         prLinks: [PRLink] = [],
         issueLink: IssueLink? = nil,
         queuedPrompts: [QueuedPrompt]? = nil,
-        assistant: CodingAssistant? = nil,
         isRemote: Bool = false,
         isLaunching: Bool? = nil,
-        sortOrder: Int? = nil,
         discoveredBranches: [String]? = nil,
         discoveredRepos: [String: String]? = nil
     ) {
@@ -301,17 +284,14 @@ public struct Link: Identifiable, Codable, Sendable {
         self.manuallyArchived = manuallyArchived
         self.source = source
         self.promptBody = promptBody
-        self.promptImagePaths = promptImagePaths
         self.sessionLink = sessionLink
         self.tmuxLink = tmuxLink
         self.worktreeLink = worktreeLink
         self.prLinks = prLinks
         self.issueLink = issueLink
         self.queuedPrompts = queuedPrompts
-        self.assistant = assistant
         self.isRemote = isRemote
         self.isLaunching = isLaunching
-        self.sortOrder = sortOrder
         self.discoveredBranches = discoveredBranches
         self.discoveredRepos = discoveredRepos
     }
@@ -321,8 +301,8 @@ public struct Link: Identifiable, Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         // Card-level
         case id, name, projectPath, column, createdAt, updatedAt, lastActivity
-        case manualOverrides, manuallyArchived, source, promptBody, promptImagePaths, isRemote, isLaunching, sortOrder
-        case discoveredBranches, discoveredRepos, assistant
+        case manualOverrides, manuallyArchived, source, promptBody, isRemote, isLaunching
+        case discoveredBranches, discoveredRepos
         // Typed links (new nested format)
         case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink, queuedPrompts
         // Old format keys (for reading legacy format)
@@ -345,13 +325,10 @@ public struct Link: Identifiable, Codable, Sendable {
         manuallyArchived = try c.decodeIfPresent(Bool.self, forKey: .manuallyArchived) ?? false
         source = try c.decodeIfPresent(LinkSource.self, forKey: .source) ?? .discovered
         promptBody = try c.decodeIfPresent(String.self, forKey: .promptBody)
-        promptImagePaths = try c.decodeIfPresent([String].self, forKey: .promptImagePaths)
         isRemote = try c.decodeIfPresent(Bool.self, forKey: .isRemote) ?? false
         isLaunching = try c.decodeIfPresent(Bool.self, forKey: .isLaunching)
-        sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder)
         discoveredBranches = try c.decodeIfPresent([String].self, forKey: .discoveredBranches)
         discoveredRepos = try c.decodeIfPresent([String: String].self, forKey: .discoveredRepos)
-        assistant = try c.decodeIfPresent(CodingAssistant.self, forKey: .assistant)
 
         // Session link: try nested first, fallback to flat
         if let sl = try c.decodeIfPresent(SessionLink.self, forKey: .sessionLink) {
@@ -429,13 +406,10 @@ public struct Link: Identifiable, Codable, Sendable {
         try c.encode(manuallyArchived, forKey: .manuallyArchived)
         try c.encode(source, forKey: .source)
         try c.encodeIfPresent(promptBody, forKey: .promptBody)
-        try c.encodeIfPresent(promptImagePaths, forKey: .promptImagePaths)
         try c.encode(isRemote, forKey: .isRemote)
         try c.encodeIfPresent(isLaunching, forKey: .isLaunching)
-        try c.encodeIfPresent(sortOrder, forKey: .sortOrder)
         try c.encodeIfPresent(discoveredBranches, forKey: .discoveredBranches)
         try c.encodeIfPresent(discoveredRepos, forKey: .discoveredRepos)
-        try c.encodeIfPresent(assistant, forKey: .assistant)
 
         // Always write new nested format
         try c.encodeIfPresent(sessionLink, forKey: .sessionLink)

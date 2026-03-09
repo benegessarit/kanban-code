@@ -35,10 +35,5 @@ let package = Package(
             dependencies: ["KanbanCodeCore"],
             path: "Tests/KanbanCodeCoreTests"
         ),
-        .testTarget(
-            name: "KanbanCodeTests",
-            dependencies: ["KanbanCode", "KanbanCodeCore"],
-            path: "Tests/KanbanCodeTests"
-        ),
     ]
 )

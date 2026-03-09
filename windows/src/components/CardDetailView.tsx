@@ -3,10 +3,16 @@ import {
   getTranscript,
   openInEditor,
   useBoardStore,
+  addQueuedPrompt,
+  updateQueuedPrompt,
+  removeQueuedPrompt,
+  searchTranscript,
 } from "../store/boardStore";
 import { useTheme, t } from "../theme";
-import type { Turn, TranscriptPage } from "../types";
+import type { Turn, TranscriptPage, QueuedPrompt } from "../types";
 import TerminalView from "./Terminal";
+import QueuedPromptDialog from "./QueuedPromptDialog";
+import QueuedPromptsBar from "./QueuedPromptsBar";
 
 type Tab = "terminal" | "history" | "issue" | "pr" | "prompt";
 
@@ -19,7 +25,7 @@ const TAB_LABELS: Record<Tab, string> = {
 };
 
 export default function CardDetailView() {
-  const { selectedCard, selectCard, renameCard, deleteCard, archiveCard } = useBoardStore();
+  const { selectedCard, selectCard, renameCard, deleteCard } = useBoardStore();
   const card = selectedCard();
   const { theme } = useTheme();
   const c = t(theme);
@@ -33,6 +39,19 @@ export default function CardDetailView() {
   const [terminalActive, setTerminalActive] = useState(false);
   const [drawerWidth, setDrawerWidth] = useState(480);
   const isResizing = useRef(false);
+
+  // Queued prompts state
+  const [showQueueDialog, setShowQueueDialog] = useState(false);
+  const [editingPrompt, setEditingPrompt] = useState<QueuedPrompt | null>(null);
+  const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
+  const terminalWriteRef = useRef<((text: string) => void) | null>(null);
+
+  // Search state
+  const [searchText, setSearchText] = useState("");
+  const [searchMatches, setSearchMatches] = useState<number[]>([]);
+  const [currentMatchIdx, setCurrentMatchIdx] = useState(0);
+  const [isSearching, setIsSearching] = useState(false);
+  const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -60,6 +79,7 @@ export default function CardDetailView() {
     document.addEventListener("mouseup", onMouseUp);
   }, [drawerWidth]);
 
+  // Reset state when card changes
   useEffect(() => {
     if (!card) return;
     const hasTerminal = !!card.link.sessionLink?.sessionId || !!card.link.promptBody;
@@ -67,10 +87,21 @@ export default function CardDetailView() {
     setTurns([]);
     setTranscriptPage(null);
     setTerminalActive(false);
+    setQueuedPrompts(card.link.queuedPrompts ?? []);
+    setSearchText("");
+    setSearchMatches([]);
+    setCurrentMatchIdx(0);
     if (card.link.sessionLink?.sessionId) {
       loadTranscript(card.link.sessionLink.sessionId, 0, true);
     }
   }, [card?.id]);
+
+  // Sync queued prompts when card data updates
+  useEffect(() => {
+    if (card) {
+      setQueuedPrompts(card.link.queuedPrompts ?? []);
+    }
+  }, [card?.link.updatedAt]);
 
   const loadTranscript = async (sessionId: string, offset: number, reset: boolean) => {
     setLoadingTranscript(true);
@@ -85,6 +116,34 @@ export default function CardDetailView() {
     }
   };
 
+  // Search debounce
+  useEffect(() => {
+    if (!card?.link.sessionLink?.sessionId) return;
+    if (searchDebounce.current) clearTimeout(searchDebounce.current);
+
+    if (searchText.trim().length < 2) {
+      setSearchMatches([]);
+      setCurrentMatchIdx(0);
+      setIsSearching(false);
+      return;
+    }
+
+    setIsSearching(true);
+    searchDebounce.current = setTimeout(async () => {
+      try {
+        const matches = await searchTranscript(card.link.sessionLink!.sessionId, searchText.trim());
+        setSearchMatches(matches);
+        setCurrentMatchIdx(0);
+      } catch {
+        setSearchMatches([]);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+
+    return () => { if (searchDebounce.current) clearTimeout(searchDebounce.current); };
+  }, [searchText, card?.link.sessionLink?.sessionId]);
+
   if (!card) return null;
 
   const sessionId = card.link.sessionLink?.sessionId;
@@ -93,8 +152,6 @@ export default function CardDetailView() {
   const pr = card.link.prLinks[0];
   const issue = card.link.issueLink;
   const promptBody = card.link.promptBody;
-
-  // Can launch a terminal if we have a session to resume OR a prompt to start fresh
   const canTerminal = !!sessionId || !!promptBody;
 
   const handleRename = () => {
@@ -104,7 +161,6 @@ export default function CardDetailView() {
 
   const shellCommand = ["wsl.exe"];
   const cdCmd = projectPath ? `cd ${projectPath.replace(/ /g, "\\ ")} && ` : "";
-  // Resume existing session or start new one with prompt
   const terminalInput = sessionId
     ? `${cdCmd}claude --resume ${sessionId}\r`
     : `${cdCmd}claude '${(promptBody ?? "").replace(/'/g, "'\\''")}'\r`;
@@ -114,12 +170,60 @@ export default function CardDetailView() {
     setActiveTab("terminal");
   };
 
-  // Auto-start terminal for freshly created tasks (has prompt but no session yet)
+  // Auto-start terminal for freshly created tasks
   useEffect(() => {
     if (!sessionId && promptBody && !terminalActive) {
       handleStartTerminal();
     }
   }, [card.id]);
+
+  // Queued prompt handlers
+  const handleAddPrompt = async (body: string, sendAutomatically: boolean) => {
+    try {
+      const prompt = await addQueuedPrompt(card.id, body, sendAutomatically);
+      setQueuedPrompts((prev) => [...prev, prompt]);
+    } catch { /* silent */ }
+  };
+
+  const handleUpdatePrompt = async (body: string, sendAutomatically: boolean) => {
+    if (!editingPrompt) return;
+    try {
+      await updateQueuedPrompt(card.id, editingPrompt.id, body, sendAutomatically);
+      setQueuedPrompts((prev) =>
+        prev.map((p) => p.id === editingPrompt.id ? { ...p, body, sendAutomatically } : p)
+      );
+    } catch { /* silent */ }
+  };
+
+  const handleRemovePrompt = async (promptId: string) => {
+    try {
+      await removeQueuedPrompt(card.id, promptId);
+      setQueuedPrompts((prev) => prev.filter((p) => p.id !== promptId));
+    } catch { /* silent */ }
+  };
+
+  const handleSendNow = async (promptId: string) => {
+    const prompt = queuedPrompts.find((p) => p.id === promptId);
+    if (!prompt || !terminalWriteRef.current) return;
+    // Write to terminal
+    terminalWriteRef.current(prompt.body + "\r");
+    // Remove from queue
+    handleRemovePrompt(promptId);
+  };
+
+  const handleEditPrompt = (prompt: QueuedPrompt) => {
+    setEditingPrompt(prompt);
+    setShowQueueDialog(true);
+  };
+
+  // Search navigation
+  const goToMatch = (dir: "prev" | "next") => {
+    if (searchMatches.length === 0) return;
+    setCurrentMatchIdx((prev) => {
+      if (dir === "next") return (prev + 1) % searchMatches.length;
+      return (prev - 1 + searchMatches.length) % searchMatches.length;
+    });
+  };
 
   // Only show tabs that have data
   const availableTabs: Tab[] = (["terminal", "history", "issue", "pr", "prompt"] as Tab[]).filter((tab) => {
@@ -235,10 +339,25 @@ export default function CardDetailView() {
               {terminalActive ? "Terminal" : sessionId ? "Resume" : "Start"}
             </button>
           )}
+          {canTerminal && terminalActive && (
+            <button
+              onClick={() => { setEditingPrompt(null); setShowQueueDialog(true); }}
+              className="flex items-center justify-center gap-1.5 h-9 px-3 rounded-lg text-[13px] font-medium transition-all duration-150"
+              style={{ border: `1px solid ${c.border}`, color: c.textSecondary }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = c.borderBright; e.currentTarget.style.background = c.hoverBg; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = c.border; e.currentTarget.style.background = ""; }}
+              title="Queue a prompt to send to Claude later"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
+              Queue
+            </button>
+          )}
           {projectPath && (
             <button
               onClick={() => openInEditor(projectPath)}
-              className="flex-1 flex items-center justify-center gap-2 h-9 rounded-lg text-[13px] font-medium transition-all duration-150"
+              className="flex items-center justify-center gap-2 h-9 px-3 rounded-lg text-[13px] font-medium transition-all duration-150"
               style={{ border: `1px solid ${c.border}`, color: c.textSecondary }}
               onMouseEnter={(e) => { e.currentTarget.style.borderColor = c.borderBright; e.currentTarget.style.background = c.hoverBg; e.currentTarget.style.transform = "translateY(-0.5px)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.borderColor = c.border; e.currentTarget.style.background = ""; e.currentTarget.style.transform = ""; }}
@@ -265,7 +384,7 @@ export default function CardDetailView() {
         </div>
       </div>
 
-      {/* Tabs — only show ones with content */}
+      {/* Tabs */}
       {availableTabs.length > 1 && (
         <div className="flex px-5 shrink-0 gap-1" style={{ borderBottom: `1px solid ${c.border}` }}>
           {availableTabs.map((tab) => {
@@ -279,7 +398,7 @@ export default function CardDetailView() {
                   color: active ? c.textPrimary : c.textMuted,
                 }}
                 onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = c.textSecondary; }}
-                onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = c.textMuted; }}
+                onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = active ? c.textPrimary : c.textMuted; }}
               >
                 {TAB_LABELS[tab]}
                 {active && (
@@ -301,12 +420,21 @@ export default function CardDetailView() {
       >
         {activeTab === "terminal" && canTerminal && (
           terminalActive ? (
-            <TerminalView
-              ptyId={`term-${card.id}`}
-              command={shellCommand}
-              initialInput={terminalInput}
-              onExit={() => {}}
-            />
+            <div className="flex-1 flex flex-col min-h-0">
+              <QueuedPromptsBar
+                prompts={queuedPrompts}
+                onSendNow={handleSendNow}
+                onEdit={handleEditPrompt}
+                onRemove={handleRemovePrompt}
+              />
+              <TerminalView
+                ptyId={`term-${card.id}`}
+                command={shellCommand}
+                initialInput={terminalInput}
+                onExit={() => {}}
+                writeRef={terminalWriteRef}
+              />
+            </div>
           ) : (
             <div className="flex flex-col items-center justify-center flex-1 gap-4 p-8">
               <div
@@ -330,7 +458,7 @@ export default function CardDetailView() {
         )}
 
         {activeTab === "history" && (
-          <div className="overflow-y-auto flex-1">
+          <div className="overflow-y-auto flex-1 flex flex-col min-h-0">
             <HistoryTab
               turns={turns}
               transcriptPage={transcriptPage}
@@ -339,6 +467,13 @@ export default function CardDetailView() {
                 if (sessionId && transcriptPage?.hasMore)
                   loadTranscript(sessionId, transcriptPage.nextOffset, false);
               }}
+              searchText={searchText}
+              searchMatches={searchMatches}
+              currentMatchIdx={currentMatchIdx}
+              isSearching={isSearching}
+              onSearchChange={setSearchText}
+              onNextMatch={() => goToMatch("next")}
+              onPrevMatch={() => goToMatch("prev")}
             />
           </div>
         )}
@@ -369,6 +504,15 @@ export default function CardDetailView() {
           </div>
         )}
       </div>
+
+      {/* Queued prompt dialog */}
+      <QueuedPromptDialog
+        open={showQueueDialog}
+        onClose={() => { setShowQueueDialog(false); setEditingPrompt(null); }}
+        onSave={editingPrompt ? handleUpdatePrompt : handleAddPrompt}
+        editBody={editingPrompt?.body}
+        editSendAuto={editingPrompt?.sendAutomatically}
+      />
     </div>
   );
 }
@@ -390,72 +534,201 @@ function MetaBadge({ label, color, theme, title }: { label: string; color: strin
   );
 }
 
-function HistoryTab({ turns, transcriptPage, loading, onLoadMore }: {
-  turns: Turn[]; transcriptPage: TranscriptPage | null; loading: boolean; onLoadMore: () => void;
-}) {
-  if (loading && turns.length === 0) {
-    return (
-      <div className="flex items-center justify-center p-12" style={{ background: "#141416" }}>
-        <div className="w-5 h-5 border-2 border-[#4f8ef7] border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
+/* ── History Tab with Search ────────────────────────────────────── */
 
-  if (turns.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center p-12 gap-2" style={{ background: "#141416" }}>
-        <svg className="w-8 h-8 text-[#555]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.076-4.076a1.526 1.526 0 0 1 1.037-.443 48.2 48.2 0 0 0 5.887-.512c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z" />
-        </svg>
-        <span className="text-[12px] text-[#555]">No conversation history</span>
-      </div>
-    );
-  }
+function HistoryTab({ turns, transcriptPage, loading, onLoadMore, searchText, searchMatches, currentMatchIdx, isSearching, onSearchChange, onNextMatch, onPrevMatch }: {
+  turns: Turn[];
+  transcriptPage: TranscriptPage | null;
+  loading: boolean;
+  onLoadMore: () => void;
+  searchText: string;
+  searchMatches: number[];
+  currentMatchIdx: number;
+  isSearching: boolean;
+  onSearchChange: (q: string) => void;
+  onNextMatch: () => void;
+  onPrevMatch: () => void;
+}) {
+  const { theme } = useTheme();
+  const c = t(theme);
+  const currentMatchTurnIdx = searchMatches.length > 0 ? searchMatches[currentMatchIdx] : -1;
+  const matchRef = useRef<HTMLDivElement>(null);
+
+  // Scroll to current match
+  useEffect(() => {
+    if (matchRef.current) {
+      matchRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [currentMatchIdx, searchMatches]);
 
   return (
-    <div
-      className="flex flex-col px-3 pt-2 pb-3 gap-0.5 font-mono"
-      style={{ background: "#141416" }}
-    >
-      {turns.map((turn) => <TurnItem key={turn.index} turn={turn} />)}
-      {transcriptPage?.hasMore && (
-        <button
-          onClick={onLoadMore}
-          disabled={loading}
-          className="mt-2 py-2 rounded-lg text-[11px] font-mono font-medium transition-all duration-150 disabled:opacity-40"
-          style={{ color: "#666", background: "rgba(255,255,255,0.03)" }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
+    <>
+      {/* Search bar */}
+      <div
+        className="shrink-0 flex items-center gap-2 px-3 py-2"
+        style={{ background: "#141416", borderBottom: `1px solid rgba(255,255,255,0.04)` }}
+      >
+        <svg className="w-3.5 h-3.5 shrink-0" style={{ color: "#555" }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
+        </svg>
+        <input
+          type="text"
+          value={searchText}
+          onChange={(e) => onSearchChange(e.target.value)}
+          placeholder="Search transcript..."
+          className="flex-1 bg-transparent text-[12px] font-mono outline-none"
+          style={{ color: "#e4e4e7" }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              if (e.shiftKey) onPrevMatch();
+              else onNextMatch();
+            }
+          }}
+        />
+        {searchText.length >= 2 && (
+          <div className="flex items-center gap-1.5 shrink-0">
+            {isSearching ? (
+              <div className="w-3 h-3 border border-[#4f8ef7] border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <span className="text-[11px] font-mono" style={{ color: "#666" }}>
+                {searchMatches.length > 0
+                  ? `${currentMatchIdx + 1}/${searchMatches.length}`
+                  : "0 results"}
+              </span>
+            )}
+            <button
+              onClick={onPrevMatch}
+              disabled={searchMatches.length === 0}
+              className="p-0.5 rounded transition-colors disabled:opacity-30"
+              style={{ color: "#888" }}
+              title="Previous match (Shift+Enter)"
+            >
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
+              </svg>
+            </button>
+            <button
+              onClick={onNextMatch}
+              disabled={searchMatches.length === 0}
+              className="p-0.5 rounded transition-colors disabled:opacity-30"
+              style={{ color: "#888" }}
+              title="Next match (Enter)"
+            >
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+              </svg>
+            </button>
+            <button
+              onClick={() => onSearchChange("")}
+              className="p-0.5 rounded transition-colors"
+              style={{ color: "#666" }}
+              title="Clear search"
+            >
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Turns list */}
+      {loading && turns.length === 0 ? (
+        <div className="flex items-center justify-center p-12" style={{ background: "#141416" }}>
+          <div className="w-5 h-5 border-2 border-[#4f8ef7] border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : turns.length === 0 ? (
+        <div className="flex flex-col items-center justify-center p-12 gap-2" style={{ background: "#141416" }}>
+          <svg className="w-8 h-8 text-[#555]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.076-4.076a1.526 1.526 0 0 1 1.037-.443 48.2 48.2 0 0 0 5.887-.512c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z" />
+          </svg>
+          <span className="text-[12px] text-[#555]">No conversation history</span>
+        </div>
+      ) : (
+        <div
+          className="flex flex-col px-3 pt-2 pb-3 gap-0.5 font-mono overflow-y-auto flex-1"
+          style={{ background: "#141416" }}
         >
-          {loading ? "Loading..." : `Load more (${transcriptPage.totalTurns - turns.length} remaining)`}
-        </button>
+          {turns.map((turn) => {
+            const isMatch = searchMatches.includes(turn.index);
+            const isCurrent = turn.index === currentMatchTurnIdx;
+            return (
+              <div key={turn.index} ref={isCurrent ? matchRef : undefined}>
+                <TurnItem
+                  turn={turn}
+                  searchQuery={searchText.length >= 2 ? searchText : ""}
+                  isSearchMatch={isMatch}
+                  isCurrentMatch={isCurrent}
+                />
+              </div>
+            );
+          })}
+          {transcriptPage?.hasMore && (
+            <button
+              onClick={onLoadMore}
+              disabled={loading}
+              className="mt-2 py-2 rounded-lg text-[11px] font-mono font-medium transition-all duration-150 disabled:opacity-40"
+              style={{ color: "#666", background: "rgba(255,255,255,0.03)" }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
+            >
+              {loading ? "Loading..." : `Load more (${transcriptPage.totalTurns - turns.length} remaining)`}
+            </button>
+          )}
+        </div>
       )}
-    </div>
+    </>
   );
 }
 
-function TurnItem({ turn }: { turn: Turn }) {
+/* ── Turn rendering with search highlighting ────────────────────── */
+
+function TurnItem({ turn, searchQuery, isSearchMatch, isCurrentMatch }: {
+  turn: Turn;
+  searchQuery: string;
+  isSearchMatch: boolean;
+  isCurrentMatch: boolean;
+}) {
   const isUser = turn.role === "user";
   const blocks = turn.contentBlocks;
+
+  let borderStyle: string | undefined;
+  if (isCurrentMatch) borderStyle = "rgba(249,115,22,0.5)";
+  else if (isSearchMatch) borderStyle = "rgba(234,179,8,0.3)";
 
   return (
     <div
       className="rounded px-2 py-1 transition-colors duration-100"
-      style={{ background: isUser && blocks.some(b => b.kind === "text") ? "rgba(255,255,255,0.04)" : undefined }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = isUser && blocks.some(b => b.kind === "text") ? "rgba(255,255,255,0.04)" : ""; }}
+      style={{
+        background: isCurrentMatch
+          ? "rgba(249,115,22,0.08)"
+          : isSearchMatch
+          ? "rgba(234,179,8,0.05)"
+          : isUser && blocks.some(b => b.kind === "text")
+          ? "rgba(255,255,255,0.04)"
+          : undefined,
+        outline: borderStyle ? `1px solid ${borderStyle}` : undefined,
+      }}
+      onMouseEnter={(e) => {
+        if (!isCurrentMatch && !isSearchMatch) e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+      }}
+      onMouseLeave={(e) => {
+        if (!isCurrentMatch && !isSearchMatch) {
+          e.currentTarget.style.background = isUser && blocks.some(b => b.kind === "text") ? "rgba(255,255,255,0.04)" : "";
+        }
+      }}
     >
       {blocks.length > 0 ? (
         blocks.map((block, i) => (
-          <BlockLine key={i} block={block} isUser={isUser} isFirst={i === 0} />
+          <BlockLine key={i} block={block} isUser={isUser} isFirst={i === 0} searchQuery={searchQuery} />
         ))
       ) : (
         <div className="flex gap-1.5 items-start">
           <span className="text-[12px] leading-[1.6] shrink-0" style={{ color: isUser ? "#3fb950" : "#d4d4d4" }}>
-            {isUser ? "❯" : "●"}
+            {isUser ? "\u276F" : "\u25CF"}
           </span>
           <span className="text-[12px] leading-[1.6] line-clamp-6" style={{ color: isUser ? "#e4e4e7" : "rgba(220,220,220,0.85)" }}>
-            {turn.textPreview || "(empty)"}
+            <HighlightedText text={turn.textPreview || "(empty)"} query={searchQuery} />
           </span>
         </div>
       )}
@@ -463,27 +736,31 @@ function TurnItem({ turn }: { turn: Turn }) {
   );
 }
 
-function BlockLine({ block, isUser, isFirst }: { block: { kind: string; text: string }; isUser: boolean; isFirst: boolean }) {
+function BlockLine({ block, isUser, isFirst, searchQuery }: {
+  block: { kind: string; text: string };
+  isUser: boolean;
+  isFirst: boolean;
+  searchQuery: string;
+}) {
   if (block.kind === "text") {
     const trimmed = block.text.trim();
     if (!trimmed) return null;
     return (
       <div className="flex gap-1.5 items-start">
         <span className="text-[12px] leading-[1.6] shrink-0" style={{ color: isUser ? "#3fb950" : "#d4d4d4" }}>
-          {isFirst ? (isUser ? "❯" : "●") : "\u00A0\u00A0"}
+          {isFirst ? (isUser ? "\u276F" : "\u25CF") : "\u00A0\u00A0"}
         </span>
         <span
           className="text-[12px] leading-[1.6]"
           style={{
             color: isUser ? "#e4e4e7" : "rgba(220,220,220,0.85)",
-            lineClamp: isUser ? undefined : "20",
             display: "-webkit-box",
             WebkitLineClamp: isUser ? undefined : 20,
             WebkitBoxOrient: "vertical",
             overflow: "hidden",
           }}
         >
-          {trimmed}
+          <HighlightedText text={trimmed} query={searchQuery} />
         </span>
       </div>
     );
@@ -494,9 +771,9 @@ function BlockLine({ block, isUser, isFirst }: { block: { kind: string; text: st
     const args = block.text.includes("(") ? block.text.slice(block.text.indexOf("(")) : "";
     return (
       <div className="flex gap-1.5 items-start">
-        <span className="text-[12px] leading-[1.6] shrink-0 text-[#3fb950]">{"\u00A0\u00A0●"}</span>
+        <span className="text-[12px] leading-[1.6] shrink-0 text-[#3fb950]">{"\u00A0\u00A0\u25CF"}</span>
         <span className="text-[12px] leading-[1.6]">
-          <span style={{ color: "rgba(63,185,80,0.8)" }}>{name}</span>
+          <span style={{ color: "rgba(63,185,80,0.8)" }}><HighlightedText text={name} query={searchQuery} /></span>
           {args && <span className="line-clamp-2" style={{ color: "#555" }}>{args}</span>}
         </span>
       </div>
@@ -506,9 +783,9 @@ function BlockLine({ block, isUser, isFirst }: { block: { kind: string; text: st
   if (block.kind === "tool_result") {
     return (
       <div className="flex gap-1.5 items-start">
-        <span className="text-[12px] leading-[1.6] shrink-0" style={{ color: "#444" }}>{"\u00A0\u00A0⎿"}</span>
+        <span className="text-[12px] leading-[1.6] shrink-0" style={{ color: "#444" }}>{"\u00A0\u00A0\u23BF"}</span>
         <span className="text-[12px] leading-[1.6] line-clamp-3" style={{ color: "#444" }}>
-          {block.text}
+          <HighlightedText text={block.text} query={searchQuery} />
         </span>
       </div>
     );
@@ -517,7 +794,7 @@ function BlockLine({ block, isUser, isFirst }: { block: { kind: string; text: st
   if (block.kind === "thinking") {
     return (
       <div className="flex gap-1.5 items-start">
-        <span className="text-[12px] leading-[1.6] shrink-0" style={{ color: "#444" }}>{"\u00A0\u00A0∴"}</span>
+        <span className="text-[12px] leading-[1.6] shrink-0" style={{ color: "#444" }}>{"\u00A0\u00A0\u2234"}</span>
         <span className="text-[12px] leading-[1.6] italic" style={{ color: "#444" }}>Thinking...</span>
       </div>
     );
@@ -525,6 +802,57 @@ function BlockLine({ block, isUser, isFirst }: { block: { kind: string; text: st
 
   return null;
 }
+
+/* ── Search text highlighting ───────────────────────────────────── */
+
+function HighlightedText({ text, query }: { text: string; query: string }) {
+  if (!query || query.length < 2) return <>{text}</>;
+
+  const lowerText = text.toLowerCase();
+  const lowerQuery = query.toLowerCase();
+  const parts: { text: string; highlight: boolean }[] = [];
+  let lastIdx = 0;
+
+  let idx = lowerText.indexOf(lowerQuery, lastIdx);
+  while (idx !== -1) {
+    if (idx > lastIdx) {
+      parts.push({ text: text.slice(lastIdx, idx), highlight: false });
+    }
+    parts.push({ text: text.slice(idx, idx + query.length), highlight: true });
+    lastIdx = idx + query.length;
+    idx = lowerText.indexOf(lowerQuery, lastIdx);
+  }
+
+  if (lastIdx < text.length) {
+    parts.push({ text: text.slice(lastIdx), highlight: false });
+  }
+
+  if (parts.length === 0) return <>{text}</>;
+
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.highlight ? (
+          <mark
+            key={i}
+            style={{
+              background: "rgba(234,179,8,0.35)",
+              color: "inherit",
+              borderRadius: 2,
+              padding: "0 1px",
+            }}
+          >
+            {part.text}
+          </mark>
+        ) : (
+          <span key={i}>{part.text}</span>
+        )
+      )}
+    </>
+  );
+}
+
+/* ── Content Tab (Issue / PR) ───────────────────────────────────── */
 
 function ContentTab({ title, body, url }: { title: string; body?: string; url?: string }) {
   const { theme } = useTheme();

@@ -5,16 +5,13 @@ import Foundation
 public actor EffectHandler {
     private let coordinationStore: CoordinationStore
     private let tmuxAdapter: TmuxManagerPort?
-    private let setClipboardImage: (@Sendable (Data) -> Void)?
 
     public init(
         coordinationStore: CoordinationStore,
-        tmuxAdapter: TmuxManagerPort? = nil,
-        setClipboardImage: (@Sendable (Data) -> Void)? = nil
+        tmuxAdapter: TmuxManagerPort? = nil
     ) {
         self.coordinationStore = coordinationStore
         self.tmuxAdapter = tmuxAdapter
-        self.setClipboardImage = setClipboardImage
     }
 
     public func execute(_ effect: Effect, dispatch: @MainActor @Sendable (Action) -> Void) async {
@@ -89,46 +86,11 @@ public actor EffectHandler {
                 KanbanCodeLog.warn("effect", "moveSessionFile failed: \(error)")
                 await dispatch(.setError("Move failed: \(error.localizedDescription)"))
             }
-        case .sendPromptToTmux(let sessionName, let promptBody, let assistant):
+        case .sendPromptToTmux(let sessionName, let promptBody):
             do {
-                if assistant == .gemini {
-                    try await tmuxAdapter?.pastePrompt(to: sessionName, text: promptBody)
-                } else {
-                    try await tmuxAdapter?.sendPrompt(to: sessionName, text: promptBody)
-                }
+                try await tmuxAdapter?.sendPrompt(to: sessionName, text: promptBody)
             } catch {
                 KanbanCodeLog.warn("effect", "sendPromptToTmux failed: \(error)")
-            }
-
-        case .sendPromptWithImagesToTmux(let sessionName, let promptBody, let imagePaths, let assistant):
-            do {
-                guard let tmux = tmuxAdapter, let setClipboard = setClipboardImage else { return }
-                let images = imagePaths.compactMap { ImageAttachment.fromPath($0) }
-                if !images.isEmpty {
-                    let sender = ImageSender(tmux: tmux)
-                    try await sender.waitForReady(sessionName: sessionName, assistant: assistant)
-                    try await sender.sendImages(
-                        sessionName: sessionName,
-                        images: images,
-                        assistant: assistant,
-                        setClipboard: setClipboard
-                    )
-                }
-                if assistant == .gemini {
-                    try await tmux.pastePrompt(to: sessionName, text: promptBody)
-                } else {
-                    try await tmux.sendPrompt(to: sessionName, text: promptBody)
-                }
-                for path in imagePaths {
-                    try? FileManager.default.removeItem(atPath: path)
-                }
-            } catch {
-                KanbanCodeLog.warn("effect", "sendPromptWithImagesToTmux failed: \(error)")
-            }
-
-        case .deleteFiles(let paths):
-            for path in paths {
-                try? FileManager.default.removeItem(atPath: path)
             }
         }
     }

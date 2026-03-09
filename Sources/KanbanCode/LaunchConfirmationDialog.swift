@@ -14,17 +14,14 @@ struct LaunchConfirmationDialog: View {
     let remoteHost: String?
     let isResume: Bool
     let sessionId: String?
-    let assistant: CodingAssistant
     @Binding var isPresented: Bool
-    var onLaunch: (String, Bool, String?, Bool, Bool, String?, [ImageAttachment]) -> Void = { _, _, _, _, _, _, _ in } // (editedPrompt, createWorktree, worktreeBranch, runRemotely, skipPermissions, commandOverride, images)
+    var onLaunch: (String, Bool, Bool, Bool, String?) -> Void = { _, _, _, _, _ in } // (editedPrompt, createWorktree, runRemotely, skipPermissions, commandOverride)
 
     @State private var prompt: String
-    @State private var images: [ImageAttachment]
     @State private var command: String = ""
     @State private var commandEdited: Bool = false
-    @State private var worktreeBranch: String = ""
     @AppStorage("createWorktree") private var createWorktree = true
-    @State private var runRemotely: Bool
+    @AppStorage("runRemotely") private var runRemotely = true
     @AppStorage("dangerouslySkipPermissions") private var dangerouslySkipPermissions = true
 
     init(
@@ -38,10 +35,8 @@ struct LaunchConfirmationDialog: View {
         remoteHost: String? = nil,
         isResume: Bool = false,
         sessionId: String? = nil,
-        promptImagePaths: [String] = [],
-        assistant: CodingAssistant = .claude,
         isPresented: Binding<Bool>,
-        onLaunch: @escaping (String, Bool, String?, Bool, Bool, String?, [ImageAttachment]) -> Void = { _, _, _, _, _, _, _ in }
+        onLaunch: @escaping (String, Bool, Bool, Bool, String?) -> Void = { _, _, _, _, _ in }
     ) {
         self.cardId = cardId
         self.projectPath = projectPath
@@ -53,13 +48,9 @@ struct LaunchConfirmationDialog: View {
         self.remoteHost = remoteHost
         self.isResume = isResume
         self.sessionId = sessionId
-        self.assistant = assistant
         self._isPresented = isPresented
         self.onLaunch = onLaunch
         self._prompt = State(initialValue: initialPrompt)
-        self._images = State(initialValue: promptImagePaths.compactMap { ImageAttachment.fromPath($0) })
-        let key = "runRemotely_\(projectPath)"
-        self._runRemotely = State(initialValue: UserDefaults.standard.object(forKey: key) as? Bool ?? true)
     }
 
     var body: some View {
@@ -95,7 +86,7 @@ struct LaunchConfirmationDialog: View {
                     // Session ID (resume only)
                     if isResume, let sid = sessionId {
                         HStack(spacing: 6) {
-                            AssistantIcon(assistant: assistant)
+                            SessionIcon()
                                 .frame(width: CGFloat(14).scaled, height: CGFloat(14).scaled)
                                 .opacity(0.5)
                             Text(sid)
@@ -108,17 +99,26 @@ struct LaunchConfirmationDialog: View {
 
                     // Editable prompt (launch only)
                     if !isResume {
-                        PromptSection(
-                            text: $prompt,
-                            images: $images,
-                            minHeight: 120,
-                            onSubmit: submitForm
-                        )
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Prompt")
+                                .font(.app(.caption))
+                                .foregroundStyle(.secondary)
+
+                            PromptEditor(
+                                text: $prompt,
+                                maxHeight: 400,
+                                onSubmit: submitForm
+                            )
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(minHeight: 120, maxHeight: 400)
+                            .padding(4)
+                            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                        }
                     }
 
                     // Checkboxes
                     VStack(alignment: .leading, spacing: 6) {
-                        if !isResume && !hasExistingWorktree && assistant.supportsWorktree {
+                        if !isResume && !hasExistingWorktree {
                             Toggle("Create worktree", isOn: isGitRepo ? $createWorktree : .constant(false))
                                 .font(.app(.callout))
                                 .disabled(!isGitRepo)
@@ -127,17 +127,6 @@ struct LaunchConfirmationDialog: View {
                                     .font(.app(.caption2))
                                     .foregroundStyle(.secondary)
                                     .padding(.leading, 20)
-                            }
-                            if createWorktree && isGitRepo {
-                                HStack {
-                                    Text("Branch name")
-                                        .font(.app(.callout))
-                                        .foregroundStyle(.secondary)
-                                    TextField("", text: $worktreeBranch, prompt: Text("Leave empty for a random name"))
-                                        .textFieldStyle(.roundedBorder)
-                                        .font(.app(.callout))
-                                }
-                                .padding(.leading, 20)
                             }
                         }
 
@@ -202,13 +191,9 @@ struct LaunchConfirmationDialog: View {
             if !commandEdited { command = commandPreview }
         }
         .onChange(of: runRemotely) {
-            UserDefaults.standard.set(runRemotely, forKey: "runRemotely_\(projectPath)")
             if !commandEdited { command = commandPreview }
         }
         .onChange(of: createWorktree) {
-            if !commandEdited { command = commandPreview }
-        }
-        .onChange(of: worktreeBranch) {
             if !commandEdited { command = commandPreview }
         }
         .onChange(of: dangerouslySkipPermissions) {
@@ -223,15 +208,14 @@ struct LaunchConfirmationDialog: View {
             guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         }
         let override = commandEdited ? command : nil
-        let branch = worktreeBranch.trimmingCharacters(in: .whitespacesAndNewlines)
-        onLaunch(prompt, effectiveCreateWorktree, branch.isEmpty ? nil : branch, effectiveRunRemotely, dangerouslySkipPermissions, override, images)
+        onLaunch(prompt, effectiveCreateWorktree, effectiveRunRemotely, dangerouslySkipPermissions, override)
         isPresented = false
     }
 
     // MARK: - Computed
 
     private var effectiveCreateWorktree: Bool {
-        !isResume && !hasExistingWorktree && createWorktree && isGitRepo && assistant.supportsWorktree
+        !isResume && !hasExistingWorktree && createWorktree && isGitRepo
     }
 
     private var effectiveRunRemotely: Bool {
@@ -243,26 +227,23 @@ struct LaunchConfirmationDialog: View {
 
         if effectiveRunRemotely {
             parts.append("SHELL=~/.kanban-code/remote/zsh")
-            if assistant == .gemini {
-                parts.append("PATH=~/.kanban-code/remote:$PATH")
-            }
         }
 
         if isResume, let sid = sessionId {
-            var resumeCmd = assistant.cliCommand
-            if dangerouslySkipPermissions { resumeCmd += " \(assistant.autoApproveFlag)" }
-            resumeCmd += " \(assistant.resumeFlag) \(sid)"
+            var resumeCmd = "claude"
+            if dangerouslySkipPermissions { resumeCmd += " --dangerously-skip-permissions" }
+            resumeCmd += " --resume \(sid)"
             parts.append("cd \(projectPath) && \(resumeCmd)")
         } else {
-            var cmd = assistant.cliCommand
-            if dangerouslySkipPermissions { cmd += " \(assistant.autoApproveFlag)" }
+            var cmd = "claude"
+            if dangerouslySkipPermissions { cmd += " --dangerously-skip-permissions" }
 
-            if effectiveCreateWorktree && assistant.supportsWorktree {
-                let branch = worktreeBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+            let truncated = Self.truncatePrompt(prompt, maxLength: 60)
+            cmd += " '\(truncated)'"
+
+            if effectiveCreateWorktree {
                 if let name = worktreeName, !name.isEmpty {
                     cmd += " --worktree \(name)"
-                } else if !branch.isEmpty {
-                    cmd += " --worktree \(branch)"
                 } else {
                     cmd += " --worktree"
                 }

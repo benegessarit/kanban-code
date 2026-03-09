@@ -15,6 +15,8 @@ interface Props {
   initialInput?: string;
   /** Called when the PTY process exits */
   onExit?: () => void;
+  /** Ref that will be populated with a function to write text to the PTY */
+  writeRef?: React.MutableRefObject<((text: string) => void) | null>;
 }
 
 const DARK_THEME = {
@@ -65,7 +67,7 @@ const LIGHT_THEME = {
   brightWhite: "#8c959f",
 };
 
-export default function TerminalView({ ptyId, command, initialInput, onExit }: Props) {
+export default function TerminalView({ ptyId, command, initialInput, onExit, writeRef }: Props) {
   const termRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -91,7 +93,7 @@ export default function TerminalView({ ptyId, command, initialInput, onExit }: P
 
     const xterm = new XTerm({
       fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
-      fontSize: 13,
+      fontSize: 15,
       lineHeight: 1.3,
       cursorBlink: true,
       cursorStyle: "bar",
@@ -129,6 +131,11 @@ export default function TerminalView({ ptyId, command, initialInput, onExit }: P
         pty.onData((data: Uint8Array) => {
           xterm.write(data);
         });
+
+        // Expose write function to parent
+        if (writeRef) {
+          writeRef.current = (text: string) => pty.write(text);
+        }
 
         pty.onExit((_info: { exitCode: number; signal?: number }) => {
           xterm.writeln("\r\n\x1b[90m[Process exited]\x1b[0m");
@@ -168,6 +175,7 @@ export default function TerminalView({ ptyId, command, initialInput, onExit }: P
 
     return () => {
       observer.disconnect();
+      if (writeRef) writeRef.current = null;
       ptyRef.current?.kill();
       ptyRef.current = null;
       xterm.dispose();

@@ -5,7 +5,6 @@ public enum DependencyChecker {
 
     public struct Status: Sendable {
         public let claudeAvailable: Bool
-        public let geminiAvailable: Bool
         public let hooksInstalled: Bool
         public let pandocAvailable: Bool
         public let wkhtmltoimageAvailable: Bool
@@ -15,20 +14,13 @@ public enum DependencyChecker {
         public let tmuxAvailable: Bool
         public let mutagenAvailable: Bool
 
-        /// Per-assistant hook installation status.
-        public let assistantHooks: [CodingAssistant: Bool]
-
         public init(
-            claudeAvailable: Bool, geminiAvailable: Bool = false,
-            hooksInstalled: Bool,
-            assistantHooks: [CodingAssistant: Bool] = [:],
-            pandocAvailable: Bool,
+            claudeAvailable: Bool, hooksInstalled: Bool, pandocAvailable: Bool,
             wkhtmltoimageAvailable: Bool, pushoverConfigured: Bool,
             ghAvailable: Bool, ghAuthenticated: Bool = false,
             tmuxAvailable: Bool, mutagenAvailable: Bool
         ) {
             self.claudeAvailable = claudeAvailable
-            self.geminiAvailable = geminiAvailable
             self.hooksInstalled = hooksInstalled
             self.pandocAvailable = pandocAvailable
             self.wkhtmltoimageAvailable = wkhtmltoimageAvailable
@@ -37,28 +29,19 @@ public enum DependencyChecker {
             self.ghAuthenticated = ghAuthenticated
             self.tmuxAvailable = tmuxAvailable
             self.mutagenAvailable = mutagenAvailable
-            self.assistantHooks = assistantHooks.isEmpty
-                ? [.claude: hooksInstalled]
-                : assistantHooks
         }
     }
 
     /// Check all dependencies concurrently.
     public static func checkAll(settingsStore: SettingsStore) async -> Status {
         async let claude = ShellCommand.isAvailable("claude")
-        async let gemini = ShellCommand.isAvailable("gemini")
+        async let hooks = Task { HookManager.isInstalled() }.value
         async let pandoc = ShellCommand.isAvailable("pandoc")
         async let wkhtmltoimage = ShellCommand.isAvailable("wkhtmltoimage")
         async let gh = ShellCommand.isAvailable("gh")
         async let ghAuth = checkGhAuth()
         async let tmux = ShellCommand.isAvailable("tmux")
         async let mutagen = ShellCommand.isAvailable("mutagen")
-
-        // Check hooks for all assistants
-        var hooks: [CodingAssistant: Bool] = [:]
-        for assistant in CodingAssistant.allCases {
-            hooks[assistant] = HookManager.isInstalled(for: assistant)
-        }
 
         let pushover: Bool
         if let settings = try? await settingsStore.read() {
@@ -71,9 +54,7 @@ public enum DependencyChecker {
 
         return await Status(
             claudeAvailable: claude,
-            geminiAvailable: gemini,
-            hooksInstalled: hooks[.claude] ?? false,
-            assistantHooks: hooks,
+            hooksInstalled: hooks,
             pandocAvailable: pandoc,
             wkhtmltoimageAvailable: wkhtmltoimage,
             pushoverConfigured: pushover,

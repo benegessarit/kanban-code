@@ -7,8 +7,7 @@ struct OnboardingWizard: View {
 
     @State private var currentStep = 0
     @State private var status: DependencyChecker.Status?
-    @State private var enabledAssistants: Set<CodingAssistant> = Set(CodingAssistant.allCases)
-    @State private var hookErrors: [CodingAssistant: String] = [:]
+    @State private var hookError: String?
     @State private var pushoverEnabled = false
     @State private var pushoverToken = ""
     @State private var pushoverUserKey = ""
@@ -16,29 +15,11 @@ struct OnboardingWizard: View {
     @State private var testResult: String?
     @State private var isChecking = false
     @State private var navigatingForward = true
-    @State private var runningSessions: [CodingAssistant: Int] = [:]
-    @State private var killedSessions: Set<CodingAssistant> = []
+    @State private var runningClaudeCount = 0
+    @State private var killedClaudes = false
     @State private var renderMarkdownImage = false
 
-    /// Steps are built dynamically: Welcome, Assistants, [per-assistant hooks...], Dependencies, Notifications, Complete.
-    private var steps: [OnboardingStep] {
-        var result: [OnboardingStep] = [.welcome, .assistants]
-        // Add a hooks step for each enabled + available assistant
-        for assistant in CodingAssistant.allCases {
-            let available: Bool
-            switch assistant {
-            case .claude: available = status?.claudeAvailable ?? false
-            case .gemini: available = status?.geminiAvailable ?? false
-            }
-            if available && enabledAssistants.contains(assistant) {
-                result.append(.hooks(assistant))
-            }
-        }
-        result.append(contentsOf: [.dependencies, .notifications, .complete])
-        return result
-    }
-
-    private var totalSteps: Int { steps.count }
+    private let totalSteps = 6
 
     var body: some View {
         VStack(spacing: 0) {
@@ -57,13 +38,14 @@ struct OnboardingWizard: View {
 
             // Step content
             Group {
-                switch steps[min(currentStep, totalSteps - 1)] {
-                case .welcome: welcomeStep
-                case .assistants: assistantsStep
-                case .hooks(let assistant): hooksStep(for: assistant)
-                case .dependencies: dependenciesStep
-                case .notifications: notificationsStep
-                case .complete: completeStep
+                switch currentStep {
+                case 0: welcomeStep
+                case 1: claudeCodeStep
+                case 2: hooksStep
+                case 3: dependenciesStep
+                case 4: notificationsStep
+                case 5: completeStep
+                default: EmptyView()
                 }
             }
             .id(currentStep)
@@ -116,11 +98,6 @@ struct OnboardingWizard: View {
         .task {
             await refreshStatus()
         }
-        .onChange(of: enabledAssistants) {
-            if currentStep >= totalSteps {
-                currentStep = totalSteps - 1
-            }
-        }
     }
 
     private func stepColor(for step: Int) -> Color {
@@ -129,7 +106,7 @@ struct OnboardingWizard: View {
         return .secondary.opacity(0.3)
     }
 
-    // MARK: - Step: Welcome
+    // MARK: - Step 0: Welcome
 
     private var welcomeStep: some View {
         VStack(spacing: 16) {
@@ -153,96 +130,47 @@ struct OnboardingWizard: View {
         .padding()
     }
 
-    // MARK: - Step: Coding Assistants
+    // MARK: - Step 1: Claude Code
 
-    private var assistantsStep: some View {
+    private var claudeCodeStep: some View {
         VStack(alignment: .leading, spacing: 16) {
             stepHeader(
                 icon: "terminal",
-                title: "Coding Assistants",
-                description: "Kanban manages sessions from coding assistants. Enable the ones you want to use."
+                title: "Coding Agent",
+                description: "Kanban manages sessions from coding agents. Currently supports Claude Code."
             )
 
-            ForEach(CodingAssistant.allCases, id: \.self) { assistant in
-                let available: Bool = {
-                    switch assistant {
-                    case .claude: status?.claudeAvailable ?? false
-                    case .gemini: status?.geminiAvailable ?? false
-                    }
-                }()
+            statusCheckRow("Claude Code CLI", done: status?.claudeAvailable ?? false)
 
-                HStack {
-                    Toggle(assistant.displayName, isOn: Binding(
-                        get: { enabledAssistants.contains(assistant) },
-                        set: { newValue in
-                            if newValue {
-                                enabledAssistants.insert(assistant)
-                            } else {
-                                enabledAssistants.remove(assistant)
-                            }
-                            saveEnabledAssistants()
-                        }
-                    ))
+            if status?.claudeAvailable == true {
+                Label("Claude Code is installed and ready", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
                     .font(.app(.callout))
-
-                    Spacer()
-
-                    if available {
-                        Label("CLI Available", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .font(.app(.caption))
-                    } else {
-                        Text("Not Installed")
-                            .foregroundStyle(.orange)
-                            .font(.app(.caption))
-                    }
-                }
-            }
-
-            let anyMissing = CodingAssistant.allCases.contains { assistant in
-                guard enabledAssistants.contains(assistant) else { return false }
-                switch assistant {
-                case .claude: return !(status?.claudeAvailable ?? false)
-                case .gemini: return !(status?.geminiAvailable ?? false)
-                }
-            }
-
-            if anyMissing {
+            } else {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Install missing assistants:")
+                    Text("Install Claude Code:")
                         .font(.app(.caption))
                         .foregroundStyle(.secondary)
 
-                    ForEach(CodingAssistant.allCases.filter { enabledAssistants.contains($0) }, id: \.self) { assistant in
-                        let available: Bool = {
-                            switch assistant {
-                            case .claude: status?.claudeAvailable ?? false
-                            case .gemini: status?.geminiAvailable ?? false
-                            }
-                        }()
+                    let command = "npm install -g @anthropic-ai/claude-code"
+                    HStack {
+                        Text(command)
+                            .font(.app(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(8)
+                            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
 
-                        if !available {
-                            let command = assistant.installCommand
-                            HStack {
-                                Text(command)
-                                    .font(.app(.caption, design: .monospaced))
-                                    .textSelection(.enabled)
-                                    .padding(8)
-                                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-
-                                Button {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(command, forType: .string)
-                                } label: {
-                                    Image(systemName: "doc.on.doc")
-                                }
-                                .buttonStyle(.borderless)
-                                .help("Copy to clipboard")
-                            }
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(command, forType: .string)
+                        } label: {
+                            Image(systemName: "doc.on.doc")
                         }
+                        .buttonStyle(.borderless)
+                        .help("Copy to clipboard")
                     }
 
-                    Text("Kanban works without assistants installed — columns will just be empty until sessions are created.")
+                    Text("Kanban works without Claude Code installed — columns will just be empty until sessions are created.")
                         .font(.app(.caption))
                         .foregroundStyle(.tertiary)
                 }
@@ -255,33 +183,29 @@ struct OnboardingWizard: View {
         .padding(24)
     }
 
-    // MARK: - Step: Hooks (per-assistant)
+    // MARK: - Step 2: Claude Code Hooks
 
-    private func hooksStep(for assistant: CodingAssistant) -> some View {
-        let installed = status?.assistantHooks[assistant] ?? false
-        let count = runningSessions[assistant] ?? 0
-        let killed = killedSessions.contains(assistant)
-
-        return VStack(alignment: .leading, spacing: 16) {
+    private var hooksStep: some View {
+        VStack(alignment: .leading, spacing: 16) {
             stepHeader(
                 icon: "antenna.radiowaves.left.and.right",
-                title: "\(assistant.displayName) Hooks",
-                description: "Hooks let Kanban detect when \(assistant.displayName) starts, stops, or needs your attention."
+                title: "Claude Code Hooks",
+                description: "Hooks let Kanban detect when Claude starts, stops, or needs your attention."
             )
 
-            statusCheckRow("Hooks installed", done: installed)
+            statusCheckRow("Hooks installed", done: status?.hooksInstalled ?? false)
 
-            if installed {
+            if status?.hooksInstalled == true {
                 Label("All hooks are installed and ready", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .font(.app(.callout))
 
-                // Check for pre-existing sessions that won't have hooks
-                if count > 0 && !killed {
+                // Check for pre-existing Claude sessions that won't have hooks
+                if runningClaudeCount > 0 && !killedClaudes {
                     Divider()
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Label("\(count) \(assistant.displayName) session\(count == 1 ? "" : "s") running without hooks", systemImage: "exclamationmark.triangle")
+                        Label("\(runningClaudeCount) Claude session\(runningClaudeCount == 1 ? "" : "s") running without hooks", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
                             .font(.app(.callout))
 
@@ -289,13 +213,13 @@ struct OnboardingWizard: View {
                             .font(.app(.caption))
                             .foregroundStyle(.secondary)
 
-                        Button("Kill All \(assistant.displayName) Sessions") {
-                            Task { await killRunningSessions(for: assistant) }
+                        Button("Kill All Claude Sessions") {
+                            Task { await killRunningClaudes() }
                         }
                         .buttonStyle(.bordered)
                         .tint(.orange)
                     }
-                } else if killed {
+                } else if killedClaudes {
                     Label("Old sessions killed — restart them to get full tracking", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                         .font(.app(.callout))
@@ -303,20 +227,20 @@ struct OnboardingWizard: View {
             } else {
                 Button("Install Hooks") {
                     do {
-                        try HookManager.install(for: assistant)
-                        hookErrors[assistant] = nil
+                        try HookManager.install()
+                        hookError = nil
                         Task {
                             await refreshStatus()
-                            await checkRunningSessions(for: assistant)
+                            await checkRunningClaudes()
                         }
                     } catch {
-                        hookErrors[assistant] = error.localizedDescription
+                        hookError = error.localizedDescription
                     }
                 }
                 .buttonStyle(.borderedProminent)
 
-                if let error = hookErrors[assistant] {
-                    Text(error)
+                if let hookError {
+                    Text(hookError)
                         .font(.app(.caption))
                         .foregroundStyle(.red)
                 }
@@ -326,34 +250,34 @@ struct OnboardingWizard: View {
         }
         .padding(24)
         .task {
-            if status?.assistantHooks[assistant] == true {
-                await checkRunningSessions(for: assistant)
+            if status?.hooksInstalled == true {
+                await checkRunningClaudes()
             }
         }
     }
 
-    private func checkRunningSessions(for assistant: CodingAssistant) async {
+    private func checkRunningClaudes() async {
         do {
             let result = try await ShellCommand.run(
                 "/bin/bash",
-                arguments: ["-c", "pgrep -f '\\b\(assistant.cliCommand)\\b' | wc -l"]
+                arguments: ["-c", "pgrep -f 'claude' | wc -l"]
             )
-            runningSessions[assistant] = Int(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+            runningClaudeCount = Int(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
         } catch {
-            runningSessions[assistant] = 0
+            runningClaudeCount = 0
         }
     }
 
-    private func killRunningSessions(for assistant: CodingAssistant) async {
+    private func killRunningClaudes() async {
         _ = try? await ShellCommand.run(
             "/usr/bin/pkill",
-            arguments: ["-f", assistant.cliCommand]
+            arguments: ["-f", "claude"]
         )
-        killedSessions.insert(assistant)
-        runningSessions[assistant] = 0
+        killedClaudes = true
+        runningClaudeCount = 0
     }
 
-    // MARK: - Step: Dependencies
+    // MARK: - Step 3: Dependencies
 
     private var dependenciesStep: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -424,7 +348,7 @@ struct OnboardingWizard: View {
         return "brew install \(packages.joined(separator: " "))"
     }
 
-    // MARK: - Step: Notifications
+    // MARK: - Step 4: Notifications
 
     private var notificationsStep: some View {
         ScrollView {
@@ -432,7 +356,7 @@ struct OnboardingWizard: View {
                 stepHeader(
                     icon: "bell.badge",
                     title: "Notifications",
-                    description: "Get notified when your coding assistant stops and needs your input."
+                    description: "Get notified when Claude stops and needs your input."
                 )
 
                 statusCheckRow("macOS Notifications", done: true)
@@ -532,7 +456,7 @@ struct OnboardingWizard: View {
         }
     }
 
-    // MARK: - Step: Complete
+    // MARK: - Step 5: Complete
 
     private var completeStep: some View {
         ScrollView {
@@ -544,18 +468,8 @@ struct OnboardingWizard: View {
                 )
 
                 Group {
-                    ForEach(CodingAssistant.allCases, id: \.self) { assistant in
-                        let available: Bool = {
-                            switch assistant {
-                            case .claude: status?.claudeAvailable ?? false
-                            case .gemini: status?.geminiAvailable ?? false
-                            }
-                        }()
-                        summaryRow(assistant.displayName, status: available)
-                        if available {
-                            summaryRow("  \(assistant.displayName) Hooks", status: status?.assistantHooks[assistant] ?? false)
-                        }
-                    }
+                    summaryRow("Claude Code", status: status?.claudeAvailable ?? false)
+                    summaryRow("Claude Code Hooks", status: status?.hooksInstalled ?? false)
                     summaryRow("Pushover", status: status?.pushoverConfigured ?? false)
                     summaryRow("tmux", status: status?.tmuxAvailable ?? false)
                     summaryRow("GitHub CLI", status: status?.ghAuthenticated ?? false)
@@ -632,19 +546,6 @@ struct OnboardingWizard: View {
 
     private func refreshStatus() async {
         status = await DependencyChecker.checkAll(settingsStore: settingsStore)
-        // Load enabled assistants from settings
-        if let settings = try? await settingsStore.read() {
-            enabledAssistants = Set(settings.enabledAssistants)
-        }
-    }
-
-    private func saveEnabledAssistants() {
-        Task {
-            var settings = (try? await settingsStore.read()) ?? Settings()
-            settings.enabledAssistants = CodingAssistant.allCases.filter { enabledAssistants.contains($0) }
-            try? await settingsStore.write(settings)
-            NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
-        }
     }
 
     private func testPushover() {
@@ -666,14 +567,4 @@ struct OnboardingWizard: View {
             testSending = false
         }
     }
-}
-
-/// Dynamic onboarding steps — hooks steps are added per available assistant.
-private enum OnboardingStep: Hashable {
-    case welcome
-    case assistants
-    case hooks(CodingAssistant)
-    case dependencies
-    case notifications
-    case complete
 }

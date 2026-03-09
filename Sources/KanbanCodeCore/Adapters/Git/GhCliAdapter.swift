@@ -458,13 +458,9 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
             arguments: arguments,
             currentDirectory: repoRoot
         )
-        KanbanCodeLog.info("merge", "gh merge exit=\(result.exitCode) stdout=[\(result.stdout.prefix(200))] stderr=[\(result.stderr.prefix(200))]")
         let output = (result.stdout + " " + result.stderr).lowercased()
-        let mergeSucceeded = result.succeeded
-            || output.contains("merged")
-            || (output.contains("pull request") && output.contains("merge"))
-            || (output.contains("delete") && output.contains("branch")) // branch delete fail implies merge succeeded
-        if mergeSucceeded {
+        if result.succeeded || output.contains("merged") || output.contains("pull request") && output.contains("merge") {
+            // Merge succeeded — branch deletion failure is non-fatal
             let warning = result.succeeded ? nil : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             return .success(warning: warning)
         } else {
