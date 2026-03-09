@@ -30,6 +30,7 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-pty = "0.1"
+tauri-plugin-dialog = "2"
 
 [profile.dev]
 incremental = true
