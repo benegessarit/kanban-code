@@ -52,6 +52,8 @@ struct ContentView: View {
     @State private var store: BoardStore
     @State private var orchestrator: BackgroundOrchestrator
     @State private var showSearch = false
+    @State private var searchInitialQuery = ""
+    @State private var terminalHadFocusBeforeSearch = false
     @State private var showNewTask = false
     @State private var showOnboarding = false
     @AppStorage("appearanceMode") private var appearanceMode: AppearanceMode = .auto
@@ -472,10 +474,13 @@ struct ContentView: View {
                 if showSearch {
                     Color.black.opacity(0.3)
                         .ignoresSafeArea()
-                        .onTapGesture { showSearch = false }
+                        .onTapGesture { closePalette() }
 
                     SearchOverlay(
-                        isPresented: $showSearch,
+                        isPresented: Binding(
+                            get: { showSearch },
+                            set: { if !$0 { closePalette() } }
+                        ),
                         cards: store.state.cards,
                         sessionStore: store.sessionStore,
                         onSelectCard: { card in
@@ -487,7 +492,9 @@ struct ContentView: View {
                         onForkCard: { card in pendingForkCardId = card.id },
                         onCheckpointCard: { card in
                             store.dispatch(.selectCard(cardId: card.id))
-                        }
+                        },
+                        commands: paletteCommands,
+                        initialQuery: searchInitialQuery
                     )
                     .padding(40)
                     .transition(.opacity.combined(with: .scale(scale: 0.95)))
@@ -858,7 +865,7 @@ struct ContentView: View {
                 keyMonitor = nil
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeToggleSearch)) { _ in
-                showSearch.toggle()
+                if showSearch { closePalette() } else { openPalette() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeNewTask)) { _ in
                 presentNewTask()
@@ -1023,11 +1030,11 @@ struct ContentView: View {
                 }
 
                 ToolbarItem(placement: .primaryAction) {
-                    Button { showSearch.toggle() } label: {
+                    Button { if showSearch { closePalette() } else { openPalette() } } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "magnifyingglass")
                             Text("Search")
-                            Text("⌘K")
+                            Text("⌘P")
                                 .font(.app(.caption))
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 5)
@@ -1036,7 +1043,7 @@ struct ContentView: View {
                         }
                         .padding(.horizontal, 4)
                     }
-                    .help("Search sessions (⌘K)")
+                    .help("Search sessions (⌘K / ⌘P)")
                 }
 
                 ToolbarItem(placement: .primaryAction) {
@@ -1053,8 +1060,14 @@ struct ContentView: View {
                 }
             }
             .background {
-                Button("") { showSearch.toggle() }
+                Button("") { if showSearch { closePalette() } else { openPalette() } }
                     .keyboardShortcut("k", modifiers: .command)
+                    .hidden()
+                Button("") { if showSearch { closePalette() } else { openPalette() } }
+                    .keyboardShortcut("p", modifiers: .command)
+                    .hidden()
+                Button("") { if showSearch { closePalette() } else { openPalette(initialQuery: ">") } }
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
                     .hidden()
                 Button("") { selectProject(at: 0) }
                     .keyboardShortcut("1", modifiers: .command)
@@ -1263,6 +1276,43 @@ struct ContentView: View {
             Text(currentProjectName)
                 .font(.app(.headline))
         }
+    }
+
+    private var paletteCommands: [CommandItem] {
+        var cmds: [CommandItem] = [
+            CommandItem("Open Settings", icon: "gear", shortcut: "⌘,") {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            },
+            CommandItem("Toggle View Mode", icon: boardViewMode == .kanban ? "list.bullet" : "square.split.2x1") { [self] in
+                boardViewModeRaw = (boardViewMode == .kanban ? BoardViewMode.list : .kanban).rawValue
+            },
+            CommandItem("New Task", icon: "plus", shortcut: "⌘N") { [self] in
+                presentNewTask()
+            },
+        ]
+
+        if store.state.selectedCardId != nil {
+            cmds.append(CommandItem("Toggle Expanded Mode", icon: "arrow.up.left.and.arrow.down.right", shortcut: "⌘↩") { [self] in
+                isExpandedDetail.toggle()
+            })
+        }
+
+        // Project switching
+        let visibleProjects = store.state.configuredProjects.filter(\.visible)
+        if !visibleProjects.isEmpty {
+            cmds.append(CommandItem("Show All Projects", icon: "folder", shortcut: "⌘1") { [self] in
+                setSelectedProject(nil)
+            })
+            for (i, project) in visibleProjects.enumerated() {
+                let shortcut = i < 8 ? "⌘\(i + 2)" : nil
+                let path = project.path
+                cmds.append(CommandItem("Switch to \(project.name)", icon: "folder", shortcut: shortcut) { [self] in
+                    setSelectedProject(path)
+                })
+            }
+        }
+
+        return cmds
     }
 
     private var currentProjectName: String {
@@ -1794,6 +1844,33 @@ struct ContentView: View {
         }
     }
 
+    private var isTerminalFocused: Bool {
+        guard let responder = NSApp.keyWindow?.firstResponder else { return false }
+        return String(describing: type(of: responder)).contains("Terminal")
+    }
+
+    private func openPalette(initialQuery: String = "") {
+        // Check terminal focus via first responder first, fall back to tab+tmux heuristic
+        // (by the time this runs, the shortcut may have stolen first responder from terminal)
+        let terminalWasFocused = isTerminalFocused || (
+            detailTab == .terminal
+            && store.state.selectedCardId.flatMap({ store.state.links[$0]?.tmuxLink }) != nil
+        )
+        terminalHadFocusBeforeSearch = terminalWasFocused
+        searchInitialQuery = initialQuery
+        showSearch = true
+    }
+
+    private func closePalette() {
+        showSearch = false
+        if terminalHadFocusBeforeSearch {
+            // Delay past the dismiss animation (150ms) so the terminal can accept focus
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                shouldFocusTerminal = true
+            }
+        }
+    }
+
     private func setSelectedProject(_ path: String?) {
         store.dispatch(.setSelectedProject(path))
         selectedProjectPersisted = path ?? ""
@@ -2146,7 +2223,7 @@ struct ContentView: View {
                 let sessionFileExt = assistant == .gemini ? ".json" : ".jsonl"
                 let configDir = (NSHomeDirectory() as NSString).appendingPathComponent(assistant.configDirName)
                 let claudeProjectsDir = (configDir as NSString).appendingPathComponent("projects")
-                let encodedProject = projectPath.replacingOccurrences(of: "/", with: "-")
+                let encodedProject = SessionFileMover.encodeProjectPath(projectPath)
                 let sessionDir = (claudeProjectsDir as NSString).appendingPathComponent(encodedProject)
 
                 // When worktree is enabled, also snapshot worktree-related directories
@@ -2308,7 +2385,7 @@ struct ContentView: View {
             // suffix is like ".claude-worktrees-<name>" or "claude-worktrees-<name>"
             let sessionDir = (sessionPath as NSString).deletingLastPathComponent
             let dirName = (sessionDir as NSString).lastPathComponent
-            let encodedProject = projectPath.replacingOccurrences(of: "/", with: "-")
+            let encodedProject = SessionFileMover.encodeProjectPath(projectPath)
             guard dirName.hasPrefix(encodedProject) else { return nil }
             let rest = String(dirName.dropFirst(encodedProject.count))
             // Match known pattern: [-.]claude-worktrees-<worktreeName>
@@ -2590,7 +2667,7 @@ struct ContentView: View {
                     // Always place the forked session in the correct project dir
                     // so `claude --resume` can find it from the project root.
                     if let fp = forkProjectPath {
-                        let encoded = fp.replacingOccurrences(of: "/", with: "-")
+                        let encoded = SessionFileMover.encodeProjectPath(fp)
                         let home = NSHomeDirectory()
                         targetDir = "\(home)/.claude/projects/\(encoded)"
                     }
@@ -2647,7 +2724,7 @@ struct ContentView: View {
         if assistant == .claude,
            let sessionLink = card.link.sessionLink,
            let sessionPath = sessionLink.sessionPath {
-            let expectedDir = NSHomeDirectory() + "/.claude/projects/" + projectPath.replacingOccurrences(of: "/", with: "-")
+            let expectedDir = NSHomeDirectory() + "/.claude/projects/" + SessionFileMover.encodeProjectPath(projectPath)
             let expectedPath = expectedDir + "/" + sessionId + ".jsonl"
             if sessionPath != expectedPath,
                FileManager.default.fileExists(atPath: sessionPath) {

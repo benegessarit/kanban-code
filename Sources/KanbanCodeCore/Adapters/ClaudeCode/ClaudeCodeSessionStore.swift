@@ -60,7 +60,7 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
         let base = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/projects")
         let encodedPath: String
         if let projectPath {
-            encodedPath = projectPath.replacingOccurrences(of: "/", with: "-")
+            encodedPath = SessionFileMover.encodeProjectPath(projectPath)
         } else {
             encodedPath = "-unknown"
         }

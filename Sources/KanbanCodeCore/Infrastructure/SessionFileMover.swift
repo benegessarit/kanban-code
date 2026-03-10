@@ -75,8 +75,10 @@ public enum SessionFileMover {
     }
 
     /// Encode a project path for use as a directory name.
-    /// Matches claude-resume's encodeProjectPath(): replaces / with -
-    private static func encodeProjectPath(_ projectPath: String) -> String {
-        projectPath.replacingOccurrences(of: "/", with: "-")
+    /// Matches Claude CLI's encoding: replaces / with - AND strips dots.
+    public static func encodeProjectPath(_ projectPath: String) -> String {
+        projectPath
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ".", with: "")
     }
 }
