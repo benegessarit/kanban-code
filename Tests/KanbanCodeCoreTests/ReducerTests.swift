@@ -223,6 +223,23 @@ struct ReducerTests {
         #expect(state.links["card_m2"]?.manuallyArchived == true)
     }
 
+    @Test("reorderCard updates sort order within a column")
+    func reorderCardWithinColumn() {
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let first = makeLink(id: "card_1", column: .backlog, updatedAt: timestamp)
+        let second = makeLink(id: "card_2", column: .backlog, updatedAt: timestamp)
+        let third = makeLink(id: "card_3", column: .backlog, updatedAt: timestamp)
+        var state = stateWith([first, second, third])
+
+        let effects = Reducer.reduce(state: &state, action: .reorderCard(cardId: "card_3", targetCardId: "card_1", above: true))
+
+        #expect(state.cards(in: .backlog).map(\.id) == ["card_3", "card_1", "card_2"])
+        #expect(state.links["card_3"]?.sortOrder == 0)
+        #expect(state.links["card_1"]?.sortOrder == 1)
+        #expect(state.links["card_2"]?.sortOrder == 2)
+        #expect(effects.count == 3)
+    }
+
     // MARK: - Delete Card
 
     @Test("deleteCard removes link and returns cleanup effects")

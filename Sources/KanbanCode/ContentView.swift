@@ -312,6 +312,9 @@ struct ContentView: View {
                 pendingMigration = (cardId: cardId, targetAssistant: target)
             },
             onRefreshBacklog: { Task { await store.refreshBacklog() } },
+            canDropCard: { card, column in
+                CardDropIntent.resolve(card, to: column).isAllowed
+            },
             onDropCard: { cardId, column in handleDrop(cardId: cardId, to: column) },
             onMergeCards: { sourceId, targetId in
                 store.dispatch(.mergeCards(sourceId: sourceId, targetId: targetId))
@@ -364,6 +367,10 @@ struct ContentView: View {
                 pendingMigration = (cardId: cardId, targetAssistant: target)
             },
             onRefreshBacklog: { Task { await store.refreshBacklog() } },
+            onDropCard: { cardId, column in handleDrop(cardId: cardId, to: column) },
+            canDropCard: { card, column in
+                CardDropIntent.resolve(card, to: column).isAllowed
+            },
             onNewTask: { showNewTask = true },
             onCardClicked: { cardId in
                 if store.state.cards.first(where: { $0.id == cardId })?.link.tmuxLink != nil {
@@ -2177,45 +2184,17 @@ struct ContentView: View {
 
     private func handleDrop(cardId: String, to column: KanbanCodeColumn) {
         guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
-
-        switch column {
-        case .inProgress:
-            if card.link.tmuxLink != nil {
-                // Already has a running terminal — card moves here automatically when Claude is working
-                store.dispatch(.setError("Session is already running — card moves to In Progress automatically when Claude is actively working"))
-            } else if card.column == .backlog && card.link.sessionLink == nil {
-                // Fresh backlog card → start dialog
-                startCard(cardId: cardId)
-            } else if card.link.sessionLink != nil {
-                // Has session but no terminal → resume dialog
-                resumeCard(cardId: cardId)
-            } else {
-                store.dispatch(.moveCard(cardId: cardId, to: column))
-            }
-
-        case .inReview:
-            if card.link.prLinks.isEmpty {
-                store.dispatch(.setError("Cannot move to In Review — card has no pull request"))
-            } else {
-                store.dispatch(.moveCard(cardId: cardId, to: column))
-            }
-
-        case .done:
-            let hasMergedPR = card.link.prLinks.contains { $0.status == .merged }
-            if !hasMergedPR {
-                store.dispatch(.setError("Cannot move to Done — no merged pull request"))
-            } else {
-                store.dispatch(.moveCard(cardId: cardId, to: column))
-            }
-
-        case .allSessions:
+        switch CardDropIntent.resolve(card, to: column) {
+        case .start:
+            startCard(cardId: cardId)
+        case .resume:
+            resumeCard(cardId: cardId)
+        case .archive:
             archiveCard(cardId: cardId)
-
-        case .backlog:
+        case .move:
             store.dispatch(.moveCard(cardId: cardId, to: column))
-
-        case .waiting:
-            store.dispatch(.moveCard(cardId: cardId, to: column))
+        case .invalid(let message):
+            store.dispatch(.setError(message))
         }
     }
 
