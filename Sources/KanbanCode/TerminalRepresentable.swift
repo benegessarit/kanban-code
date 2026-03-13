@@ -498,7 +498,7 @@ final class TerminalCache {
 /// Uses TerminalCache to persist terminals across drawer close/open cycles.
 /// Terminals are created once globally and reparented as needed — never destroyed
 /// just because the drawer was toggled.
-struct TerminalContainerView: NSViewRepresentable {
+struct TerminalContainerView: NSViewRepresentable, Equatable {
     /// All tmux session names to show tabs for.
     let sessions: [String]
     /// Which session is currently visible.
@@ -506,6 +506,12 @@ struct TerminalContainerView: NSViewRepresentable {
     /// When true, the terminal grabs keyboard focus (user clicked a tab).
     /// When false, the terminal is shown but focus stays where it was (keyboard nav, drawer open).
     var grabFocus: Bool = false
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.sessions == rhs.sessions
+            && lhs.activeSession == rhs.activeSession
+            && lhs.grabFocus == rhs.grabFocus
+    }
 
     func makeNSView(context: Context) -> TerminalContainerNSView {
         let container = TerminalContainerNSView()
@@ -517,6 +523,11 @@ struct TerminalContainerView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: TerminalContainerNSView, context: Context) {
+        // When sessions are empty (terminal not yet created), just clean up and return.
+        guard !sessions.isEmpty, !activeSession.isEmpty else {
+            nsView.removeTerminalsNotIn([])
+            return
+        }
         // Add any new sessions (idempotent — reuses cached terminals)
         for session in sessions {
             nsView.ensureTerminal(for: session)
@@ -630,7 +641,13 @@ final class TerminalContainerNSView: NSView {
         guard inset.width > 0, inset.height > 0 else { return }
 
         for sub in subviews {
-            if sub.frame != inset {
+            // Only resize if the change is >= 1px to avoid tmux SIGWINCH
+            // from sub-pixel layout jitter during background state updates.
+            let delta = abs(sub.frame.origin.x - inset.origin.x)
+                + abs(sub.frame.origin.y - inset.origin.y)
+                + abs(sub.frame.width - inset.width)
+                + abs(sub.frame.height - inset.height)
+            if delta >= 1.0 {
                 sub.frame = inset
             }
         }

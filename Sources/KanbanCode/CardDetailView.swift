@@ -590,16 +590,19 @@ struct CardDetailView: View {
 
                 // Content area: single TerminalContainerView + overlay for non-terminal states
                 ZStack {
-                    // Single terminal container for ALL live sessions — never recreated on tab switch
-                    if !allLiveSessions.isEmpty, let active = effectiveActiveSession ?? allLiveSessions.first {
-                        TerminalContainerView(
-                            sessions: allLiveSessions,
-                            activeSession: active,
-                            grabFocus: terminalGrabFocus
-                        )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .opacity(showOverlay ? 0 : 1)
-                        .onAppear {
+                    // Always mount the terminal container — never tear down on state changes.
+                    // Hiding with opacity instead of `if` prevents SwiftUI from destroying
+                    // the NSView during background reconciliation/activity updates.
+                    TerminalContainerView(
+                        sessions: allLiveSessions,
+                        activeSession: effectiveActiveSession ?? allLiveSessions.first ?? "",
+                        grabFocus: terminalGrabFocus
+                    )
+                    .equatable()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .opacity(allLiveSessions.isEmpty || showOverlay ? 0 : 1)
+                    .onChange(of: terminalGrabFocus) {
+                        if terminalGrabFocus {
                             DispatchQueue.main.async { terminalGrabFocus = false }
                         }
                     }
