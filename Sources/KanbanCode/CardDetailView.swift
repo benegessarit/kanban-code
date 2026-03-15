@@ -147,6 +147,7 @@ struct CardDetailView: View {
     @State private var tabRenameItem: TabRenameItem?
     @State private var draggingTab: String?
     @State private var hoveredTab: String?
+    @State private var hoveredCloseBtn: String?
     @State private var dropTargetTab: String?
     @State private var terminalPaths: [String: String] = [:]  // sessionName → last path component
     @State private var pathPollTask: Task<Void, Never>?
@@ -511,8 +512,10 @@ struct CardDetailView: View {
                             tabDropIndicator
                         }
                     }
+                    .frame(maxWidth: .infinity)
                     .padding(3)
                     .background(Color.primary.opacity(0.06), in: Capsule())
+                    .layoutPriority(1)
                     .animation(.easeInOut(duration: 0.2), value: dropTargetTab)
                     .onChange(of: dropTargetTab) {
                         if dropTargetTab == nil, draggingTab != nil {
@@ -572,7 +575,8 @@ struct CardDetailView: View {
                     }
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.vertical, 0)
+                .padding(.bottom, 6)
 
                 // Queued prompts bar
                 if let prompts = card.link.queuedPrompts, !prompts.isEmpty {
@@ -697,29 +701,45 @@ struct CardDetailView: View {
             if assistantAlive { terminalGrabFocus = true }
         } label: {
             HStack(spacing: 4) {
-                // Close button on left, only on hover
-                if assistantAlive && isHovered {
-                    Button {
-                        if let session = claudeTmuxSession {
-                            onKillTerminal(session)
+                HStack {
+                    // Close button on left, only on hover
+                    if assistantAlive && isHovered {
+                        Button {
+                            if let session = claudeTmuxSession {
+                                onKillTerminal(session)
+                            }
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.app(size: 8, weight: .bold))
+                                .foregroundStyle(.primary.opacity(0.6))
+                                .frame(width: 14, height: 14)
+                                .background {
+                                    if hoveredCloseBtn == tabId {
+                                        Circle().fill(Color.primary.opacity(0.12))
+                                    }
+                                }
+                                .contentShape(Circle())
                         }
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.app(size: 8, weight: .bold))
-                            .foregroundStyle(.secondary)
+                        .buttonStyle(.borderless)
+                        .onHover { hoveredCloseBtn = $0 ? tabId : nil }
+                        .help("Stop \(assistant.displayName) session")
                     }
-                    .buttonStyle(.borderless)
-                    .help("Stop \(assistant.displayName) session")
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 AssistantIcon(assistant: assistant)
                     .frame(width: CGFloat(12).scaled, height: CGFloat(12).scaled)
+                    .padding(.vertical, 2)
                 Text(tabLabel)
                     .font(.app(.caption))
                     .lineLimit(1)
+                    .padding(.vertical, 2)
+
+                Spacer()
+                    .frame(maxWidth: .infinity)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -812,31 +832,47 @@ struct CardDetailView: View {
         let isHovered = hoveredTab == sessionName
 
         HStack(spacing: 4) {
-            // Close button on left, only on hover
-            if isHovered {
-                Button {
-                    onKillTerminal(sessionName)
-                    if selectedTerminalSession == sessionName {
-                        let remaining = shellSessions.filter { $0 != sessionName }
-                        selectedTerminalSession = remaining.first
+            HStack {
+                // Close button on left, only on hover
+                if isHovered {
+                    Button {
+                        onKillTerminal(sessionName)
+                        if selectedTerminalSession == sessionName {
+                            let remaining = shellSessions.filter { $0 != sessionName }
+                            selectedTerminalSession = remaining.first
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.app(size: 8, weight: .bold))
+                            .foregroundStyle(.primary.opacity(0.6))
+                            .frame(width: 14, height: 14)
+                            .background {
+                                if hoveredCloseBtn == sessionName {
+                                    Circle().fill(Color.primary.opacity(0.12))
+                                }
+                            }
+                            .contentShape(Circle())
                     }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.app(size: 8, weight: .bold))
-                        .foregroundStyle(.secondary)
+                    .buttonStyle(.borderless)
+                    .onHover { hoveredCloseBtn = $0 ? sessionName : nil }
+                    .help("Close terminal")
                 }
-                .buttonStyle(.borderless)
-                .help("Close terminal")
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Image(systemName: "terminal")
                 .font(.app(.caption2))
+                .padding(.vertical, 2)
             Text(displayName)
                 .font(.app(.caption))
                 .lineLimit(1)
+                .padding(.vertical, 2)
+
+            Spacer()
+                .frame(maxWidth: .infinity)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
         .contentShape(Capsule())
         .onTapGesture(count: 2) {
             tabRenameItem = TabRenameItem(sessionName: sessionName, currentName: customName ?? displayName)
@@ -1409,8 +1445,6 @@ struct CardDetailView: View {
                         .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
                         .help(isStart ? "Start work on this task" : "Resume session")
                     }
-
-                    expandCollapseButton
 
                     if let path = card.link.worktreeLink?.path ?? card.link.projectPath {
                         Button {

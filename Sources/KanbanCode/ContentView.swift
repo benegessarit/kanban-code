@@ -66,6 +66,7 @@ struct ContentView: View {
     @AppStorage("killTmuxOnQuit") private var killTmuxOnQuit = true
     @AppStorage("uiTextSize") private var uiTextSize: Int = 1
     @AppStorage("detailExpanded") private var detailExpandedPersisted = false
+    @AppStorage("selectedCardId") private var selectedCardIdPersisted = ""
     @State private var showAddFromPath = false
     @State private var isDroppingFolder = false
     @State private var isDroppingImage = false
@@ -555,6 +556,7 @@ struct ContentView: View {
                    let card = store.state.cards.first(where: { $0.id == cardId }) {
                     detailTab = DetailTab.initialTab(for: card)
                 }
+                selectedCardIdPersisted = store.state.selectedCardId ?? ""
             }
             .onChange(of: store.state.detailExpanded) {
                 if !store.state.detailExpanded {
@@ -940,9 +942,12 @@ struct ContentView: View {
                         selectedProjectPersisted = ""
                     }
                 }
-                // Restore persisted detail expansion
+                // Restore persisted detail expansion and sidebar
                 if detailExpandedPersisted {
                     store.dispatch(.setDetailExpanded(true))
+                    if showBoardInExpanded {
+                        sidebarVisibility = .doubleColumn
+                    }
                 }
                 // Register TerminalCache relay for KanbanCodeCore effects
                 TerminalCacheRelay.removeHandler = { name in
@@ -951,6 +956,11 @@ struct ContentView: View {
                 systemTray.setup(store: store)
                 await store.loadSettingsAndCache()
                 await store.reconcile()
+                // Restore persisted card selection
+                if !selectedCardIdPersisted.isEmpty,
+                   store.state.cards.contains(where: { $0.id == selectedCardIdPersisted }) {
+                    store.dispatch(.selectCard(cardId: selectedCardIdPersisted))
+                }
                 systemTray.update()
                 orchestrator.start()
             }
@@ -1370,7 +1380,6 @@ struct ContentView: View {
                     boardViewModeRaw = BoardViewMode.kanban.rawValue
                 } else {
                     isExpandedDetail = true
-                    showBoardInExpanded = true
                     boardViewModeRaw = BoardViewMode.list.rawValue
                 }
             }
