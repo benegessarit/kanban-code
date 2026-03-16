@@ -77,6 +77,8 @@ struct ContentView: View {
     @State private var showSyncPopover = false
     @State private var rawSyncOutput = ""
     @State private var editingQueuedPromptId: String?
+    @State private var isToolbarMerging = false
+    @State private var toolbarMergeError: String?
     // showSearch and isExpandedDetail live in AppState (store.state.paletteOpen / detailExpanded)
     private var showSearch: Bool {
         get { store.state.paletteOpen }
@@ -1029,9 +1031,10 @@ struct ContentView: View {
                         .help(appearanceMode.helpText)
                     }
 
-                    ToolbarItem(placement: .navigation) {
-                        projectSelectorMenu
-                    }
+                }
+
+                ToolbarItem(placement: .navigation) {
+                    projectSelectorMenu
                 }
 
                 if tbVis.showViewModePicker {
@@ -1073,6 +1076,52 @@ struct ContentView: View {
                             .fixedSize()
                         }
                     }
+
+                    if let pr = card.link.mergeablePR {
+                        ToolbarItem(placement: .primaryAction) {
+                            Button {
+                                guard !isToolbarMerging, let repoRoot = card.link.projectPath else { return }
+                                isToolbarMerging = true
+                                toolbarMergeError = nil
+                                Task {
+                                    let gh = GhCliAdapter()
+                                    let settings = try await SettingsStore().read()
+                                    let result = try await gh.mergePR(repoRoot: repoRoot, prNumber: pr.number, commandTemplate: settings.github.mergeCommand)
+                                    isToolbarMerging = false
+                                    switch result {
+                                    case .success:
+                                        store.dispatch(.markPRMerged(cardId: card.id, prNumber: pr.number))
+                                    case .failure(let msg):
+                                        toolbarMergeError = msg
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    if isToolbarMerging {
+                                        ProgressView().controlSize(.small)
+                                    } else {
+                                        Image(systemName: "arrow.triangle.merge")
+                                    }
+                                    Text("Merge")
+                                }
+                                .font(.app(size: 13))
+                                .foregroundStyle(Color.green.opacity(0.8))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color.green.opacity(0.08), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isToolbarMerging)
+                            .help("Merge PR #\(pr.number)")
+                            .popover(isPresented: .init(get: { toolbarMergeError != nil }, set: { if !$0 { toolbarMergeError = nil } })) {
+                                if let err = toolbarMergeError {
+                                    Text(err).font(.app(.caption)).padding(8).frame(maxWidth: 300)
+                                }
+                            }
+                        }
+                    }
+
+                    ToolbarSpacer(.fixed, placement: .primaryAction)
 
                     ToolbarItem(placement: .primaryAction) {
                         if let path = card.link.worktreeLink?.path ?? card.link.projectPath {
@@ -1237,7 +1286,7 @@ struct ContentView: View {
         close(fd)
     }
 
-    // MARK: - Project Selector Menu
+    // MARK: - Project Selector
 
     private var projectSelectorMenu: some View {
         Menu {
@@ -1574,14 +1623,16 @@ struct ContentView: View {
             HStack(spacing: 4) {
                 Image(systemName: syncStatusIcon(currentSyncStatus))
                     .foregroundStyle(currentSyncStatus == .watching ? .primary : syncStatusColor(currentSyncStatus))
-                Text(syncStatusLabel(currentSyncStatus))
-                    .font(.app(.headline))
-                    .lineLimit(1)
+                if !isExpandedDetail {
+                    Text(syncStatusLabel(currentSyncStatus))
+                        .font(.app(.headline))
+                        .lineLimit(1)
+                }
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, isExpandedDetail ? 12 : 8)
         }
         .buttonStyle(.plain)
-        .help("Mutagen file sync status")
+        .help(syncStatusLabel(currentSyncStatus))
         .task(id: currentSyncStatus) {
             await refreshSyncStatus()
             let interval: Duration = currentSyncStatus == .staging ? .seconds(1) : .seconds(10)
