@@ -18,27 +18,71 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     private var pendingData: [UInt8] = []
     private var flushScheduled = false
 
-    // With our forked SwiftTerm using async dispatch, dataReceived arrives
-    // on main thread without blocking the pty read thread. We batch with
-    // a short delay so multiple async deliveries coalesce before processing.
-    private static let batchDelay: DispatchTimeInterval = .milliseconds(8)
+    // Strategy: wait for data to stop flowing, then render only the final state.
+    // During heavy streaming, data arrives continuously — we keep resetting the
+    // timer until there's a gap, then process only the tail.
+    private static let batchDelay: DispatchTimeInterval = .milliseconds(32)  // 2 frames
+    private static let chunkSize = 4 * 1024
+    private static let maxBlockSeconds: Double = 0.004  // 4ms budget
 
-    // 8KB chunks so we check the time budget frequently. A single feed()
-    // on complex escape sequences can take 5-10ms per 128KB — with 8KB
-    // chunks we check every ~0.5ms and can yield before 4ms.
-    private static let chunkSize = 8 * 1024
-    private static let maxBlockSeconds: Double = 0.003  // 3ms
+    // Only keep the last 8KB — one screen repaint is enough for final state.
+    private static let keepBytes = 8 * 1024
 
     private var pendingOffset = 0
+    private var scheduledFlushTime: UInt64 = 0
+
+    // Stats collection
+    private var statsReceiveCount = 0
+    private var statsReceiveBytes = 0
+    private var statsFlushCount = 0
+    private var statsFeedCalls = 0
+    private var statsFeedBytes = 0
+    private var statsFeedTimeMs: Double = 0
+    private var statsMaxFeedMs: Double = 0
+    private var statsDropCount = 0
+    private var statsDropBytes = 0
+    private var statsYieldCount = 0
+    private var statsMaxBacklog = 0
+    private var statsStartTime = CACurrentMediaTime()
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
-        // Main thread only (via async from our forked LocalProcess). No locks needed.
         pendingData.append(contentsOf: slice)
-        guard !flushScheduled else { return }
-        flushScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.batchDelay) { [weak self] in
-            self?.processNextChunk()
+        statsReceiveCount += 1
+        statsReceiveBytes += slice.count
+        if pendingData.count - pendingOffset > statsMaxBacklog {
+            statsMaxBacklog = pendingData.count - pendingOffset
         }
+
+        // Reset the flush timer on every data arrival.
+        // This means we only process when data STOPS flowing (or slows down).
+        // During heavy streaming, the timer keeps getting pushed forward —
+        // when it finally fires, we skip to the last 8KB and render the final state.
+        let now = DispatchTime.now().uptimeNanoseconds
+        scheduledFlushTime = now + 32_000_000 // 32ms from now
+
+        if !flushScheduled {
+            flushScheduled = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.batchDelay) { [weak self] in
+                self?.checkAndProcess()
+            }
+        }
+    }
+
+    /// Only process if enough time has passed since the last data arrival.
+    /// If data is still flowing, reschedule.
+    private func checkAndProcess() {
+        let now = DispatchTime.now().uptimeNanoseconds
+        if now < scheduledFlushTime {
+            // Data arrived recently — wait more
+            let remaining = scheduledFlushTime - now
+            DispatchQueue.main.asyncAfter(
+                deadline: DispatchTime(uptimeNanoseconds: scheduledFlushTime)
+            ) { [weak self] in
+                self?.checkAndProcess()
+            }
+            return
+        }
+        processNextChunk()
     }
 
     private func processNextChunk() {
@@ -49,22 +93,41 @@ final class BatchedTerminalView: LocalProcessTerminalView {
             return
         }
 
-        let totalPending = pendingData.count - pendingOffset
+        // Always skip to the tail — only the final screen state matters.
+        // Find a newline near the keep boundary to avoid mid-escape-sequence cuts.
+        let backlog = pendingData.count - pendingOffset
+        if backlog > Self.keepBytes {
+            var cutPoint = pendingData.count - Self.keepBytes
+            let scanLimit = min(cutPoint + 1024, pendingData.count)
+            while cutPoint < scanLimit && pendingData[cutPoint] != 0x0A { cutPoint += 1 }
+            if cutPoint < scanLimit { cutPoint += 1 }
+            if cutPoint > pendingOffset {
+                statsDropCount += 1
+                statsDropBytes += cutPoint - pendingOffset
+                pendingOffset = cutPoint
+            }
+        }
+
+        statsFlushCount += 1
         let start = CACurrentMediaTime()
 
         while pendingOffset < pendingData.count {
             let remaining = pendingData.count - pendingOffset
             let count = min(Self.chunkSize, remaining)
             let chunk = pendingData[pendingOffset..<(pendingOffset + count)]
+
+            let feedStart = CACurrentMediaTime()
             feed(byteArray: chunk)
+            let feedMs = (CACurrentMediaTime() - feedStart) * 1000
+            statsFeedCalls += 1
+            statsFeedBytes += count
+            statsFeedTimeMs += feedMs
+            if feedMs > statsMaxFeedMs { statsMaxFeedMs = feedMs }
+
             pendingOffset += count
 
-            let elapsed = CACurrentMediaTime() - start
-            if pendingOffset < pendingData.count && elapsed > Self.maxBlockSeconds {
-                if elapsed > 0.010 {
-                    // Log when we exceed 10ms — helps debug freezes
-                    print("[Terminal] feed took \(Int(elapsed * 1000))ms for \(pendingOffset)/\(totalPending + pendingOffset) bytes, yielding")
-                }
+            if pendingOffset < pendingData.count && CACurrentMediaTime() - start > Self.maxBlockSeconds {
+                statsYieldCount += 1
                 DispatchQueue.main.async { [weak self] in
                     self?.processNextChunk()
                 }
@@ -72,15 +135,35 @@ final class BatchedTerminalView: LocalProcessTerminalView {
             }
         }
 
-        let elapsed = CACurrentMediaTime() - start
-        if elapsed > 0.010 {
-            print("[Terminal] feed completed in \(Int(elapsed * 1000))ms for \(totalPending) bytes")
-        }
-
-        // All consumed — reset
         pendingData.removeAll(keepingCapacity: true)
         pendingOffset = 0
         flushScheduled = false
+
+        // Print stats every 10 seconds
+        let elapsed = CACurrentMediaTime() - statsStartTime
+        if elapsed > 10 {
+            let avgFeedMs = statsFeedCalls > 0 ? statsFeedTimeMs / Double(statsFeedCalls) : 0
+            let line = String(format: "[TermStats] %.0fs | recv: %d calls %dKB | flush: %d | feed: %d calls %dKB avg:%.2fms max:%.1fms | yields: %d | maxBacklog: %dKB\n",
+                  elapsed, statsReceiveCount, statsReceiveBytes/1024,
+                  statsFlushCount, statsFeedCalls, statsFeedBytes/1024,
+                  avgFeedMs, statsMaxFeedMs, statsYieldCount,
+                  statsMaxBacklog/1024)
+            let logPath = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code/logs/terminal-stats.log")
+            if let data = line.data(using: .utf8) {
+                if let fh = FileHandle(forWritingAtPath: logPath) {
+                    fh.seekToEndOfFile()
+                    fh.write(data)
+                    try? fh.close()
+                } else {
+                    try? data.write(to: URL(fileURLWithPath: logPath))
+                }
+            }
+            // Reset
+            statsReceiveCount = 0; statsReceiveBytes = 0; statsFlushCount = 0
+            statsFeedCalls = 0; statsFeedBytes = 0; statsFeedTimeMs = 0
+            statsMaxFeedMs = 0; statsYieldCount = 0; statsMaxBacklog = 0
+            statsDropCount = 0; statsDropBytes = 0; statsStartTime = CACurrentMediaTime()
+        }
     }
 
     // MARK: - Cmd+hover URL detection
