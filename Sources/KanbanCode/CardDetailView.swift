@@ -1872,25 +1872,6 @@ struct CardDetailView: View {
                 issueItem.submenu = issueSub
                 menu.addItem(issueItem)
             }
-            if let projectPath = card.link.projectPath {
-                let projItem = NSMenuItem(title: (projectPath as NSString).lastPathComponent, action: nil, keyEquivalent: "")
-                projItem.image = NSImage(systemSymbolName: "folder.badge.gearshape", accessibilityDescription: nil)
-                let projSub = NSMenu()
-                projSub.addActionItem("Copy Path") { [self] in copyToClipboard(projectPath) }
-                projSub.addActionItem("Open in Finder") { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: projectPath) }
-                projItem.submenu = projSub
-                menu.addItem(projItem)
-            }
-            if let sessionId = card.link.sessionLink?.sessionId {
-                let sessionItem = NSMenuItem(title: String(sessionId.prefix(12)) + "…", action: nil, keyEquivalent: "")
-                if let img = AssistantIcon.menuImage(for: card.link.effectiveAssistant) {
-                    sessionItem.image = img
-                }
-                let sessionSub = NSMenu()
-                sessionSub.addActionItem("Copy Session ID") { [self] in copyToClipboard(sessionId) }
-                sessionItem.submenu = sessionSub
-                menu.addItem(sessionItem)
-            }
             menu.addActionItem("Add Link", image: "plus") { [self] in showAddLink = true }
             menu.addItem(NSMenuItem.separator())
         }
@@ -1920,6 +1901,13 @@ struct CardDetailView: View {
 
         if let tmux = card.link.tmuxLink?.sessionName {
             menu.addActionItem("Copy Tmux Command", image: "terminal") { [self] in copyToClipboard("tmux attach -t \(tmux)") }
+        }
+
+        if let projectPath = card.link.projectPath {
+            menu.addActionItem("Copy Project Path", image: "folder.badge.gearshape") { [self] in copyToClipboard(projectPath) }
+        }
+        if let worktreePath = card.link.worktreeLink?.path, !worktreePath.isEmpty {
+            menu.addActionItem("Copy Worktree Path", image: "folder") { [self] in copyToClipboard(worktreePath) }
         }
 
         if !card.link.prLinks.isEmpty {
