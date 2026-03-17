@@ -2195,9 +2195,15 @@ struct CardDetailView: View {
               let turn = checkpointTurn else { return }
         Task {
             do {
+                // Kill the active Claude session first so it doesn't rewrite the truncated file
+                if let sessionName = card.link.tmuxLink?.sessionName {
+                    onKillTerminal(sessionName)
+                }
                 try await sessionStore.truncateSession(sessionPath: path, afterTurn: turn)
                 checkpointMode = false
                 checkpointTurn = nil
+                // Force clear and reload turns so the view updates
+                turns = []
                 await loadHistory()
             } catch {
                 // Could show error toast

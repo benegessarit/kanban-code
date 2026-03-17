@@ -242,25 +242,27 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
         try? fileManager.removeItem(atPath: backupPath)
         try fileManager.copyItem(atPath: sessionPath, toPath: backupPath)
 
-        // Read lines up to the target line number
+        // afterTurn.lineNumber is actually a byte offset in the file.
+        // Read the file up to the end of the line at that byte offset.
         let url = URL(fileURLWithPath: sessionPath)
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
+        let data = try Data(contentsOf: url)
 
-        var keptLines: [String] = []
-        var lineNumber = 0
-
-        for try await line in handle.bytes.lines {
-            lineNumber += 1
-            keptLines.append(line)
-            if lineNumber >= afterTurn.lineNumber {
-                break
-            }
+        // Find the end of the line that starts at the byte offset
+        let targetOffset = afterTurn.lineNumber
+        guard targetOffset >= 0, targetOffset < data.count else {
+            throw SessionStoreError.fileNotFound("Invalid byte offset \(targetOffset)")
         }
 
-        try keptLines.joined(separator: "\n").write(
-            toFile: sessionPath, atomically: true, encoding: .utf8
-        )
+        // Scan forward from targetOffset to find the newline
+        var endOffset = targetOffset
+        while endOffset < data.count && data[endOffset] != UInt8(ascii: "\n") {
+            endOffset += 1
+        }
+        // Include the newline
+        if endOffset < data.count { endOffset += 1 }
+
+        let truncated = data[0..<endOffset]
+        try truncated.write(to: url)
     }
 
     public func searchSessions(query: String, paths: [String]) async throws -> [SearchResult] {

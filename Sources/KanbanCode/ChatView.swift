@@ -30,11 +30,9 @@ struct ChatView: View {
     @Binding var pendingMessage: String?
 
     /// Use pane output as ground truth, falling back to hook state only if no tmux session.
-    /// Also optimistically show busy when a pending message was just sent,
-    /// and during a grace period after pending clears (before tmux catches up).
+    /// Show busy during grace period after pending clears (before tmux catches up).
     private var isAssistantBusy: Bool {
         if dismissedBusy { return false }
-        if pendingMessage != nil { return true }
         if Date.now < busyGraceUntil { return true }
         if tmuxSessionName != nil { return isBusyFromPane }
         return activityState == .activelyWorking
@@ -167,7 +165,7 @@ private struct ChatMessageList: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 0) {
+                VStack(spacing: 0) {
                     if hasMoreTurns {
                         ProgressView()
                             .controlSize(.small)
@@ -292,11 +290,18 @@ private struct ChatMessageList: View {
                 }
             }
             .onAppear {
-                // Scroll to bottom on appear/re-appear
+                // Scroll to bottom on appear/re-appear.
+                // Multiple delayed attempts to work around LazyVStack rendering blank
+                // until a scroll event kicks layout — common SwiftUI bug on large lists.
                 lastSeenCount = turns.count
                 lastSeenLineNumber = turns.last?.lineNumber
                 isAtBottom = true
-                scrollToBottom(proxy: proxy, delay: true)
+                proxy.scrollTo("bottom-spacer", anchor: .bottom)
+                for delay in [50, 150, 300, 600] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delay)) {
+                        proxy.scrollTo("bottom-spacer", anchor: .bottom)
+                    }
+                }
             }
             .onChange(of: turns.first?.lineNumber) {
                 // Card changed — reset and scroll
@@ -597,7 +602,13 @@ struct ChatMessageView: View, Equatable {
                 ForEach(turn.contentBlocks.indices, id: \.self) { i in
                     let block = turn.contentBlocks[i]
                     if case .text = block.kind {
-                        if block.text.contains("[Request interrupted by user") {
+                        if block.text.hasPrefix("✓ ") || block.text.hasPrefix("⏳ ") {
+                            // Task notification — render as system-style message
+                            Text(block.text)
+                                .font(.app(.caption))
+                                .foregroundStyle(.secondary)
+                                .italic()
+                        } else if block.text.contains("[Request interrupted by user") {
                             Text(block.text)
                                 .font(.app(.caption))
                                 .italic()

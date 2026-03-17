@@ -323,6 +323,22 @@ public enum TranscriptReader {
 
     // MARK: - User message parsing
 
+    /// Parse `<task-notification>` XML into a clean summary string.
+    static func parseTaskNotification(_ text: String) -> String? {
+        func extractTag(_ tag: String) -> String? {
+            guard let start = text.range(of: "<\(tag)>"),
+                  let end = text.range(of: "</\(tag)>") else { return nil }
+            return String(text[start.upperBound..<end.lowerBound])
+        }
+        let status = extractTag("status") ?? "unknown"
+        let summary = extractTag("summary")
+        let icon = status == "completed" ? "✓" : "⏳"
+        if let summary {
+            return "\(icon) \(summary)"
+        }
+        return "\(icon) Background task \(status)"
+    }
+
     static func countImages(in obj: [String: Any]) -> Int {
         guard let message = obj["message"] as? [String: Any],
               let content = message["content"] as? [[String: Any]] else { return 0 }
@@ -342,6 +358,13 @@ public enum TranscriptReader {
             // Show command stdout as plain text
             if let stdout = JsonlParser.parseLocalCommandStdout(text) {
                 return [ContentBlock(kind: .text, text: stdout)]
+            }
+            // Parse task notifications (background command completions)
+            if text.contains("<task-notification>") {
+                if let summary = Self.parseTaskNotification(text) {
+                    return [ContentBlock(kind: .text, text: summary)]
+                }
+                return [] // Hide malformed task notifications
             }
             // Strip any remaining metadata tags from mixed-content messages
             let cleaned = JsonlParser.stripMetadataTags(text)
