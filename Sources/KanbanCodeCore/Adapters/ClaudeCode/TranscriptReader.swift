@@ -356,8 +356,21 @@ public enum TranscriptReader {
         defer { try? handle.close() }
 
         handle.seek(toFileOffset: UInt64(byteOffset))
-        guard let lineData = handle.availableData.split(separator: UInt8(ascii: "\n")).first else { return [] }
-        guard let obj = try? JSONSerialization.jsonObject(with: Data(lineData)) as? [String: Any],
+        // Read in chunks until we find the newline — avoids loading the entire file
+        var lineBytes = Data()
+        let chunkSize = 256 * 1024 // 256KB chunks
+        while true {
+            let chunk = handle.readData(ofLength: chunkSize)
+            guard !chunk.isEmpty else { break }
+            if let nlIndex = chunk.firstIndex(of: UInt8(ascii: "\n")) {
+                lineBytes.append(chunk[chunk.startIndex..<nlIndex])
+                break
+            }
+            lineBytes.append(chunk)
+        }
+
+        guard !lineBytes.isEmpty,
+              let obj = try? JSONSerialization.jsonObject(with: lineBytes) as? [String: Any],
               let message = obj["message"] as? [String: Any],
               let content = message["content"] as? [[String: Any]] else { return [] }
 
