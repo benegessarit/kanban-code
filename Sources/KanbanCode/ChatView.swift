@@ -40,18 +40,35 @@ struct ChatView: View {
         return activityState == .activelyWorking
     }
 
+    @State private var pendingMessageTime: Date = .distantPast
+
     private func clearPendingIfMatched() {
         guard let pending = pendingMessage else { return }
+
+        // Timeout: clear pending after 30s regardless — prevents infinite pending state
+        if Date.now.timeIntervalSince(pendingMessageTime) > 30 {
+            pendingMessage = nil
+            busyGraceUntil = Date.now.addingTimeInterval(8)
+            return
+        }
+
         let prefix = String(pending.prefix(40))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prefix.isEmpty else { pendingMessage = nil; return }
+
+        // Check text blocks AND textPreview for the match
         let hasMatch = turns.contains { turn in
-            turn.role == "user" && turn.contentBlocks.contains {
+            guard turn.role == "user" else { return false }
+            // Check textPreview (always set, even for tool_result turns)
+            if turn.textPreview.contains(prefix) { return true }
+            // Check content blocks
+            return turn.contentBlocks.contains {
                 if case .text = $0.kind { return $0.text.contains(prefix) }
                 return false
             }
         }
         if hasMatch {
             pendingMessage = nil
-            // Grace period: keep showing "working" until tmux poll catches up
             busyGraceUntil = Date.now.addingTimeInterval(8)
         }
     }
@@ -113,6 +130,7 @@ struct ChatView: View {
                 }
             }
 
+            if tmuxSessionName != nil {
             ChatInputBar(
                 assistant: assistant,
                 isReady: !isAssistantBusy,
@@ -123,12 +141,14 @@ struct ChatView: View {
                 },
                 onSend: { text, images in
                     pendingMessage = text
+                    pendingMessageTime = .now
                     onSendPrompt(text, images)
                 },
                 onQueuePrompt: onQueuePrompt,
                 text: $draftText,
                 pastedImages: $draftImages
             )
+            }
         }
         .onChange(of: turns.count) {
             clearPendingIfMatched()
@@ -169,6 +189,7 @@ private struct ChatMessageList: View {
     @State private var hasNewMessages = false
     @State private var lastSeenCount = 0
     @State private var lastSeenLineNumber: Int?
+    @State private var expandedTextBlocks: Set<String> = []
 
     // Search state
     @State private var showSearch = false
@@ -227,7 +248,9 @@ private struct ChatMessageList: View {
                                         onSendAnswer: onSendAnswer,
                                         suppressBackground: true,
                                         highlightText: activeQuery.isEmpty ? nil : activeQuery,
-                                        isCurrentMatch: currentMatchTurnIndex == toolTurns[ti].index
+                                        isCurrentMatch: currentMatchTurnIndex == toolTurns[ti].index,
+                                        sessionPath: sessionPath,
+                                        expandedTextBlocks: $expandedTextBlocks
                                     )
                                     .equatable()
                                     .id(toolTurns[ti].lineNumber)
@@ -255,7 +278,8 @@ private struct ChatMessageList: View {
                                 onCheckpoint: onCheckpoint,
                                 onSendAnswer: onSendAnswer,
                                 highlightText: activeQuery.isEmpty ? nil : activeQuery,
-                                isCurrentMatch: currentMatchTurnIndex == turn.index
+                                isCurrentMatch: currentMatchTurnIndex == turn.index,
+                                expandedTextBlocks: $expandedTextBlocks
                             )
                             .equatable()
                             .id(turn.lineNumber)
@@ -725,7 +749,13 @@ struct ChatMessageView: View, Equatable {
     var suppressBackground: Bool = false
     var highlightText: String? = nil
     var isCurrentMatch: Bool = false
+    var sessionPath: String?
+    @Binding var expandedTextBlocks: Set<String>
     @State private var isHovered = false
+
+    /// Max characters to render before truncating with "Show more".
+    /// 4KB is enough for a long message without freezing SwiftUI layout.
+    private static let textTruncationLimit = 4_000
 
     nonisolated static func == (lhs: ChatMessageView, rhs: ChatMessageView) -> Bool {
         lhs.turn.lineNumber == rhs.turn.lineNumber &&
@@ -820,20 +850,15 @@ struct ChatMessageView: View, Equatable {
 
     private var userBubble: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            // Image attachment chips
+            // Image attachment chips with on-demand hover preview
             if turn.imageCount > 0 {
                 HStack(spacing: 4) {
                     ForEach(0..<turn.imageCount, id: \.self) { i in
-                        HStack(spacing: 4) {
-                            Image(systemName: "photo")
-                                .font(.system(size: 12))
-                            Text("Image #\(i + 1)")
-                                .font(.app(.caption))
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.primary.opacity(0.06), in: Capsule())
-                        .foregroundStyle(.secondary)
+                        LazyImageChip(
+                            index: i,
+                            sessionPath: sessionPath,
+                            byteOffset: turn.lineNumber
+                        )
                     }
                 }
             }
@@ -854,8 +879,7 @@ struct ChatMessageView: View, Equatable {
                                 .italic()
                                 .foregroundStyle(.secondary)
                         } else {
-                            highlightedText(block.text)
-                                .font(.app(.body))
+                            truncatedTextBlock(block.text, blockIndex: i, font: .app(.body))
                         }
                     }
                 }
@@ -935,14 +959,7 @@ struct ChatMessageView: View, Equatable {
         case .text:
             let trimmed = paired.block.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
-                if highlightText != nil {
-                    highlightedText(trimmed)
-                        .font(.system(size: 13))
-                } else {
-                    markdownText(trimmed)
-                        .font(.system(size: 13))
-                        .lineSpacing(4)
-                }
+                truncatedTextBlock(trimmed, blockIndex: paired.index, font: .system(size: 13))
             }
         case .toolUse(let name, _, _):
             ToolCallCard(
@@ -976,6 +993,43 @@ struct ChatMessageView: View, Equatable {
                 resultText: paired.resultBlock?.text,
                 rawInputJSON: paired.block.rawInputJSON
             )
+        }
+    }
+
+    // MARK: - Large text truncation
+
+    private func blockKey(_ blockIndex: Int) -> String {
+        "\(turn.lineNumber)_\(blockIndex)"
+    }
+
+    private func isBlockExpanded(_ blockIndex: Int) -> Bool {
+        expandedTextBlocks.contains(blockKey(blockIndex))
+    }
+
+    @ViewBuilder
+    private func truncatedTextBlock(_ text: String, blockIndex: Int, font: Font) -> some View {
+        let truncated = text.count > Self.textTruncationLimit && !isBlockExpanded(blockIndex)
+        let display = truncated ? String(text.prefix(Self.textTruncationLimit)) : text
+        if highlightText != nil {
+            highlightedText(display)
+                .font(font)
+        } else if turn.role == "user" {
+            Text(display)
+                .font(font)
+        } else {
+            markdownText(display)
+                .font(font)
+                .lineSpacing(4)
+        }
+        if truncated {
+            Button {
+                expandedTextBlocks.insert(blockKey(blockIndex))
+            } label: {
+                Text("Show more (\(text.count / 1024)KB)")
+                    .font(.app(.caption))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -1019,12 +1073,13 @@ struct ChatMessageView: View, Equatable {
     // MARK: Pair tool results
 
     private struct PairedBlock {
+        let index: Int
         let block: ContentBlock
         var resultBlock: ContentBlock?
     }
 
     private func pairToolResults() -> [PairedBlock] {
-        var paired = turn.contentBlocks.map { PairedBlock(block: $0) }
+        var paired = turn.contentBlocks.enumerated().map { PairedBlock(index: $0.offset, block: $0.element) }
 
         // Use precomputed tool result map (no allTurns lookup needed)
         for (i, block) in turn.contentBlocks.enumerated() {
@@ -1781,6 +1836,69 @@ private struct ScrollNearTopDetector: ViewModifier {
         }, action: { _, newNearTop in
             isNearTop = newNearTop
         })
+    }
+}
+
+// MARK: - Lazy Image Chip (loads on hover from JSONL)
+
+/// Shows "Image #N" chip; loads the actual image from the JSONL on hover.
+private struct LazyImageChip: View {
+    let index: Int
+    let sessionPath: String?
+    let byteOffset: Int
+
+    @State private var isHovering = false
+    @State private var loadedImage: NSImage?
+    @State private var isLoading = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "photo")
+                .font(.system(size: 12))
+            Text("Image #\(index + 1)")
+                .font(.app(.caption))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.primary.opacity(0.06), in: Capsule())
+        .foregroundStyle(.secondary)
+        .onHover { hovering in
+            isHovering = hovering
+            if hovering && loadedImage == nil && !isLoading {
+                loadImage()
+            }
+        }
+        .popover(isPresented: $isHovering) {
+            if let loadedImage {
+                Image(nsImage: loadedImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 400, maxHeight: 400)
+                    .padding(4)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 100, height: 60)
+            }
+        }
+    }
+
+    private func loadImage() {
+        guard let path = sessionPath else { return }
+        isLoading = true
+        Task {
+            let images = try? await TranscriptReader.loadImagesAtOffset(from: path, byteOffset: byteOffset)
+            if let data = images?[safe: index], let nsImage = NSImage(data: data) {
+                loadedImage = nsImage
+            }
+            isLoading = false
+        }
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 

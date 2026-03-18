@@ -348,6 +348,31 @@ public enum TranscriptReader {
         return "\(icon) Background task \(status)"
     }
 
+    /// Load base64-encoded images from a user turn at a specific byte offset.
+    /// Returns an array of PNG Data for each image in the turn.
+    public static func loadImagesAtOffset(from filePath: String, byteOffset: Int) async throws -> [Data] {
+        let url = URL(fileURLWithPath: filePath)
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+
+        handle.seek(toFileOffset: UInt64(byteOffset))
+        guard let lineData = handle.availableData.split(separator: UInt8(ascii: "\n")).first else { return [] }
+        guard let obj = try? JSONSerialization.jsonObject(with: Data(lineData)) as? [String: Any],
+              let message = obj["message"] as? [String: Any],
+              let content = message["content"] as? [[String: Any]] else { return [] }
+
+        var images: [Data] = []
+        for block in content {
+            guard (block["type"] as? String) == "image",
+                  let source = block["source"] as? [String: Any],
+                  (source["type"] as? String) == "base64",
+                  let b64 = source["data"] as? String,
+                  let data = Data(base64Encoded: b64) else { continue }
+            images.append(data)
+        }
+        return images
+    }
+
     static func countImages(in obj: [String: Any]) -> Int {
         guard let message = obj["message"] as? [String: Any],
               let content = message["content"] as? [[String: Any]] else { return 0 }

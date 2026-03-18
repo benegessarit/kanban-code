@@ -145,6 +145,7 @@ struct CardDetailView: View {
 
     @State private var turns: [ConversationTurn] = []
     @State private var isLoadingHistory = false
+    @State private var isReloadingHistory = false
     @State private var hasMoreTurns = false
     // Per-card chat drafts (keyed by card ID, persisted to disk)
     @State private var chatDrafts: [String: ChatDraft] = ChatDraft.loadAll()
@@ -215,7 +216,7 @@ struct CardDetailView: View {
 
     // Multi-terminal
     @State private var selectedTerminalSession: String?
-    @State private var knownTerminalCount: Int = 0
+    @State private var knownShellCount: Int = 0
     @State private var terminalGrabFocus: Bool = false
     @State private var suppressTerminalFocus: Bool = false
     @State private var tabRenameItem: TabRenameItem?
@@ -756,7 +757,23 @@ struct CardDetailView: View {
                 ZStack {
                     if preferChatView && isClaudeTabSelected {
                         // Chat mode: no terminal mounted (saves CPU, fixes scroll)
-                        chatViewForCurrentCard
+                        ZStack {
+                            chatViewForCurrentCard
+
+                            // Dead session overlay in chat mode
+                            if showOverlay && !isLaunching && card.link.sessionLink != nil {
+                                chatModeResumeOverlay
+                            } else if showOverlay && isLaunching {
+                                VStack(spacing: 12) {
+                                    ProgressView().controlSize(.large)
+                                    Text("Starting session…")
+                                        .font(.app(.body))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .background(.ultraThinMaterial)
+                            }
+                        }
                         .task(id: "chatview-\(card.id)") {
                             await loadHistory()
                             startHistoryWatcher()
@@ -845,18 +862,18 @@ struct CardDetailView: View {
                 if let selected = selectedTerminalSession, !shells.contains(selected) {
                     // Selected shell was killed — go to next shell or Claude tab
                     selectedTerminalSession = shells.first // nil if no shells left → Claude tab
-                } else if newCount > knownTerminalCount, let last = shells.last {
-                    // New shell was added — auto-switch to it and focus
+                } else if shells.count > knownShellCount, let last = shells.last, knownShellCount >= 0 {
+                    // New SHELL was added (not Claude resuming) — auto-switch to it
                     selectedTerminalSession = last
                     terminalGrabFocus = true
                 }
 
-                knownTerminalCount = newCount
+                knownShellCount = shells.count
                 draggingTab = nil
                 dropTargetTab = nil
             }
             .onAppear {
-                knownTerminalCount = shellSessions.count + (claudeTmuxSession != nil ? 1 : 0)
+                knownShellCount = shellSessions.count
                 startPathPolling()
             }
         } else {
@@ -966,6 +983,27 @@ struct CardDetailView: View {
     }
 
     /// Overlay shown on the assistant tab when there's no live terminal.
+    @ViewBuilder
+    /// Resume overlay shown at the bottom of chat mode when session is dead.
+    private var chatModeResumeOverlay: some View {
+        let assistant = card.link.effectiveAssistant
+        return HStack(spacing: 8) {
+            Text("\(assistant.displayName) session ended")
+                .font(.app(.callout))
+                .foregroundStyle(.secondary)
+            Button(action: onResume) {
+                Label("Resume", systemImage: "play.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity)
+        .background(.ultraThinMaterial)
+        .frame(maxHeight: .infinity, alignment: .bottom)
+    }
+
     @ViewBuilder
     private func assistantTabOverlay(isLaunching: Bool) -> some View {
         let assistant = card.link.effectiveAssistant
@@ -2036,6 +2074,11 @@ struct CardDetailView: View {
 
     private func loadHistory() async {
         guard let path = card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath else { return }
+        // Prevent concurrent reloads — they race on lastLineNumber and duplicate turns
+        guard !isReloadingHistory else { return }
+        isReloadingHistory = true
+        defer { isReloadingHistory = false }
+
         if turns.isEmpty { isLoadingHistory = true }
         let baseSize = preferChatView ? Self.chatPageSize : Self.pageSize
         let loadCount = max(baseSize, turns.count)
@@ -2060,7 +2103,9 @@ struct CardDetailView: View {
                 turns = parsed.turns
                 hasMoreTurns = parsed.hasMore
             } else {
-                let newTurns = parsed.turns.filter { $0.lineNumber > lastLineNumber }
+                // Deduplicate: only append turns with lineNumbers not already present
+                let existingLineNumbers = Set(turns.map(\.lineNumber))
+                let newTurns = parsed.turns.filter { $0.lineNumber > lastLineNumber && !existingLineNumbers.contains($0.lineNumber) }
                 if !newTurns.isEmpty {
                     turns.append(contentsOf: newTurns)
                 }

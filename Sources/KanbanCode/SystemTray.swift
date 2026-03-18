@@ -228,12 +228,14 @@ final class SystemTray: NSObject, @unchecked Sendable {
     /// Also discovers and kills orphaned processes from previous app instances.
     private func stopActiveSession() {
         if let app = activeSessionApp, !app.isTerminated {
-            Self.log("stopping active-session: pid=\(app.processIdentifier)")
-            app.terminate()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                if let app = self?.activeSessionApp, !app.isTerminated {
-                    app.forceTerminate()
-                }
+            let pid = app.processIdentifier
+            Self.log("stopping active-session: pid=\(pid)")
+            // Use kill() instead of NSRunningApplication.terminate() to avoid
+            // Apple Events crash (EXC_BAD_ACCESS) when the target process is stale.
+            kill(pid, SIGTERM)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                // Force kill if still running
+                if kill(pid, 0) == 0 { kill(pid, SIGKILL) }
             }
         }
         activeSessionApp = nil
