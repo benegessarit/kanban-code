@@ -26,7 +26,7 @@ struct NewTaskDialog: View {
     @State private var commandEdited = false
     @State private var worktreeBranch = ""
     @AppStorage("startTaskImmediately") private var startImmediately = true
-    @AppStorage("createWorktree") private var createWorktree = true
+    @State private var createWorktree = true
     @State private var runRemotely = true
     @AppStorage("dangerouslySkipPermissions") private var dangerouslySkipPermissions = true
     @AppStorage("lastSelectedProjectPath") private var lastSelectedProjectPath = ""
@@ -189,6 +189,7 @@ struct NewTaskDialog: View {
             }
             if let path = resolvedProjectPath {
                 runRemotely = UserDefaults.standard.object(forKey: "runRemotely_\(path)") as? Bool ?? true
+                createWorktree = UserDefaults.standard.object(forKey: "createWorktree_\(path)") as? Bool ?? true
             }
             command = commandPreview
         }
@@ -196,6 +197,9 @@ struct NewTaskDialog: View {
             if !commandEdited { command = commandPreview }
         }
         .onChange(of: createWorktree) {
+            if let path = resolvedProjectPath {
+                UserDefaults.standard.set(createWorktree, forKey: "createWorktree_\(path)")
+            }
             if !commandEdited { command = commandPreview }
         }
         .onChange(of: worktreeBranch) {
@@ -210,6 +214,7 @@ struct NewTaskDialog: View {
         .onChange(of: selectedProjectPath) {
             if let path = resolvedProjectPath {
                 runRemotely = UserDefaults.standard.object(forKey: "runRemotely_\(path)") as? Bool ?? true
+                createWorktree = UserDefaults.standard.object(forKey: "createWorktree_\(path)") as? Bool ?? true
             }
             if !commandEdited { command = commandPreview }
         }

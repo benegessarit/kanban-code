@@ -189,8 +189,8 @@ struct ContentView: View {
         )
 
         // Load Pushover from settings.json, wrap in CompositeNotifier with macOS fallback
-        let pushover = Self.loadPushoverConfig()
-        let notifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient())
+        let (pushover, pushoverMode) = Self.loadPushoverConfig()
+        let notifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient(), pushoverMode: pushoverMode)
 
         let orch = BackgroundOrchestrator(
             discovery: discovery,
@@ -246,21 +246,22 @@ struct ContentView: View {
         return settings.enabledAssistants
     }
 
-    private static func loadPushoverConfig() -> PushoverClient? {
+    private static func loadPushoverConfig() -> (client: PushoverClient?, mode: PushoverMode) {
         let settingsPath = (NSHomeDirectory() as NSString)
             .appendingPathComponent(".kanban-code/settings.json")
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
               let settings = try? JSONDecoder().decode(Settings.self, from: data) else {
-            return nil
+            return (nil, .disabled)
         }
 
-        guard settings.notifications.pushoverEnabled,
+        let mode = settings.notifications.pushoverMode
+        guard mode != .disabled,
               let token = settings.notifications.pushoverToken,
               let user = settings.notifications.pushoverUserKey,
               !token.isEmpty, !user.isEmpty else {
-            return nil
+            return (nil, .disabled)
         }
-        return PushoverClient(token: token, userKey: user)
+        return (PushoverClient(token: token, userKey: user), mode)
     }
 
     private func updateRegisteredAssistants(_ enabled: [CodingAssistant]) {
@@ -696,8 +697,8 @@ struct ContentView: View {
                     settingsStore: settingsStore,
                     onComplete: {
                         showOnboarding = false
-                        let pushover = Self.loadPushoverConfig()
-                        let newNotifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient())
+                        let (pushover, mode) = Self.loadPushoverConfig()
+                        let newNotifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient(), pushoverMode: mode)
                         orchestrator.updateNotifier(newNotifier)
                     }
                 )
@@ -954,8 +955,8 @@ struct ContentView: View {
                     await store.reconcile()
                     applyAppearance()
                     // Refresh notifier so Pushover credentials changes take effect immediately
-                    let pushover = Self.loadPushoverConfig()
-                    let newNotifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient())
+                    let (pushover, mode) = Self.loadPushoverConfig()
+                    let newNotifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient(), pushoverMode: mode)
                     orchestrator.updateNotifier(newNotifier)
                     // Update registry for enabled/disabled assistants
                     if let settings = try? await settingsStore.read() {

@@ -165,6 +165,7 @@ private struct ChatMessageList: View {
     var onSendAnswer: ((String) -> Void)?
 
     @State private var isAtBottom = true
+    @State private var isNearTop = false
     @State private var hasNewMessages = false
     @State private var lastSeenCount = 0
     @State private var lastSeenLineNumber: Int?
@@ -199,7 +200,6 @@ private struct ChatMessageList: View {
                             .controlSize(.small)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 8)
-                            .onAppear { onLoadMore?() }
                     }
 
                     let groupInfo = Self.computeGroupInfo(turns: turns)
@@ -295,6 +295,18 @@ private struct ChatMessageList: View {
             }
             .defaultScrollAnchor(.bottom)
             .modifier(ScrollBottomTracker(isAtBottom: $isAtBottom, hasNewMessages: $hasNewMessages))
+            .modifier(ScrollNearTopDetector(isNearTop: $isNearTop))
+            .onChange(of: isNearTop) {
+                if isNearTop && hasMoreTurns && activeQuery.isEmpty {
+                    onLoadMore?()
+                }
+            }
+            .onChange(of: turns.count) {
+                // After load-more prepends turns, if still near top, load more again
+                if isNearTop && hasMoreTurns && activeQuery.isEmpty {
+                    onLoadMore?()
+                }
+            }
             .onChange(of: turns.last?.lineNumber) {
                 guard let newLast = turns.last?.lineNumber else { return }
                 let isInitial = lastSeenLineNumber == nil
@@ -307,9 +319,13 @@ private struct ChatMessageList: View {
                     lastSeenLineNumber = newLast
                     lastSeenCount = turns.count
                 } else {
-                    if isInitial || (newLast != lastSeenLineNumber && (isAtBottom || isInitial)) {
-                        scrollToBottom(proxy: proxy, delay: isInitial)
-                    } else if newLast != lastSeenLineNumber {
+                    // Only auto-scroll for NEW messages at the bottom, not load-more prepends
+                    let isNewAtBottom = newLast != lastSeenLineNumber
+                    if isInitial {
+                        scrollToBottom(proxy: proxy, delay: true)
+                    } else if isNewAtBottom && isAtBottom {
+                        scrollToBottom(proxy: proxy, delay: false)
+                    } else if isNewAtBottom {
                         hasNewMessages = true
                     }
                     lastSeenLineNumber = newLast
@@ -338,12 +354,19 @@ private struct ChatMessageList: View {
                 isAtBottom = true
             }
             .onChange(of: turns.first?.lineNumber) {
-                // Card changed — reset and scroll
-                lastSeenLineNumber = nil
-                lastSeenCount = 0
-                isAtBottom = true
-                hasNewMessages = false
-                scrollToBottom(proxy: proxy, delay: true)
+                // Distinguish card change (last also changed) from load-more (last unchanged)
+                let lastUnchanged = turns.last?.lineNumber == lastSeenLineNumber
+                if lastUnchanged {
+                    // Load-more prepended earlier turns — don't scroll to bottom
+                    lastSeenCount = turns.count
+                } else {
+                    // Card changed — reset and scroll
+                    lastSeenLineNumber = nil
+                    lastSeenCount = 0
+                    isAtBottom = true
+                    hasNewMessages = false
+                    scrollToBottom(proxy: proxy, delay: true)
+                }
             }
             .task(id: tmuxSessionName) {
                 guard let session = tmuxSessionName else {
@@ -481,9 +504,11 @@ private struct ChatMessageList: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-        .padding(.horizontal, 16)
+        .background(.bar, in: RoundedRectangle(cornerRadius: 6))
+        .padding(.leading, 16)
+        .padding(.trailing, 52)
         .padding(.top, 6)
+        .zIndex(1)
     }
 
     // MARK: - Search Logic
@@ -1732,6 +1757,19 @@ private struct ScrollBottomTracker: ViewModifier {
         }, action: { _, newAtBottom in
             isAtBottom = newAtBottom
             if newAtBottom { hasNewMessages = false }
+        })
+    }
+}
+
+/// Detects when the user scrolls within 300pt of the top.
+private struct ScrollNearTopDetector: ViewModifier {
+    @Binding var isNearTop: Bool
+
+    func body(content: Content) -> some View {
+        content.onScrollGeometryChange(for: Bool.self, of: { geo in
+            geo.contentOffset.y < 300
+        }, action: { _, newNearTop in
+            isNearTop = newNearTop
         })
     }
 }

@@ -143,7 +143,7 @@ final class PromptEditorScrollView: NSScrollView {
         layoutManager.ensureLayout(for: textContainer)
         let textHeight = layoutManager.usedRect(for: textContainer).height
             + textView.textContainerInset.height * 2
-        let newHeight = min(maxContentHeight, max(80, textHeight))
+        let newHeight = min(maxContentHeight, max(36, textHeight))
         if abs(newHeight - contentHeight) > 1 {
             contentHeight = newHeight
             invalidateIntrinsicContentSize()

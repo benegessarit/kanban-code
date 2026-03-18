@@ -480,7 +480,7 @@ struct AmphetamineSettingsView: View {
 // MARK: - Notifications
 
 struct NotificationSettingsView: View {
-    @State private var pushoverEnabled = false
+    @State private var pushoverMode: PushoverMode = .disabled
     @State private var pushoverToken = ""
     @State private var pushoverUserKey = ""
     @State private var renderMarkdownImage = false
@@ -494,22 +494,32 @@ struct NotificationSettingsView: View {
     private let settingsStore = SettingsStore()
 
     private var pushoverConfigured: Bool {
-        pushoverEnabled && !pushoverToken.isEmpty && !pushoverUserKey.isEmpty
+        pushoverMode != .disabled && !pushoverToken.isEmpty && !pushoverUserKey.isEmpty
     }
 
     var body: some View {
         Form {
             Section("Pushover") {
-                Toggle("Enable Pushover notifications", isOn: $pushoverEnabled)
-                    .onChange(of: pushoverEnabled) { scheduleSave() }
+                Picker("Pushover notifications", selection: $pushoverMode) {
+                    Text("Disabled").tag(PushoverMode.disabled)
+                    Text("Enabled").tag(PushoverMode.enabled)
+                    Text("When lid is closed").tag(PushoverMode.whenLidClosed)
+                }
+                .onChange(of: pushoverMode) { scheduleSave() }
+
+                if pushoverMode == .whenLidClosed {
+                    Text("Sends Pushover when MacBook lid is closed, local notifications otherwise.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 TextField("App Token", text: $pushoverToken)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(!pushoverEnabled)
+                    .disabled(pushoverMode == .disabled)
                     .onChange(of: pushoverToken) { scheduleSave() }
                 TextField("User Key", text: $pushoverUserKey)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(!pushoverEnabled)
+                    .disabled(pushoverMode == .disabled)
                     .onChange(of: pushoverUserKey) { scheduleSave() }
 
                 HStack {
@@ -609,7 +619,7 @@ struct NotificationSettingsView: View {
     private func loadSettings() async {
         do {
             let settings = try await settingsStore.read()
-            pushoverEnabled = settings.notifications.pushoverEnabled
+            pushoverMode = settings.notifications.pushoverMode
             pushoverToken = settings.notifications.pushoverToken ?? ""
             pushoverUserKey = settings.notifications.pushoverUserKey ?? ""
             renderMarkdownImage = settings.notifications.renderMarkdownImage
@@ -625,7 +635,7 @@ struct NotificationSettingsView: View {
             guard !Task.isCancelled else { return }
             do {
                 var settings = try await settingsStore.read()
-                settings.notifications.pushoverEnabled = pushoverEnabled
+                settings.notifications.pushoverMode = pushoverMode
                 settings.notifications.pushoverToken = pushoverToken.isEmpty ? nil : pushoverToken
                 settings.notifications.pushoverUserKey = pushoverUserKey.isEmpty ? nil : pushoverUserKey
                 settings.notifications.renderMarkdownImage = renderMarkdownImage

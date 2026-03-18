@@ -23,7 +23,7 @@ struct LaunchConfirmationDialog: View {
     @State private var command: String = ""
     @State private var commandEdited: Bool = false
     @State private var worktreeBranch: String = ""
-    @AppStorage("createWorktree") private var createWorktree = true
+    @State private var createWorktree: Bool
     @State private var runRemotely: Bool
     @AppStorage("dangerouslySkipPermissions") private var dangerouslySkipPermissions = true
 
@@ -58,8 +58,8 @@ struct LaunchConfirmationDialog: View {
         self.onLaunch = onLaunch
         self._prompt = State(initialValue: initialPrompt)
         self._images = State(initialValue: promptImagePaths.compactMap { ImageAttachment.fromPath($0) })
-        let key = "runRemotely_\(projectPath)"
-        self._runRemotely = State(initialValue: UserDefaults.standard.object(forKey: key) as? Bool ?? true)
+        self._runRemotely = State(initialValue: UserDefaults.standard.object(forKey: "runRemotely_\(projectPath)") as? Bool ?? true)
+        self._createWorktree = State(initialValue: UserDefaults.standard.object(forKey: "createWorktree_\(projectPath)") as? Bool ?? true)
     }
 
     var body: some View {
@@ -206,6 +206,7 @@ struct LaunchConfirmationDialog: View {
             if !commandEdited { command = commandPreview }
         }
         .onChange(of: createWorktree) {
+            UserDefaults.standard.set(createWorktree, forKey: "createWorktree_\(projectPath)")
             if !commandEdited { command = commandPreview }
         }
         .onChange(of: worktreeBranch) {

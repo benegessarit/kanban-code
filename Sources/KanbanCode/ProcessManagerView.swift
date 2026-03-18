@@ -40,6 +40,7 @@ struct ProcessManagerView: View {
     @State private var selectedTmuxIds: Set<String> = []
     @State private var selectedClaudeIds: Set<Int> = []
     @State private var selectedWorktreeIds: Set<String> = []
+    @State private var removingWorktreeIds: Set<String> = []
 
     private let tmuxAdapter = TmuxAdapter()
     private let worktreeAdapter = GitWorktreeAdapter()
@@ -95,10 +96,14 @@ struct ProcessManagerView: View {
                         }
                     }
                 } else if selectedTab == .worktrees {
+                    let actionableIds = selectedWorktreeIds.subtracting(removingWorktreeIds)
                     if !selectedWorktreeIds.isEmpty {
-                        Button("Remove Selected (\(selectedWorktreeIds.count))") {
-                            Task { await removeSelectedWorktrees(selectedWorktreeIds) }
+                        Button {
+                            Task { await removeSelectedWorktrees(actionableIds) }
+                        } label: {
+                            Text("Remove Selected (\(selectedWorktreeIds.count))")
                         }
+                        .disabled(actionableIds.isEmpty)
                     }
                 }
                 Spacer()
@@ -259,19 +264,28 @@ struct ProcessManagerView: View {
             }
             Table(worktreeInfos, selection: $selectedWorktreeIds) {
             TableColumn("Project") { info in
-                Text(info.project)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    if removingWorktreeIds.contains(info.id) {
+                        ProgressView().controlSize(.mini)
+                    }
+                    Text(info.project)
+                        .lineLimit(1)
+                }
+                .opacity(removingWorktreeIds.contains(info.id) ? 0.4 : 1)
             }
             .width(min: 80, ideal: 120)
 
             TableColumn("Branch") { info in
-                if let branch = info.branch {
-                    Text(branch)
-                        .lineLimit(1)
-                } else {
-                    Text("(detached)")
-                        .foregroundStyle(.tertiary)
+                Group {
+                    if let branch = info.branch {
+                        Text(branch)
+                            .lineLimit(1)
+                    } else {
+                        Text("(detached)")
+                            .foregroundStyle(.tertiary)
+                    }
                 }
+                .opacity(removingWorktreeIds.contains(info.id) ? 0.4 : 1)
             }
             .width(min: 100, ideal: 150)
 
@@ -279,6 +293,7 @@ struct ProcessManagerView: View {
                 Text(abbreviatePath(info.path))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .opacity(removingWorktreeIds.contains(info.id) ? 0.4 : 1)
             }
             .width(min: 150, ideal: 250)
         }
@@ -462,11 +477,27 @@ struct ProcessManagerView: View {
     // MARK: - Worktree Actions
 
     private func removeSelectedWorktrees(_ ids: Set<String>) async {
-        for id in ids {
-            guard let info = worktreeInfos.first(where: { $0.id == id }) else { continue }
-            try? await worktreeAdapter.removeWorktree(path: info.path, repoRoot: info.repoRoot, force: false)
+        removingWorktreeIds.formUnion(ids)
+        // Remove each worktree concurrently
+        await withTaskGroup(of: String?.self) { group in
+            for id in ids {
+                guard let info = worktreeInfos.first(where: { $0.id == id }) else { continue }
+                group.addTask {
+                    do {
+                        try await self.worktreeAdapter.removeWorktree(path: info.path, repoRoot: info.repoRoot, force: false)
+                    } catch {
+                        try? await self.worktreeAdapter.removeWorktree(path: info.path, repoRoot: info.repoRoot, force: true)
+                    }
+                    return id
+                }
+            }
+            for await finishedId in group {
+                if let finishedId {
+                    removingWorktreeIds.remove(finishedId)
+                    selectedWorktreeIds.remove(finishedId)
+                }
+            }
         }
-        selectedWorktreeIds.removeAll()
         await loadWorktrees()
     }
 

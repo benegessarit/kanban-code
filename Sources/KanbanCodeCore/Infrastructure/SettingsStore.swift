@@ -118,14 +118,23 @@ public struct GitHubSettings: Codable, Sendable {
     }
 }
 
+public enum PushoverMode: String, Codable, Sendable, CaseIterable {
+    case disabled
+    case enabled
+    case whenLidClosed
+}
+
 public struct NotificationSettings: Codable, Sendable {
-    public var pushoverEnabled: Bool
+    public var pushoverMode: PushoverMode
     public var pushoverToken: String?
     public var pushoverUserKey: String?
     public var renderMarkdownImage: Bool
 
-    public init(pushoverEnabled: Bool = false, pushoverToken: String? = nil, pushoverUserKey: String? = nil, renderMarkdownImage: Bool = false) {
-        self.pushoverEnabled = pushoverEnabled
+    /// Backward-compatible convenience: true when pushover should be configured at all.
+    public var pushoverEnabled: Bool { pushoverMode != .disabled }
+
+    public init(pushoverMode: PushoverMode = .disabled, pushoverToken: String? = nil, pushoverUserKey: String? = nil, renderMarkdownImage: Bool = false) {
+        self.pushoverMode = pushoverMode
         self.pushoverToken = pushoverToken
         self.pushoverUserKey = pushoverUserKey
         self.renderMarkdownImage = renderMarkdownImage
@@ -133,10 +142,28 @@ public struct NotificationSettings: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        pushoverEnabled = try c.decodeIfPresent(Bool.self, forKey: .pushoverEnabled) ?? false
+        // Backward compat: read old Bool pushoverEnabled if pushoverMode is missing
+        if let mode = try c.decodeIfPresent(PushoverMode.self, forKey: .pushoverMode) {
+            pushoverMode = mode
+        } else {
+            let legacy = try c.decodeIfPresent(Bool.self, forKey: .pushoverEnabled) ?? false
+            pushoverMode = legacy ? .enabled : .disabled
+        }
         pushoverToken = try c.decodeIfPresent(String.self, forKey: .pushoverToken)
         pushoverUserKey = try c.decodeIfPresent(String.self, forKey: .pushoverUserKey)
         renderMarkdownImage = try c.decodeIfPresent(Bool.self, forKey: .renderMarkdownImage) ?? false
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case pushoverMode, pushoverEnabled, pushoverToken, pushoverUserKey, renderMarkdownImage
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(pushoverMode, forKey: .pushoverMode)
+        try c.encodeIfPresent(pushoverToken, forKey: .pushoverToken)
+        try c.encodeIfPresent(pushoverUserKey, forKey: .pushoverUserKey)
+        try c.encode(renderMarkdownImage, forKey: .renderMarkdownImage)
     }
 }
 

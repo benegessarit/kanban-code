@@ -523,7 +523,7 @@ struct OnboardingWizard: View {
         .onDisappear {
             Task {
                 var settings = (try? await settingsStore.read()) ?? Settings()
-                settings.notifications.pushoverEnabled = pushoverEnabled
+                settings.notifications.pushoverMode = pushoverEnabled ? .enabled : .disabled
                 settings.notifications.pushoverToken = pushoverToken.isEmpty ? nil : pushoverToken
                 settings.notifications.pushoverUserKey = pushoverUserKey.isEmpty ? nil : pushoverUserKey
                 settings.notifications.renderMarkdownImage = renderMarkdownImage
