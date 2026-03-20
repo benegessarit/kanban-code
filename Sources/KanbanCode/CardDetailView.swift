@@ -385,16 +385,27 @@ struct CardDetailView: View {
         .onReceive(NotificationCenter.default.publisher(for: .kanbanSelectTerminalTab)) { notif in
             guard let index = notif.userInfo?["index"] as? Int else { return }
             selectedTab = .terminal
-            selectedBrowserTabId = nil
+
+            // Unified tab order: [assistant, ...shells, ...browserTabs]
+            let shells = shellSessions
             if index == 0 {
+                // Claude/assistant tab
                 selectedTerminalSession = nil
+                selectedBrowserTabId = nil
+                terminalGrabFocus = true
+            } else if index - 1 < shells.count {
+                // Shell tab
+                selectedTerminalSession = shells[index - 1]
+                selectedBrowserTabId = nil
+                terminalGrabFocus = true
             } else {
-                let shells = shellSessions
-                if index - 1 < shells.count {
-                    selectedTerminalSession = shells[index - 1]
+                // Browser tab
+                let browserIndex = index - 1 - shells.count
+                if browserIndex < browserTabs.count {
+                    selectedTerminalSession = nil
+                    selectedBrowserTabId = browserTabs[browserIndex].id
                 }
             }
-            terminalGrabFocus = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .kanbanCloseTerminalTab)) { _ in
             guard selectedTab == .terminal else { return }

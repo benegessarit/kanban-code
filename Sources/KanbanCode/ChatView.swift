@@ -1878,7 +1878,10 @@ private struct LazyImageChip: View {
                 isHovering = false
             }
         }
-        .popover(isPresented: $isHovering) {
+        .popover(isPresented: Binding(
+            get: { isHovering && loadedImage != nil },
+            set: { if !$0 { isHovering = false } }
+        )) {
             if let loadedImage {
                 let size = loadedImage.size
                 let scale = min(1.0, min(600.0 / max(size.width, 1), 400.0 / max(size.height, 1)))
