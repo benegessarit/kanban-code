@@ -921,6 +921,7 @@ struct CardDetailView: View {
                 } else if shells.count > knownShellCount, let last = shells.last, knownShellCount >= 0 {
                     // New SHELL was added (not Claude resuming) — auto-switch to it
                     selectedTerminalSession = last
+                    selectedBrowserTabId = nil
                     terminalGrabFocus = true
                 }
 
