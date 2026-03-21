@@ -246,6 +246,7 @@ private struct ChatMessageList: View {
                                         highlightText: activeQuery.isEmpty ? nil : activeQuery,
                                         isCurrentMatch: currentMatchTurnIndex == toolTurns[ti].index,
                                         sessionPath: sessionPath,
+                                        tmuxSessionName: tmuxSessionName,
                                         expandedTextBlocks: $expandedTextBlocks
                                     )
                                     .equatable()
@@ -757,6 +758,7 @@ struct ChatMessageView: View, Equatable {
     var highlightText: String? = nil
     var isCurrentMatch: Bool = false
     var sessionPath: String?
+    var tmuxSessionName: String?
     @Binding var expandedTextBlocks: Set<String>
     @State private var isHovered = false
 
@@ -987,7 +989,7 @@ struct ChatMessageView: View, Equatable {
                 .italic()
                 .foregroundStyle(.tertiary)
         case .planModeExit(let plan):
-            PlanModeExitCard(plan: plan, resultText: paired.resultBlock?.text, onAnswer: onSendAnswer)
+            PlanModeExitCard(plan: plan, resultText: paired.resultBlock?.text, onAnswer: onSendAnswer, tmuxSessionName: tmuxSessionName)
         case .askUserQuestion(let questions, _):
             AskUserQuestionCard(
                 questions: questions,
@@ -1416,7 +1418,11 @@ struct PlanModeExitCard: View {
     let plan: String
     let resultText: String?
     var onAnswer: ((String) -> Void)?
+    var tmuxSessionName: String?
     @State private var isExpanded = false
+    @State private var selectedOption: Int?
+    @State private var paneOptions: [String] = []
+    @State private var didLoadOptions = false
 
     private var isAnswered: Bool { resultText != nil }
 
@@ -1473,17 +1479,23 @@ struct PlanModeExitCard: View {
                     .padding(.bottom, 4)
             }
 
-            // Interactive approval when waiting
-            if !isAnswered {
+            // Interactive approval — options read from tmux pane
+            if !isAnswered && !paneOptions.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(planOptions.enumerated()), id: \.offset) { idx, option in
+                    ForEach(Array(paneOptions.enumerated()), id: \.offset) { idx, option in
                         Button {
+                            selectedOption = idx
                             onAnswer?(String(idx + 1))
                         } label: {
                             HStack(spacing: 8) {
-                                Text("\(idx + 1).")
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 20, alignment: .trailing)
+                                if selectedOption == idx {
+                                    ProgressView().controlSize(.mini)
+                                        .frame(width: 20)
+                                } else {
+                                    Text("\(idx + 1).")
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 20, alignment: .trailing)
+                                }
                                 Text(option)
                             }
                             .font(.app(.callout))
@@ -1493,10 +1505,15 @@ struct PlanModeExitCard: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .disabled(selectedOption != nil)
                     }
                 }
                 .padding(.horizontal, 8)
                 .padding(.bottom, 8)
+            } else if !isAnswered && !didLoadOptions {
+                ProgressView().controlSize(.small)
+                    .frame(maxWidth: .infinity)
+                    .padding(8)
             }
         }
         .background(
@@ -1504,13 +1521,28 @@ struct PlanModeExitCard: View {
                 .fill(Color.primary.opacity(0.04))
                 .padding(.leading, -8)
         )
+        .task {
+            guard !isAnswered, let session = tmuxSessionName else {
+                didLoadOptions = true
+                return
+            }
+            // Poll the pane until we find options (they may appear with a slight delay)
+            let tmux = TmuxAdapter()
+            for _ in 0..<10 {
+                if let output = try? await tmux.capturePane(sessionName: session) {
+                    let opts = PaneOutputParser.parsePlanOptions(from: output)
+                    if !opts.isEmpty {
+                        paneOptions = opts
+                        didLoadOptions = true
+                        return
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+            didLoadOptions = true
+        }
     }
 
-    private var planOptions: [String] {
-        ["Yes, clear context and bypass permissions",
-         "Yes, and bypass permissions",
-         "Yes, manually approve edits"]
-    }
 }
 
 // MARK: - Agent Call Card

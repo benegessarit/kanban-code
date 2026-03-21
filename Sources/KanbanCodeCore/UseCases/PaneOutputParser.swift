@@ -37,4 +37,70 @@ public enum PaneOutputParser {
         let tail = paneOutput.suffix(1000)
         return tail.contains("\u{2026}")
     }
+
+    /// Parse numbered options from Claude Code's plan approval prompt.
+    /// Looks for lines matching "❯ N. Option text" or "  N. Option text" pattern
+    /// in the pane output. Returns the options in order.
+    ///
+    /// Example pane output:
+    /// ```
+    /// ❯ 1. Yes, and bypass permissions
+    ///   2. Yes, manually approve edits
+    ///   3. Type here to tell Claude what to change
+    /// ```
+    public static func parsePlanOptions(from paneOutput: String) -> [String] {
+        var options: [String] = []
+        let lines = paneOutput.components(separatedBy: "\n")
+
+        // Scan from the bottom up to find the option block
+        var foundOptions = false
+        var rawOptions: [(Int, String)] = []
+
+        for line in lines.reversed() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // Match "N. text" pattern, optionally preceded by ❯ or spaces
+            // Strip ANSI escape codes first
+            let clean = stripAnsi(trimmed)
+
+            if let match = parseNumberedOption(clean) {
+                rawOptions.insert(match, at: 0)
+                foundOptions = true
+            } else if foundOptions {
+                // We were in the options block and hit a non-option line — stop
+                break
+            }
+        }
+
+        // Sort by number and extract text
+        options = rawOptions.sorted { $0.0 < $1.0 }.map(\.1)
+        return options
+    }
+
+    /// Parse a single numbered option line like "❯ 1. Yes, and bypass permissions"
+    /// or "  2. Yes, manually approve edits". Returns (number, text) or nil.
+    private static func parseNumberedOption(_ line: String) -> (Int, String)? {
+        // Remove leading ❯ or › marker
+        var s = line
+        if s.hasPrefix("❯") || s.hasPrefix("›") {
+            s = String(s.dropFirst()).trimmingCharacters(in: .whitespaces)
+        }
+
+        // Match "N. text" where N is a digit
+        guard let dotIdx = s.firstIndex(of: "."),
+              dotIdx > s.startIndex else { return nil }
+        let numStr = String(s[s.startIndex..<dotIdx]).trimmingCharacters(in: .whitespaces)
+        guard let num = Int(numStr), num > 0, num < 20 else { return nil }
+        let text = String(s[s.index(after: dotIdx)...]).trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return nil }
+        return (num, text)
+    }
+
+    /// Strip ANSI escape sequences from terminal output.
+    private static func stripAnsi(_ s: String) -> String {
+        s.replacingOccurrences(
+            of: "\\x1B\\[[0-9;]*[A-Za-z]|\\x1B\\]\\d+;[^\\x07]*\\x07",
+            with: "",
+            options: .regularExpression
+        )
+    }
 }
