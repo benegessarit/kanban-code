@@ -18,15 +18,18 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     private var pendingData: [UInt8] = []
     private var flushScheduled = false
 
-    // Strategy: wait for data to stop flowing, then render only the final state.
-    // During heavy streaming, data arrives continuously — we keep resetting the
-    // timer until there's a gap, then process only the tail.
+    // Strategy: for small interactive responses (typing, cursor moves), render
+    // immediately. For heavy streaming (Claude output), batch and drop frames.
     private static let batchDelay: DispatchTimeInterval = .milliseconds(32)  // 2 frames
     private static let chunkSize = 16 * 1024
     private static let maxBlockSeconds: Double = 0.008  // 8ms budget
 
     // Keep the last 32KB — enough for a full screen repaint with escape sequences.
     private static let keepBytes = 32 * 1024
+
+    /// Threshold: data chunks smaller than this are interactive (typing, cursor moves)
+    /// and should be rendered immediately without batching delay.
+    private static let interactiveThreshold = 256
 
     private var pendingOffset = 0
     private var scheduledFlushTime: UInt64 = 0
@@ -56,16 +59,33 @@ final class BatchedTerminalView: LocalProcessTerminalView {
             statsMaxBacklog = pendingData.count - pendingOffset
         }
 
-        // Reset the flush timer on every data arrival.
-        let now = DispatchTime.now().uptimeNanoseconds
-        let delay: UInt64 = passthroughMode ? 8_000_000 : 32_000_000 // 8ms or 32ms
-        scheduledFlushTime = now + delay
+        let totalPending = pendingData.count - pendingOffset
 
-        if !flushScheduled {
-            flushScheduled = true
-            let deadline: DispatchTimeInterval = passthroughMode ? .milliseconds(8) : Self.batchDelay
-            DispatchQueue.main.asyncAfter(deadline: .now() + deadline) { [weak self] in
-                self?.checkAndProcess()
+        // Small chunks (typing, cursor moves): feed directly on this main-thread
+        // call — zero scheduling overhead for instant keystroke response.
+        // Large chunks (Claude streaming): batch to avoid frame-per-byte overhead.
+        if totalPending <= Self.interactiveThreshold && !flushScheduled {
+            // Feed directly — we're already on main thread (LocalProcess dispatches here).
+            // This avoids DispatchQueue.main.async latency from pending SwiftUI layout work.
+            statsFlushCount += 1
+            statsFeedCalls += 1
+            statsFeedBytes += totalPending
+            let chunk = pendingData[pendingOffset...]
+            feed(byteArray: chunk)
+            pendingData.removeAll(keepingCapacity: true)
+            pendingOffset = 0
+        } else {
+            // Batched: reset the flush timer on every data arrival.
+            let now = DispatchTime.now().uptimeNanoseconds
+            let delay: UInt64 = passthroughMode ? 8_000_000 : 32_000_000 // 8ms or 32ms
+            scheduledFlushTime = now + delay
+
+            if !flushScheduled {
+                flushScheduled = true
+                let deadline: DispatchTimeInterval = passthroughMode ? .milliseconds(8) : Self.batchDelay
+                DispatchQueue.main.asyncAfter(deadline: .now() + deadline) { [weak self] in
+                    self?.checkAndProcess()
+                }
             }
         }
     }
@@ -140,7 +160,7 @@ final class BatchedTerminalView: LocalProcessTerminalView {
         pendingOffset = 0
         flushScheduled = false
 
-        // Print stats every 10 seconds
+        // Print stats every 10 seconds — file I/O on background queue to avoid hitches
         let elapsed = CACurrentMediaTime() - statsStartTime
         if elapsed > 10 {
             let avgFeedMs = statsFeedCalls > 0 ? statsFeedTimeMs / Double(statsFeedCalls) : 0
@@ -149,14 +169,16 @@ final class BatchedTerminalView: LocalProcessTerminalView {
                   statsFlushCount, statsFeedCalls, statsFeedBytes/1024,
                   avgFeedMs, statsMaxFeedMs, statsYieldCount,
                   statsMaxBacklog/1024)
-            let logPath = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code/logs/terminal-stats.log")
-            if let data = line.data(using: .utf8) {
-                if let fh = FileHandle(forWritingAtPath: logPath) {
-                    fh.seekToEndOfFile()
-                    fh.write(data)
-                    try? fh.close()
-                } else {
-                    try? data.write(to: URL(fileURLWithPath: logPath))
+            DispatchQueue.global(qos: .utility).async {
+                let logPath = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code/logs/terminal-stats.log")
+                if let data = line.data(using: .utf8) {
+                    if let fh = FileHandle(forWritingAtPath: logPath) {
+                        fh.seekToEndOfFile()
+                        fh.write(data)
+                        try? fh.close()
+                    } else {
+                        try? data.write(to: URL(fileURLWithPath: logPath))
+                    }
                 }
             }
             // Reset
