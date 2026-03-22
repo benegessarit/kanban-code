@@ -117,11 +117,13 @@ struct ToolCallCard: View, Equatable {
         .onChange(of: autoExpand) {
             if !userToggled {
                 isExpanded = autoExpand
+                if autoExpand { NotificationCenter.default.post(name: .chatCardExpanded, object: nil) }
             }
         }
         .onAppear {
             if autoExpand && !userToggled {
                 isExpanded = true
+                NotificationCenter.default.post(name: .chatCardExpanded, object: nil)
             }
         }
     }

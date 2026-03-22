@@ -18,7 +18,7 @@ struct ChatMessageView: View, Equatable {
     var isCurrentMatch: Bool = false
     var sessionPath: String?
     var tmuxSessionName: String?
-    var isLastTurn: Bool = false
+    var hasLastToolCall: Bool = false
     @Binding var expandedTextBlocks: Set<String>
     @State private var isHovered = false
 
@@ -34,7 +34,7 @@ struct ChatMessageView: View, Equatable {
         lhs.highlightText == rhs.highlightText &&
         lhs.isCurrentMatch == rhs.isCurrentMatch &&
         lhs.sessionPath == rhs.sessionPath &&
-        lhs.isLastTurn == rhs.isLastTurn
+        lhs.hasLastToolCall == rhs.hasLastToolCall
     }
 
     private var hasContent: Bool {
@@ -200,7 +200,7 @@ struct ChatMessageView: View, Equatable {
                         ForEach(group.items.indices, id: \.self) { ti in
                             if ti > 0 { Divider().padding(.leading, 8) }
                             if case .toolUse(let name, _, _) = group.items[ti].paired.block.kind {
-                                let isLast = isLastTurn && gi == groups.count - 1 && ti == group.items.count - 1
+                                let isLast = hasLastToolCall && gi == groups.count - 1 && ti == group.items.count - 1
                                 ToolCallCard(
                                     name: name,
                                     displayText: group.items[ti].paired.block.text,
@@ -242,7 +242,7 @@ struct ChatMessageView: View, Equatable {
                 rawInputJSON: paired.block.rawInputJSON,
                 resultText: paired.resultBlock?.text,
                 showBackground: !suppressBackground,
-                autoExpand: isLastTurn && isLastBlock
+                autoExpand: hasLastToolCall && isLastBlock
             )
         case .toolResult:
             EmptyView()

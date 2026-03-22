@@ -179,6 +179,7 @@ private struct ChatMessageList: View {
     var tmuxSessionName: String?
     @Binding var isBusyFromPane: Bool
     @State private var pollKick: Int = 0
+    @State private var lastBusyDetected: Date = .distantPast
     var pendingMessage: String?
     var onLoadMore: (() -> Void)?
     var onLoadAroundTurn: ((Int) -> Void)?
@@ -231,8 +232,17 @@ private struct ChatMessageList: View {
                     let groupInfo = Self.computeGroupInfo(turns: turns)
                     let toolResults = Self.computeToolResults(turns: turns)
                     let turnGroups = Self.groupConsecutiveToolTurns(turns: turns)
-                    // Last visible turn = last turn in the last group (groups skip invisible turns)
-                    let lastVisibleLN = turnGroups.last?.last?.lineNumber
+                    // Find the turn containing the last tool call in the conversation.
+                    // This turn's last tool call will be auto-expanded.
+                    let lastToolCallLN: Int? = {
+                        for turn in turns.reversed() {
+                            guard turn.role == "assistant" else { continue }
+                            if turn.contentBlocks.contains(where: { if case .toolUse = $0.kind { return true }; return false }) {
+                                return turn.lineNumber
+                            }
+                        }
+                        return nil
+                    }()
 
                     ForEach(Array(turnGroups.enumerated()), id: \.element.first?.lineNumber) { gi, group in
                         if group.count > 1 {
@@ -257,7 +267,7 @@ private struct ChatMessageList: View {
                                         isCurrentMatch: currentMatchTurnIndex == toolTurn.index,
                                         sessionPath: sessionPath,
                                         tmuxSessionName: tmuxSessionName,
-                                        isLastTurn: toolTurn.lineNumber == lastVisibleLN,
+                                        hasLastToolCall: toolTurn.lineNumber == lastToolCallLN,
                                         expandedTextBlocks: $expandedTextBlocks
                                     )
                                     .equatable()
@@ -288,7 +298,7 @@ private struct ChatMessageList: View {
                                 highlightText: activeQuery.isEmpty ? nil : activeQuery,
                                 isCurrentMatch: currentMatchTurnIndex == turn.index,
                                 sessionPath: sessionPath,
-                                isLastTurn: turn.lineNumber == lastVisibleLN,
+                                hasLastToolCall: turn.lineNumber == lastToolCallLN,
                                 expandedTextBlocks: $expandedTextBlocks
                             )
                             .equatable()
@@ -419,15 +429,22 @@ private struct ChatMessageList: View {
                     } catch {
                         newBusy = false
                     }
+                    if newBusy {
+                        lastBusyDetected = .now
+                    }
                     // Don't flip to not-busy while a pending message exists —
                     // Claude hasn't processed the prompt yet, tmux just hasn't caught up.
                     if newBusy != isBusyFromPane && (newBusy || pendingMessage == nil) {
                         isBusyFromPane = newBusy
                     }
-                    // Adaptive polling: fast when busy or just sent a message, slow when idle.
-                    // - Busy/pending: 250ms for responsive "thinking" indicator
-                    // - Idle: 3s to save CPU
-                    let interval: Int = (isBusyFromPane || pendingMessage != nil) ? 250 : 3000
+                    // Adaptive polling: fast when busy or recently busy, slow when idle.
+                    // - Busy/pending/recently busy: 250ms for responsive indicator
+                    // - Idle (>10s since last busy): 3s to save CPU
+                    // The 10s cooldown prevents slow polling during brief idle gaps
+                    // between tool calls (Claude pauses briefly between each tool).
+                    let recentlyBusy = Date.now.timeIntervalSince(lastBusyDetected) < 10
+                    let needsFastPoll = isBusyFromPane || pendingMessage != nil || recentlyBusy
+                    let interval: Int = needsFastPoll ? 250 : 3000
                     let kickBefore = pollKick
                     let steps = max(1, interval / 250)
                     for _ in 0..<steps {
@@ -468,10 +485,13 @@ private struct ChatMessageList: View {
             .animation(.easeInOut(duration: 0.2), value: hasNewMessages)
             .onReceive(NotificationCenter.default.publisher(for: .chatCardExpanded)) { _ in
                 if isAtBottom {
-                    // Immediate + delayed attempts to catch layout changes
+                    // Multiple delayed attempts to catch layout changes from card expansion.
+                    // The expanded content renders asynchronously, so we need to retry.
                     proxy.scrollTo("bottom-spacer", anchor: .bottom)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                        proxy.scrollTo("bottom-spacer", anchor: .bottom)
+                    for delay in [0.05, 0.15, 0.3] {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                            proxy.scrollTo("bottom-spacer", anchor: .bottom)
+                        }
                     }
                 }
             }

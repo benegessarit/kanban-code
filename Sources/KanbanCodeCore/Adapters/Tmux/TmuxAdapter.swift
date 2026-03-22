@@ -125,27 +125,33 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
     }
 
     /// Poll pane output to verify the prompt was sent. If text remains on the
-    /// prompt line after Enter, send Enter again (up to 3 retries).
-    /// Checks for: [Pasted text...] indicator, or text after the ❯ prompt character.
+    /// prompt line after Enter, send Enter again (up to 5 retries).
+    /// Checks for: [Pasted text...] indicator, or text after the ❯/› prompt character.
     private func ensurePromptSent(sessionName: String) async throws {
-        for _ in 0..<5 {
-            try await Task.sleep(for: .milliseconds(500))
+        for attempt in 0..<5 {
+            try await Task.sleep(for: .milliseconds(attempt == 0 ? 300 : 500))
             let output = try await capturePane(sessionName: sessionName)
 
             // Check if the prompt line still has unsent text
             let hasUnsentText: Bool
             if output.contains("[Pasted text") || output.contains("[Pasted Text") {
                 hasUnsentText = true
-            } else if let promptRange = output.range(of: "\u{276F}") {
-                // Check if there's non-whitespace text after the ❯ prompt on the same line
-                let afterPrompt = output[promptRange.upperBound...]
-                let sameLine = afterPrompt.prefix(while: { $0 != "\n" })
-                hasUnsentText = !sameLine.trimmingCharacters(in: .whitespaces).isEmpty
             } else {
-                hasUnsentText = false
+                // Check the LAST prompt character in the pane (not the first —
+                // earlier prompts from scroll history would give false positives).
+                let lastPromptRange = output.range(of: "\u{276F}", options: .backwards)
+                    ?? output.range(of: "\u{203A}", options: .backwards) // › alternative
+                if let promptRange = lastPromptRange {
+                    let afterPrompt = output[promptRange.upperBound...]
+                    let sameLine = afterPrompt.prefix(while: { $0 != "\n" })
+                    hasUnsentText = !sameLine.trimmingCharacters(in: .whitespaces).isEmpty
+                } else {
+                    hasUnsentText = false
+                }
             }
 
             if hasUnsentText {
+                KanbanCodeLog.info("send", "Unsent text detected on attempt \(attempt + 1), pressing Enter again")
                 let _ = try await ShellCommand.run(
                     tmuxPath, arguments: ["send-keys", "-t", sessionName, "Enter"]
                 )
@@ -153,6 +159,7 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
                 return
             }
         }
+        KanbanCodeLog.warn("send", "ensurePromptSent gave up after 5 attempts for \(sessionName)")
     }
 
     public func pastePrompt(to sessionName: String, text: String) async throws {
