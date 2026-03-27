@@ -58,10 +58,18 @@ struct SearchOverlay: View {
         .onChange(of: query) { _, newValue in handleQueryChange(newValue) }
     }
 
+    /// Identity key to reset scroll position when content changes mode.
+    private var scrollResetKey: String {
+        if isCommandMode { return "cmd" }
+        if query.isEmpty { return "recent" }
+        if !searchResults.isEmpty { return "deep" }
+        return "filter:\(filteredCards.count)"
+    }
+
     private var resultsSection: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 4) {
                     if isCommandMode {
                         commandsView
                     } else if query.isEmpty {
@@ -74,6 +82,7 @@ struct SearchOverlay: View {
                 }
                 .padding(8)
             }
+            .id(scrollResetKey)
             .onChange(of: selectedId) { _, newId in
                 if let newId {
                     withAnimation { proxy.scrollTo(newId, anchor: .center) }

@@ -291,6 +291,10 @@ struct ChatMessageView: View, Equatable {
         } else if turn.role == "user" {
             Text(display)
                 .font(font)
+        } else if display.containsBlockMarkdown {
+            Markdown(display)
+                .markdownTheme(chatMarkdownTheme)
+                .textSelection(.enabled)
         } else {
             markdownText(display)
                 .font(font)
@@ -558,6 +562,12 @@ extension String {
     var containsMarkdown: Bool {
         contains("**") || contains("```") || contains("# ") ||
         contains("[") || contains("- ") || contains("> ")
+    }
+
+    /// Check for block-level markdown that requires MarkdownUI (tables, code fences, headers).
+    /// Inline-only content (bold, links) can use the lighter AttributedString renderer.
+    var containsBlockMarkdown: Bool {
+        contains("```") || contains("| ") || contains("# ") || contains("> ")
     }
 }
 
