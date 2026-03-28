@@ -112,12 +112,12 @@ struct CardActionsMenu: View {
                 if let url = pr.url.flatMap({ URL(string: $0) }) {
                     Button("Open on GitHub") { NSWorkspace.shared.open(url) }
                 }
-                Button("Copy PR Number") { copyToClipboard("#\(pr.number)") }
+                Button("Copy PR Number") { copyToClipboard("#\(String(pr.number))") }
                 if let onUnlink {
                     Button("Unlink PR") { onUnlink(.pr(number: pr.number)) }
                 }
             } label: {
-                Label("PR: #\(pr.number)\(detail)", systemImage: "arrow.triangle.pull")
+                Label("PR: #\(String(pr.number))\(detail)", systemImage: "arrow.triangle.pull")
             }
         }
         if let issue = card.link.issueLink {
@@ -125,12 +125,12 @@ struct CardActionsMenu: View {
                 if let url = (issue.url ?? githubBaseURL.map { GitRemoteResolver.issueURL(base: $0, number: issue.number) }).flatMap({ URL(string: $0) }) {
                     Button("Open on GitHub") { NSWorkspace.shared.open(url) }
                 }
-                Button("Copy Issue Number") { copyToClipboard("#\(issue.number)") }
+                Button("Copy Issue Number") { copyToClipboard("#\(String(issue.number))") }
                 if let onUnlink {
                     Button("Unlink Issue") { onUnlink(.issue) }
                 }
             } label: {
-                Label("Issue: #\(issue.number)", systemImage: "circle.circle")
+                Label("Issue: #\(String(issue.number))", systemImage: "circle.circle")
             }
         }
         if let onAddLink {
@@ -215,7 +215,7 @@ struct CardActionsMenu: View {
                 Button {
                     if let url = pr.url.flatMap({ URL(string: $0) }) { NSWorkspace.shared.open(url) }
                 } label: {
-                    Label("Open PR #\(pr.number)", systemImage: "arrow.up.right.square")
+                    Label("Open PR #\(String(pr.number))", systemImage: "arrow.up.right.square")
                 }
             }
             if let issue = card.link.issueLink {
@@ -224,7 +224,7 @@ struct CardActionsMenu: View {
                         NSWorkspace.shared.open(url)
                     }
                 } label: {
-                    Label("Open Issue #\(issue.number)", systemImage: "arrow.up.right.square")
+                    Label("Open Issue #\(String(issue.number))", systemImage: "arrow.up.right.square")
                 }
             }
         }
