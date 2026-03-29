@@ -180,6 +180,11 @@ struct CardActionsMenu: View {
                 Label("Copy Session ID", systemImage: "desktopcomputer")
             }
         }
+        if let sessionPath = card.link.sessionLink?.sessionPath {
+            Button { copyToClipboard(sessionPath) } label: {
+                Label("Copy Session .jsonl Path", systemImage: "doc.text")
+            }
+        }
         if let tmux = card.link.tmuxLink?.sessionName {
             Button { copyToClipboard("tmux attach -t \(tmux)") } label: {
                 Label("Copy Tmux Command", systemImage: "terminal")
