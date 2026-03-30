@@ -587,6 +587,7 @@ struct CardDetailView: View {
             onLoadMore: { Task { await loadMoreHistory() } },
             onLoadAroundTurn: { turnIndex in Task { await loadAroundTurn(turnIndex) } },
             sessionPath: card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath,
+            sessionId: card.link.sessionLink?.sessionId,
             onFork: { onFork(true) },
             onCheckpoint: { turn in
                 checkpointTurn = turn
