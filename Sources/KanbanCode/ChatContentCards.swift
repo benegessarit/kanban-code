@@ -724,15 +724,6 @@ struct ContextDonutView: View {
 
     private var fraction: Double { min(usage.usedPercentage / 100, 1.0) }
 
-    private var ringColor: Color {
-        switch usage.usedPercentage {
-        case ..<50: .green
-        case ..<75: .yellow
-        case ..<90: .orange
-        default: .red
-        }
-    }
-
     private func formatTokens(_ count: Int) -> String {
         if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
         if count >= 1_000 { return String(format: "%.1fK", Double(count) / 1_000) }
@@ -741,27 +732,23 @@ struct ContextDonutView: View {
 
     var body: some View {
         ZStack {
-            // Background ring
             Circle()
-                .stroke(Color.primary.opacity(0.08), lineWidth: 3)
-            // Foreground arc
+                .stroke(Color.primary.opacity(0.06), lineWidth: 2.5)
             Circle()
                 .trim(from: 0, to: fraction)
-                .stroke(ringColor, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .stroke(Color.primary.opacity(0.25), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 .rotationEffect(.degrees(-90))
         }
-        .frame(width: 22, height: 22)
+        .frame(width: 16, height: 16)
         .help("\(String(format: "%.0f", usage.usedPercentage))% context used")
         .onHover { isHovering = $0 }
         .popover(isPresented: $isHovering, arrowEdge: .top) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("\(String(format: "%.1f", usage.usedPercentage))% context used")
-                    .fontWeight(.medium)
+            VStack(alignment: .leading, spacing: 4) {
                 let total = usage.totalInputTokens + usage.totalOutputTokens
-                Text("\(formatTokens(total)) / \(formatTokens(usage.contextWindowSize)) tokens")
-                    .foregroundStyle(.secondary)
+                Text("\(String(format: "%.1f", usage.usedPercentage))% · \(formatTokens(total)) / \(formatTokens(usage.contextWindowSize)) context used")
+                    .fontWeight(.medium)
                 if let model = usage.model, !model.isEmpty {
-                    Text("Model: \(model)")
+                    Text(model)
                         .foregroundStyle(.secondary)
                 }
                 if let cost = usage.totalCostUsd, cost > 0 {
@@ -770,7 +757,7 @@ struct ContextDonutView: View {
                 }
             }
             .font(.app(.caption))
-            .padding(10)
+            .padding(8)
         }
     }
 }

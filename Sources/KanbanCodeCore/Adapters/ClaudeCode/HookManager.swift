@@ -358,8 +358,7 @@ public enum HookManager {
         "${used_pct:-0}" "${ctx_size:-0}" "${input_tokens:-0}" "${output_tokens:-0}" "${cost:-0}" "${model:-}" > "$tmp_file"
     mv -f "$tmp_file" "$out_file"
 
-    # Terminal output
-    pct_int=${used_pct%%.*}
-    printf 'ctx: %s%% | $%s' "${pct_int:-0}" "${cost:-0}"
+    # Empty output — data is consumed by Kanban Code, not displayed in terminal
+    printf ''
     """
 }
