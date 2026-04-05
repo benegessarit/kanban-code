@@ -1290,13 +1290,16 @@ struct ContentView: View {
                     cards: store.state.cards,
                     sessionStore: store.sessionStore,
                     onSelectCard: { card in
+                        switchToProjectIfNeeded(for: card)
                         store.dispatch(.selectCard(cardId: card.id))
                     },
                     onResumeCard: { card in
+                        switchToProjectIfNeeded(for: card)
                         resumeCard(cardId: card.id)
                     },
                     onForkCard: { card in store.dispatch(.showDialog(.confirmFork(cardId: card.id))) },
                     onCheckpointCard: { card in
+                        switchToProjectIfNeeded(for: card)
                         store.dispatch(.selectCard(cardId: card.id))
                     },
                     commands: paletteCommands,
@@ -1973,6 +1976,15 @@ struct ContentView: View {
         if let terminal = findTerminal(in: contentView) {
             window.makeFirstResponder(terminal)
         }
+    }
+
+    /// When a card is selected from the palette and we're filtering by project,
+    /// switch to the card's project so it's visible in the sidebar.
+    private func switchToProjectIfNeeded(for card: KanbanCodeCard) {
+        guard store.state.selectedProjectPath != nil,
+              let cardProject = card.link.projectPath,
+              cardProject != store.state.selectedProjectPath else { return }
+        setSelectedProject(cardProject)
     }
 
     private func setSelectedProject(_ path: String?) {

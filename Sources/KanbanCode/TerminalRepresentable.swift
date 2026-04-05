@@ -219,6 +219,19 @@ final class BatchedTerminalView: LocalProcessTerminalView {
         )
     }()
 
+    /// Matches owner/repo#123 or bare #123 (GitHub issue/PR references).
+    /// Lookbehind excludes matches inside URLs, hex colors, or HTML entities.
+    private static let issueRefRegex: NSRegularExpression? = {
+        try? NSRegularExpression(
+            pattern: #"(?<![&/a-zA-Z0-9])(?:[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)?#\d+"#,
+            options: []
+        )
+    }()
+
+    /// GitHub base URL for the card's project (e.g. "https://github.com/owner/repo").
+    /// Set by TerminalContainerNSView when the terminal is shown.
+    var githubBaseURL: String?
+
     /// Currently highlighted URL range for underline drawing.
     private var highlightedURL: (screenRow: Int, colStart: Int, colEnd: Int, url: String)?
     private var urlHighlightLayer: CAShapeLayer?
@@ -312,20 +325,57 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     }
 
     /// Extract the URL under the cursor at the given screen position, if any.
+    /// Also detects GitHub issue/PR references like `owner/repo#123` or bare `#123`.
     private func detectURL(col: Int, screenRow: Int) -> (url: String, colStart: Int, colEnd: Int)? {
-        guard let regex = Self.urlRegex,
-              let line = terminal.getLine(row: screenRow) else { return nil }
+        guard let line = terminal.getLine(row: screenRow) else { return nil }
         let text = line.translateToString(trimRight: true)
         let nsText = text as NSString
-        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
-        for match in matches {
-            let range = match.range
-            if col >= range.location && col < range.location + range.length {
-                let url = nsText.substring(with: range)
-                return (url, range.location, range.location + range.length - 1)
+        let fullRange = NSRange(location: 0, length: nsText.length)
+
+        // Check full URLs first
+        if let regex = Self.urlRegex {
+            for match in regex.matches(in: text, range: fullRange) {
+                let range = match.range
+                if col >= range.location && col < range.location + range.length {
+                    let url = nsText.substring(with: range)
+                    return (url, range.location, range.location + range.length - 1)
+                }
             }
         }
+
+        // Check GitHub issue/PR references: owner/repo#123 or #123
+        if let regex = Self.issueRefRegex {
+            for match in regex.matches(in: text, range: fullRange) {
+                let range = match.range
+                if col >= range.location && col < range.location + range.length {
+                    let ref = nsText.substring(with: range)
+                    if let url = resolveIssueRef(ref) {
+                        return (url, range.location, range.location + range.length - 1)
+                    }
+                }
+            }
+        }
+
         return nil
+    }
+
+    /// Resolve a GitHub issue reference to a URL.
+    /// `"langwatch/langwatch#2847"` → `"https://github.com/langwatch/langwatch/issues/2847"`
+    /// `"#123"` → uses `githubBaseURL` from the card's project
+    private func resolveIssueRef(_ ref: String) -> String? {
+        guard let hashIndex = ref.firstIndex(of: "#") else { return nil }
+        let numberStr = String(ref[ref.index(after: hashIndex)...])
+        guard let number = Int(numberStr) else { return nil }
+
+        let prefix = String(ref[ref.startIndex..<hashIndex])
+        if prefix.isEmpty {
+            // Bare #123 — use the card's GitHub base URL
+            guard let base = githubBaseURL else { return nil }
+            return "\(base)/pull/\(number)"
+        } else {
+            // owner/repo#123
+            return "https://github.com/\(prefix)/pull/\(number)"
+        }
     }
 
     private func updateURLHighlight(col: Int, screenRow: Int) {
@@ -681,6 +731,8 @@ struct TerminalContainerView: NSViewRepresentable, Equatable {
     /// When true, the terminal grabs keyboard focus (user clicked a tab).
     /// When false, the terminal is shown but focus stays where it was (keyboard nav, drawer open).
     var grabFocus: Bool = false
+    /// GitHub base URL for the card's project, used for resolving #123 references.
+    var githubBaseURL: String?
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         // Ultra-strict: only sessions matter. grabFocus changes should NOT
@@ -692,6 +744,7 @@ struct TerminalContainerView: NSViewRepresentable, Equatable {
     func makeNSView(context: Context) -> TerminalContainerNSView {
         KanbanCodeLog.info("terminal-view", "makeNSView: sessions=\(sessions) active=\(activeSession)")
         let container = TerminalContainerNSView()
+        container.githubBaseURL = githubBaseURL
         for session in sessions {
             container.ensureTerminal(for: session)
         }
@@ -701,6 +754,7 @@ struct TerminalContainerView: NSViewRepresentable, Equatable {
 
     func updateNSView(_ nsView: TerminalContainerNSView, context: Context) {
         KanbanCodeLog.info("terminal-view", "updateNSView called: sessions=\(sessions) active=\(activeSession) grabFocus=\(grabFocus)")
+        nsView.githubBaseURL = githubBaseURL
         // When sessions are empty (terminal not yet created), just clean up and return.
         guard !sessions.isEmpty, !activeSession.isEmpty else {
             nsView.removeTerminalsNotIn([])
@@ -732,6 +786,14 @@ final class TerminalContainerNSView: NSView {
     /// Ordered list of session names managed by this container.
     private var managedSessions: [String] = []
     fileprivate private(set) var activeSession: String?
+    /// GitHub base URL for resolving bare #123 references in terminals.
+    var githubBaseURL: String? {
+        didSet {
+            for name in managedSessions {
+                TerminalCache.shared.terminal(for: name, frame: bounds).githubBaseURL = githubBaseURL
+            }
+        }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -749,6 +811,7 @@ final class TerminalContainerNSView: NSView {
     func ensureTerminal(for sessionName: String) {
         guard !managedSessions.contains(sessionName) else { return }
         let terminal = TerminalCache.shared.terminal(for: sessionName, frame: bounds)
+        terminal.githubBaseURL = githubBaseURL
         if terminal.superview !== self {
             terminal.removeFromSuperview()
             addSubview(terminal)

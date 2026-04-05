@@ -273,7 +273,8 @@ struct CardDetailView: View {
             // Reset tab to a valid one for this card (skip auto-focus)
             suppressTerminalFocus = true
             selectedTab = defaultTab(for: card)
-            // Resolve GitHub base URL for constructing issue/PR links
+            // Clear stale GitHub URL immediately, then resolve for new card
+            githubBaseURL = nil
             if let projectPath = card.link.projectPath {
                 githubBaseURL = await GitRemoteResolver.shared.githubBaseURL(for: projectPath)
             } else {
@@ -777,11 +778,17 @@ struct CardDetailView: View {
                         TerminalContainerView(
                             sessions: allLiveSessions,
                             activeSession: effectiveActiveSession ?? allLiveSessions.first ?? "",
-                            grabFocus: terminalGrabFocus
+                            grabFocus: terminalGrabFocus,
+                            githubBaseURL: githubBaseURL
                         )
                         .equatable()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .opacity(allLiveSessions.isEmpty || showOverlay || selectedBrowserTabId != nil ? 0 : 1)
+                        .onChange(of: githubBaseURL) {
+                            for session in allLiveSessions {
+                                TerminalCache.shared.terminal(for: session, frame: .zero).githubBaseURL = githubBaseURL
+                            }
+                        }
                         .onChange(of: terminalGrabFocus) {
                             if terminalGrabFocus {
                                 let session = effectiveActiveSession ?? allLiveSessions.first ?? ""
