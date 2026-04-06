@@ -284,7 +284,6 @@ private struct ChatMessageList: View {
                                         githubBaseURL: githubBaseURL,
                                         expandedTextBlocks: $expandedTextBlocks
                                     )
-                                    .equatable()
                                 }
                             }
                             .id(group.first?.lineNumber ?? 0)
@@ -334,7 +333,6 @@ private struct ChatMessageList: View {
                                 githubBaseURL: githubBaseURL,
                                 expandedTextBlocks: $expandedTextBlocks
                             )
-                            .equatable()
                             .id(turn.lineNumber)
                             .padding(.vertical, 4)
                         }

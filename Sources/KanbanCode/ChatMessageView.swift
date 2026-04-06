@@ -4,7 +4,7 @@ import MarkdownUI
 
 // MARK: - Chat Message View
 
-struct ChatMessageView: View, Equatable {
+struct ChatMessageView: View {
     let turn: ConversationTurn
     let assistant: CodingAssistant
     var toolResultMap: [String: ContentBlock] = [:]
@@ -26,30 +26,6 @@ struct ChatMessageView: View, Equatable {
     /// Max characters to render before truncating with "Show more".
     /// 4KB is enough for a long message without freezing SwiftUI layout.
     private static let textTruncationLimit = 4_000
-
-    nonisolated static func == (lhs: ChatMessageView, rhs: ChatMessageView) -> Bool {
-        lhs.turn.lineNumber == rhs.turn.lineNumber &&
-        lhs.turn.contentBlocks.count == rhs.turn.contentBlocks.count &&
-        lhs.blocksFingerprint == rhs.blocksFingerprint &&
-        lhs.isLastInGroup == rhs.isLastInGroup &&
-        lhs.assistant == rhs.assistant &&
-        lhs.highlightText == rhs.highlightText &&
-        lhs.isCurrentMatch == rhs.isCurrentMatch &&
-        lhs.sessionPath == rhs.sessionPath &&
-        lhs.hasLastToolCall == rhs.hasLastToolCall
-    }
-
-    /// Lightweight fingerprint of block content for equatable checks.
-    /// Compares text lengths and block kinds — catches any content change
-    /// without the cost of full string comparison.
-    private var blocksFingerprint: Int {
-        var h = 0
-        for block in turn.contentBlocks {
-            h = h &* 31 &+ block.text.count
-            h = h &* 31 &+ String(describing: block.kind).hashValue
-        }
-        return h
-    }
 
     /// Text content of this turn for copy.
     private var turnText: String {
