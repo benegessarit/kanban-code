@@ -1445,4 +1445,97 @@ struct CardReconcilerTests {
         #expect(second.count == 1)
         #expect(first[0].id == second[0].id)
     }
+
+    // MARK: - Worktree switch (EnterWorktree)
+
+    @Test("Claude switches worktree: session path updates, no duplicate card")
+    func worktreeSwitchUpdatesSessionPath() {
+        // Card was launched in worktree A, session detected
+        let card = Link(
+            name: "remove injections",
+            projectPath: "/project",
+            column: .inProgress,
+            source: .manual,
+            sessionLink: SessionLink(
+                sessionId: "s1",
+                sessionPath: "/claude/projects/-project--claude-worktrees-worktreeA/s1.jsonl"
+            ),
+            tmuxLink: TmuxLink(sessionName: "claude-s1"),
+            worktreeLink: WorktreeLink(path: "/project/.claude/worktrees/worktreeA", branch: "worktree-A")
+        )
+
+        // Claude called EnterWorktree → session file now in worktree B directory
+        // Old file is gone, new file exists at new path
+        let snapshot = CardReconciler.DiscoverySnapshot(
+            sessions: [Session(
+                id: "s1",
+                projectPath: "/project/.claude/worktrees/worktreeB",
+                gitBranch: "worktree-B",
+                messageCount: 10,
+                modifiedTime: .now,
+                jsonlPath: "/claude/projects/-project--claude-worktrees-worktreeB/s1.jsonl"
+            )],
+            tmuxSessions: [TmuxSession(name: "claude-s1", path: "/project/.claude/worktrees/worktreeB", attached: false)],
+            didScanTmux: true,
+            worktrees: [
+                "/project": [
+                    Worktree(path: "/project/.claude/worktrees/worktreeB", branch: "worktree-B", isBare: false)
+                ]
+            ]
+        )
+
+        let result = CardReconciler.reconcile(existing: [card], snapshot: snapshot)
+        #expect(result.count == 1, "Should NOT create duplicate card — same session ID")
+        #expect(result[0].id == card.id, "Original card should be kept")
+        #expect(result[0].sessionLink?.sessionPath == "/claude/projects/-project--claude-worktrees-worktreeB/s1.jsonl",
+                "Session path should update to new worktree location")
+        #expect(result[0].worktreeLink?.path == "/project/.claude/worktrees/worktreeB",
+                "Worktree path should update to new worktree")
+        #expect(result[0].worktreeLink?.branch == "worktree-B",
+                "Branch should update to new worktree branch")
+    }
+
+    @Test("Claude switches worktree: two cards with same sessionId get merged")
+    func worktreeSwitchMergesDuplicates() {
+        // If somehow two cards ended up with the same session ID (e.g., from
+        // a previous bug), reconciliation should merge them
+        let oldCard = Link(
+            name: "remove injections",
+            projectPath: "/project",
+            column: .inProgress,
+            source: .manual,
+            sessionLink: SessionLink(
+                sessionId: "s1",
+                sessionPath: "/claude/projects/-project--claude-worktrees-worktreeA/s1.jsonl"
+            ),
+            worktreeLink: WorktreeLink(path: "/project/.claude/worktrees/worktreeA", branch: "worktree-A")
+        )
+        let newCard = Link(
+            name: "remove injections",
+            projectPath: "/project",
+            column: .inProgress,
+            source: .manual,
+            sessionLink: SessionLink(
+                sessionId: "s1",
+                sessionPath: "/claude/projects/-project--claude-worktrees-worktreeB/s1.jsonl"
+            ),
+            tmuxLink: TmuxLink(sessionName: "claude-s1"),
+            worktreeLink: WorktreeLink(path: "/project/.claude/worktrees/worktreeB", branch: "worktree-B")
+        )
+
+        let snapshot = CardReconciler.DiscoverySnapshot(
+            sessions: [Session(
+                id: "s1",
+                messageCount: 10,
+                modifiedTime: .now,
+                jsonlPath: "/claude/projects/-project--claude-worktrees-worktreeB/s1.jsonl"
+            )],
+            tmuxSessions: [TmuxSession(name: "claude-s1", path: "/project/.claude/worktrees/worktreeB", attached: false)],
+            didScanTmux: true)
+
+        let result = CardReconciler.reconcile(existing: [oldCard, newCard], snapshot: snapshot)
+        #expect(result.count == 1, "Two cards with same sessionId should merge into one")
+        #expect(result[0].sessionLink?.sessionId == "s1")
+        #expect(result[0].tmuxLink?.sessionName == "claude-s1", "Merged card should keep tmux link")
+    }
 }

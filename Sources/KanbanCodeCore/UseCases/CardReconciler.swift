@@ -109,32 +109,34 @@ public enum CardReconciler {
                 if link.projectPath == nil, let pp = session.projectPath {
                     link.projectPath = pp
                 }
-                // If session is in a worktree dir and card doesn't have worktreeLink yet,
-                // find the matching worktree in the snapshot to get the correct git branch name.
-                // Only do this for cards that are actively launching — avoids re-attaching
-                // a worktree to forked cards that were explicitly created without one.
-                if link.worktreeLink == nil,
-                   link.isLaunching == true,
-                   let pp = session.projectPath,
+                // If session is in a worktree dir, update or set worktreeLink.
+                // Handles both initial launch (worktreeLink == nil) and worktree switches
+                // (Claude called EnterWorktree → session moved to a different worktree).
+                if let pp = session.projectPath,
                    pp.contains("/.claude/worktrees/") {
-                    // Prefer real git branch from snapshot (directory name may differ from branch)
-                    var branchName: String?
-                    for (_, worktrees) in snapshot.worktrees {
-                        if let wt = worktrees.first(where: { $0.path == pp }),
-                           let branch = wt.branch {
-                            branchName = branch.replacingOccurrences(of: "refs/heads/", with: "")
-                            break
+                    let needsUpdate = link.worktreeLink == nil
+                        || (link.worktreeLink?.path != pp && link.sessionLink?.sessionId == session.id)
+                    let shouldUpdate = needsUpdate && (link.isLaunching == true || link.worktreeLink != nil)
+                    if shouldUpdate {
+                        // Prefer real git branch from snapshot (directory name may differ from branch)
+                        var branchName: String?
+                        for (_, worktrees) in snapshot.worktrees {
+                            if let wt = worktrees.first(where: { $0.path == pp }),
+                               let branch = wt.branch {
+                                branchName = branch.replacingOccurrences(of: "refs/heads/", with: "")
+                                break
+                            }
                         }
-                    }
-                    // Fallback: extract from path if worktree not in snapshot yet
-                    if branchName == nil, let range = pp.range(of: "/.claude/worktrees/") {
-                        let afterPrefix = String(pp[range.upperBound...])
-                        branchName = afterPrefix.components(separatedBy: "/").first
-                    }
-                    if let branchName, !branchName.isEmpty {
-                        KanbanCodeLog.info("reconciler", "Setting worktreeLink from session path: branch=\(branchName) on card \(cardId.prefix(12))")
-                        link.worktreeLink = WorktreeLink(path: pp, branch: branchName)
-                        cardIdsByBranch[branchName, default: []].append(cardId)
+                        // Fallback: extract from path if worktree not in snapshot yet
+                        if branchName == nil, let range = pp.range(of: "/.claude/worktrees/") {
+                            let afterPrefix = String(pp[range.upperBound...])
+                            branchName = afterPrefix.components(separatedBy: "/").first
+                        }
+                        if let branchName, !branchName.isEmpty {
+                            KanbanCodeLog.info("reconciler", "Updating worktreeLink from session path: branch=\(branchName) on card \(cardId.prefix(12))")
+                            link.worktreeLink = WorktreeLink(path: pp, branch: branchName)
+                            cardIdsByBranch[branchName, default: []].append(cardId)
+                        }
                     }
                 }
                 linksById[cardId] = link
