@@ -24,6 +24,7 @@ struct ChatView: View {
     var sessionId: String?
     var onFork: (() -> Void)?
     var onCheckpoint: ((ConversationTurn) -> Void)?
+    var githubBaseURL: String?
     @Binding var draftText: String
     @Binding var draftImages: [Data]
 
@@ -91,6 +92,7 @@ struct ChatView: View {
                     sessionPath: sessionPath,
                     onFork: onFork,
                     onCheckpoint: onCheckpoint,
+                    githubBaseURL: githubBaseURL,
                     onSendAnswer: { answer in
                         onSendPrompt(answer, [])
                     }
@@ -193,6 +195,7 @@ private struct ChatMessageList: View {
     var sessionPath: String?
     var onFork: (() -> Void)?
     var onCheckpoint: ((ConversationTurn) -> Void)?
+    var githubBaseURL: String?
     var onSendAnswer: ((String) -> Void)?
 
     @State private var isAtBottom = true
@@ -275,6 +278,7 @@ private struct ChatMessageList: View {
                                         sessionPath: sessionPath,
                                         tmuxSessionName: tmuxSessionName,
                                         hasLastToolCall: toolTurn.lineNumber == lastToolCallLN,
+                                        githubBaseURL: githubBaseURL,
                                         expandedTextBlocks: $expandedTextBlocks
                                     )
                                     .equatable()
@@ -324,6 +328,7 @@ private struct ChatMessageList: View {
                                 sessionPath: sessionPath,
                                 tmuxSessionName: tmuxSessionName,
                                 hasLastToolCall: turn.lineNumber == lastToolCallLN,
+                                githubBaseURL: githubBaseURL,
                                 expandedTextBlocks: $expandedTextBlocks
                             )
                             .equatable()
@@ -416,6 +421,8 @@ private struct ChatMessageList: View {
                 lastSeenCount = turns.count
                 lastSeenLineNumber = turns.last?.lineNumber
                 isAtBottom = true
+                // Force initial scroll to trigger LazyVStack rendering
+                scrollToBottom(proxy: proxy, delay: true)
             }
             .onChange(of: turns.first?.lineNumber) {
                 // Distinguish card change (last also changed) from load-more (last unchanged)

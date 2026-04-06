@@ -594,6 +594,7 @@ struct CardDetailView: View {
                 checkpointTurn = turn
                 showCheckpointConfirm = true
             },
+            githubBaseURL: githubBaseURL,
             draftText: chatDraftText,
             draftImages: chatDraftImages,
             pendingMessage: $chatPendingMessage

@@ -19,6 +19,7 @@ struct ChatMessageView: View, Equatable {
     var sessionPath: String?
     var tmuxSessionName: String?
     var hasLastToolCall: Bool = false
+    var githubBaseURL: String?
     @Binding var expandedTextBlocks: Set<String>
     @State private var isHovered = false
 
@@ -284,7 +285,8 @@ struct ChatMessageView: View, Equatable {
     @ViewBuilder
     private func truncatedTextBlock(_ text: String, blockIndex: Int, font: Font) -> some View {
         let truncated = text.count > Self.textTruncationLimit && !isBlockExpanded(blockIndex)
-        let display = truncated ? String(text.prefix(Self.textTruncationLimit)) : text
+        let rawDisplay = truncated ? String(text.prefix(Self.textTruncationLimit)) : text
+        let display = (turn.role == "user" || highlightText != nil) ? rawDisplay : linkifyIssueRefs(rawDisplay)
         if highlightText != nil {
             highlightedText(display)
                 .font(font)
@@ -554,6 +556,48 @@ struct LazyImageChip: View {
             }
             isLoading = false
         }
+    }
+}
+
+// MARK: - GitHub Issue/PR Reference Linking
+
+extension ChatMessageView {
+    /// Regex matching owner/repo#123 or bare #123 (not inside URLs or markdown links).
+    private static let issueRefPattern: NSRegularExpression? = {
+        try? NSRegularExpression(
+            pattern: #"(?<![&/a-zA-Z0-9\[(\]])(?:[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)?#\d+(?![^\[]*\])"#,
+            options: []
+        )
+    }()
+
+    /// Convert GitHub issue/PR references in text to markdown links.
+    /// `"see #123"` → `"see [#123](https://github.com/owner/repo/pull/123)"`
+    /// `"langwatch/langwatch#2847"` → `"[langwatch/langwatch#2847](https://github.com/langwatch/langwatch/pull/2847)"`
+    func linkifyIssueRefs(_ text: String) -> String {
+        guard let regex = Self.issueRefPattern else { return text }
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        guard !matches.isEmpty else { return text }
+
+        var result = text
+        // Process in reverse to preserve offsets
+        for match in matches.reversed() {
+            let ref = nsText.substring(with: match.range)
+            guard let hashIndex = ref.firstIndex(of: "#"),
+                  let number = Int(ref[ref.index(after: hashIndex)...]) else { continue }
+            let prefix = String(ref[ref.startIndex..<hashIndex])
+            let url: String
+            if prefix.isEmpty {
+                guard let base = githubBaseURL else { continue }
+                url = "\(base)/pull/\(number)"
+            } else {
+                url = "https://github.com/\(prefix)/pull/\(number)"
+            }
+            let startIdx = text.index(text.startIndex, offsetBy: match.range.location)
+            let endIdx = text.index(startIdx, offsetBy: match.range.length)
+            result.replaceSubrange(startIdx..<endIdx, with: "[\(ref)](\(url))")
+        }
+        return result
     }
 }
 
