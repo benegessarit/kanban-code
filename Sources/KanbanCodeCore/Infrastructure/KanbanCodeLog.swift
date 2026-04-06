@@ -4,6 +4,11 @@ import Foundation
 /// Thread-safe, fire-and-forget. Use from anywhere in KanbanCodeCore or Kanban.
 public enum KanbanCodeLog {
 
+    /// Max log file size before rotation (10 MB).
+    private static let maxLogSize: UInt64 = 10 * 1024 * 1024
+    /// Keep this many bytes after rotation (5 MB tail).
+    private static let keepAfterRotation: Int = 5 * 1024 * 1024
+
     private static let logDir: String = {
         let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code/logs")
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -11,10 +16,28 @@ public enum KanbanCodeLog {
     }()
 
     private static let logPath: String = {
-        (logDir as NSString).appendingPathComponent("kanban-code.log")
+        let path = (logDir as NSString).appendingPathComponent("kanban-code.log")
+        rotateIfNeeded(path: path)
+        return path
     }()
 
     private static let queue = DispatchQueue(label: "kanban-code.log", qos: .utility)
+
+    /// On startup, if the log file exceeds maxLogSize, keep only the tail.
+    private static func rotateIfNeeded(path: String) {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let size = attrs[.size] as? UInt64,
+              size > maxLogSize else { return }
+        guard let data = FileManager.default.contents(atPath: path) else { return }
+        let tail = data.suffix(keepAfterRotation)
+        // Find the first newline in the tail to avoid a partial line
+        if let newlineIndex = tail.firstIndex(of: UInt8(ascii: "\n")) {
+            let clean = tail[tail.index(after: newlineIndex)...]
+            try? Data(clean).write(to: URL(fileURLWithPath: path))
+        } else {
+            try? Data(tail).write(to: URL(fileURLWithPath: path))
+        }
+    }
 
     /// Log a message with a subsystem tag.
     /// Example: `KanbanCodeLog.info("reconciler", "Matched session \(id) to card \(cardId)")`
