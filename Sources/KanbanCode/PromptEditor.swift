@@ -15,6 +15,7 @@ struct PromptEditor: NSViewRepresentable {
     var onUpArrowAtStart: (() -> String?)?
     var onDownArrowAtStart: (() -> String?)?
     var onImagePaste: ((Data) -> Void)?
+    var onEscape: (() -> Void)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -48,6 +49,7 @@ struct PromptEditor: NSViewRepresentable {
         textView.onUpArrowAtStart = onUpArrowAtStart
         textView.onDownArrowAtStart = onDownArrowAtStart
         textView.onImagePaste = onImagePaste
+        textView.onEscape = onEscape
         textView.placeholderString = placeholder
 
         scrollView.documentView = textView
@@ -77,6 +79,7 @@ struct PromptEditor: NSViewRepresentable {
         textView.onUpArrowAtStart = onUpArrowAtStart
         textView.onDownArrowAtStart = onDownArrowAtStart
         textView.onImagePaste = onImagePaste
+        textView.onEscape = onEscape
         textView.font = font
 
         // Update placeholder
@@ -161,6 +164,7 @@ final class SubmitTextView: NSTextView {
     var onUpArrowAtStart: (() -> String?)?
     var onDownArrowAtStart: (() -> String?)?
     var onImagePaste: ((Data) -> Void)?
+    var onEscape: (() -> Void)?
     var placeholderString: String = ""
 
     override func draw(_ dirtyRect: NSRect) {
@@ -187,6 +191,12 @@ final class SubmitTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        // Escape → stop assistant
+        if event.keyCode == 53 {
+            onEscape?()
+            return
+        }
+
         let isReturn = event.keyCode == 36 // Return key
         let hasShift = event.modifierFlags.contains(.shift)
         let hasCmd = event.modifierFlags.contains(.command)

@@ -90,6 +90,12 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         )
     }
 
+    public func sendEscape(sessionName: String) async throws {
+        let _ = try await ShellCommand.run(
+            tmuxPath, arguments: ["send-keys", "-t", sessionName, "Escape"]
+        )
+    }
+
     /// Exit tmux copy/scroll mode if active, so send-keys reaches the application.
     public func exitScrollMode(sessionName: String) async throws {
         // Send 'q' to exit copy mode. If not in copy mode, 'q' is harmless
@@ -115,7 +121,10 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         let _ = try await ShellCommand.run(
             tmuxPath, arguments: ["paste-buffer", "-p", "-t", sessionName]
         )
-        // Press Enter to submit
+        // Give the terminal app time to process the bracketed paste
+        // before sending Enter — without this, Enter can arrive before
+        // the paste event is fully handled, causing it to be lost.
+        try await Task.sleep(for: .milliseconds(100))
         let _ = try await ShellCommand.run(
             tmuxPath, arguments: ["send-keys", "-t", sessionName, "Enter"]
         )
@@ -130,30 +139,16 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
     /// the paste arrived, so the text sits unsent until Claude finishes).
     /// Checks for: [Pasted text...] indicator, or text after the ❯/› prompt character.
     private func ensurePromptSent(sessionName: String) async throws {
-        // Up to 120 attempts × 500ms = 60s max wait (covers long thinking periods)
-        for attempt in 0..<120 {
+        for attempt in 0..<10 {
             try await Task.sleep(for: .milliseconds(attempt == 0 ? 300 : 500))
             let output = try await capturePane(sessionName: sessionName)
 
-            // If Claude is still working (thinking indicator visible), keep waiting —
-            // the text was pasted but can't be submitted until Claude shows the prompt.
-            let isWorking = PaneOutputParser.isWorking(output)
-            if isWorking {
-                if attempt % 10 == 0 {
-                    KanbanCodeLog.info("send", "Assistant still working on attempt \(attempt + 1), waiting...")
-                }
-                continue
-            }
-
-            // Check if the prompt line still has unsent text
             let hasUnsentText: Bool
             if output.contains("[Pasted text") || output.contains("[Pasted Text") {
                 hasUnsentText = true
             } else {
-                // Check the LAST prompt character in the pane (not the first —
-                // earlier prompts from scroll history would give false positives).
                 let lastPromptRange = output.range(of: "\u{276F}", options: .backwards)
-                    ?? output.range(of: "\u{203A}", options: .backwards) // › alternative
+                    ?? output.range(of: "\u{203A}", options: .backwards)
                 if let promptRange = lastPromptRange {
                     let afterPrompt = output[promptRange.upperBound...]
                     let sameLine = afterPrompt.prefix(while: { $0 != "\n" })
@@ -168,17 +163,11 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
                 let _ = try await ShellCommand.run(
                     tmuxPath, arguments: ["send-keys", "-t", sessionName, "Enter"]
                 )
-                // Check once more after pressing Enter to confirm it was accepted
-                try await Task.sleep(for: .milliseconds(300))
-                let afterOutput = try await capturePane(sessionName: sessionName)
-                if PaneOutputParser.isWorking(afterOutput) {
-                    return // Claude started working — prompt was accepted
-                }
             } else {
-                return // No unsent text — prompt was accepted
+                return
             }
         }
-        KanbanCodeLog.warn("send", "ensurePromptSent gave up after 120 attempts for \(sessionName)")
+        KanbanCodeLog.warn("send", "ensurePromptSent gave up after 10 attempts for \(sessionName)")
     }
 
     public func pastePrompt(to sessionName: String, text: String) async throws {
@@ -197,6 +186,8 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         let _ = try await ShellCommand.run(
             tmuxPath, arguments: ["paste-buffer", "-p", "-t", sessionName]
         )
+        // Give the terminal app time to process the bracketed paste
+        try await Task.sleep(for: .milliseconds(100))
         // Press Enter to submit
         let _ = try await ShellCommand.run(
             tmuxPath, arguments: ["send-keys", "-t", sessionName, "Enter"]

@@ -38,9 +38,10 @@ public enum TranscriptReader {
             return ReadResult(turns: [], totalLineCount: 0, hasMore: false)
         }
 
-        // ~20KB per turn estimate, clamped to prevent overflow
+        // Use a generous per-turn estimate (100KB) to avoid needing retries.
+        // Claude sessions often have large tool results with code blocks.
         let clampedTurns = UInt64(min(maxTurns, 10_000))
-        let tailSize = min(clampedTurns * 20 * 1024, fileSize)
+        let tailSize = min(clampedTurns * 100 * 1024, fileSize)
 
         return try await readTailBytes(url: url, fileSize: fileSize, tailSize: tailSize, maxTurns: maxTurns)
     }

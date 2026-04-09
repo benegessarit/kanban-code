@@ -339,6 +339,64 @@ public enum CardReconciler {
             linksById[keeperId] = keeper
         }
 
+        // B4. Auto-discover external tmux sessions (e.g., git-orchard).
+        // Match non-claude sessions to cards by comparing the tmux session's
+        // working directory against the card's worktreeLink.path or projectPath.
+        if didScanTmux {
+            let externalSessions = snapshot.tmuxSessions.filter { sess in
+                !sess.name.hasPrefix("claude-") && !sess.path.isEmpty
+            }
+            // Build a set of tmux names already linked to any card (primary + extras)
+            let alreadyLinkedTmux: Set<String> = {
+                var names = Set<String>()
+                for (_, link) in linksById {
+                    if let t = link.tmuxLink {
+                        names.insert(t.sessionName)
+                        if let extras = t.extraSessions { names.formUnion(extras) }
+                    }
+                }
+                return names
+            }()
+
+            for sess in externalSessions {
+                guard !alreadyLinkedTmux.contains(sess.name) else { continue }
+                // Find the best card: prefer exact worktree/project match over prefix
+                var bestMatch: (String, Link)?
+                var prefixMatch: (String, Link)?
+                for (id, link) in linksById {
+                    if let wtPath = link.worktreeLink?.path, sess.path == wtPath {
+                        bestMatch = (id, link)
+                        break // exact worktree match — can't do better
+                    }
+                    if let projPath = link.projectPath, sess.path == projPath {
+                        bestMatch = (id, link)
+                    }
+                    // Worktree under project (e.g., .worktrees/name) — weakest match
+                    if prefixMatch == nil, let projPath = link.projectPath,
+                       sess.path.hasPrefix(projPath + "/.worktrees/") {
+                        prefixMatch = (id, link)
+                    }
+                }
+                let matchingCard = bestMatch ?? prefixMatch
+                if let (cardId, _) = matchingCard {
+                    var link = linksById[cardId]!
+                    if link.tmuxLink == nil {
+                        link.tmuxLink = TmuxLink(sessionName: sess.name)
+                        KanbanCodeLog.info("reconciler", "External tmux \(sess.name) matched to card \(cardId.prefix(12)) by path")
+                    } else if link.tmuxLink?.sessionName != sess.name {
+                        // Add as extra session
+                        var extras = link.tmuxLink?.extraSessions ?? []
+                        if !extras.contains(sess.name) {
+                            extras.append(sess.name)
+                            link.tmuxLink?.extraSessions = extras
+                            KanbanCodeLog.info("reconciler", "External tmux \(sess.name) added as extra to card \(cardId.prefix(12))")
+                        }
+                    }
+                    linksById[cardId] = link
+                }
+            }
+        }
+
         // C. Match PRs to existing cards via branch (add or update)
         for (branch, pr) in snapshot.pullRequests {
             let cardIds = cardIdsByBranch[branch] ?? []

@@ -564,7 +564,6 @@ struct CardDetailView: View {
             activityState: card.activityState,
             assistant: card.link.effectiveAssistant,
             hasMoreTurns: hasMoreTurns,
-            isLoadingMore: isLoadingMore,
             tmuxSessionName: card.link.tmuxLink?.sessionName,
             cardId: card.id,
             onSendPrompt: { text, imagePaths in
@@ -593,6 +592,11 @@ struct CardDetailView: View {
             onCheckpoint: { turn in
                 checkpointTurn = turn
                 showCheckpointConfirm = true
+            },
+            onEscape: {
+                if let session = card.link.tmuxLink?.sessionName {
+                    Task { try? await TmuxAdapter().sendEscape(sessionName: session) }
+                }
             },
             githubBaseURL: githubBaseURL,
             draftText: chatDraftText,
@@ -1506,7 +1510,7 @@ struct CardDetailView: View {
     // MARK: - History loading
 
     private static let pageSize = 80
-    private static let chatPageSize = 30
+    private static let chatPageSize = 80
 
     private func loadHistory() async {
         guard let path = card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath else { return }
@@ -1520,7 +1524,6 @@ struct CardDetailView: View {
         let loadCount = max(baseSize, turns.count)
         let assistant = card.link.effectiveAssistant
         let store = sessionStore
-        let lastLineNumber = turns.last?.lineNumber ?? 0
         let isEmpty = turns.isEmpty
 
         do {
@@ -1534,18 +1537,18 @@ struct CardDetailView: View {
                 }
             }.value
 
-            // Back on main actor — update @State
+            // Back on main actor — update @State.
+            // Always use the fresh tail — it picks up content changes from
+            // mergeConsecutiveAssistantTurns (partial → full response).
+            // Preserve any older turns from load-more that fall before the tail.
             if isEmpty {
                 turns = parsed.turns
-                hasMoreTurns = parsed.hasMore
             } else {
-                // Deduplicate: only append turns with lineNumbers not already present
-                let existingLineNumbers = Set(turns.map(\.lineNumber))
-                let newTurns = parsed.turns.filter { $0.lineNumber > lastLineNumber && !existingLineNumbers.contains($0.lineNumber) }
-                if !newTurns.isEmpty {
-                    turns.append(contentsOf: newTurns)
-                }
+                let tailStart = parsed.turns.first?.lineNumber ?? Int.max
+                let olderTurns = turns.filter { $0.lineNumber < tailStart }
+                turns = olderTurns + parsed.turns
             }
+            hasMoreTurns = parsed.hasMore
         } catch {
             // Silently fail — empty history is fine
         }

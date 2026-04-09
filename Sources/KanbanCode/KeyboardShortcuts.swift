@@ -42,6 +42,9 @@ enum AppShortcut: CaseIterable {
     // Palette-specific
     case deepSearch             // Cmd+Enter (only when palette open)
 
+    // Chat
+    case stopAssistant          // Escape (when prompt focused in chat mode)
+
     // Board
     case deselect               // Escape
     case deleteCard             // Delete
@@ -55,7 +58,7 @@ enum AppShortcut: CaseIterable {
         [.openPaletteK, .openPaletteP, .openCommandMode,
          .newTask, .openSettings,
          .toggleExpanded, .toggleSidebar, .newTerminal, .deepSearch,
-         .deselect, .deleteCard, .deleteCardForward,
+         .stopAssistant, .deselect, .deleteCard, .deleteCardForward,
          .project1, .project2, .project3, .project4, .project5,
          .project6, .project7, .project8, .project9]
     }
@@ -70,6 +73,7 @@ enum AppShortcut: CaseIterable {
         case .toggleExpanded, .deepSearch: return .return
         case .toggleSidebar: return "b"
         case .newTerminal: return "t"
+        case .stopAssistant: return .escape
         case .deselect: return .escape
         case .deleteCard: return .delete
         case .deleteCardForward: return .deleteForward
@@ -93,6 +97,7 @@ enum AppShortcut: CaseIterable {
         case .toggleExpanded, .deepSearch: return .command
         case .toggleSidebar: return .command
         case .newTerminal: return .command
+        case .stopAssistant: return []
         case .deselect, .deleteCard, .deleteCardForward: return []
         case .project1, .project2, .project3, .project4, .project5,
              .project6, .project7, .project8, .project9: return .command
@@ -142,6 +147,10 @@ enum AppShortcut: CaseIterable {
         // Deep search only when palette is open
         case .deepSearch:
             return ctx.paletteOpen
+
+        // Stop assistant: only when prompt editor is focused (chat mode)
+        case .stopAssistant:
+            return ctx.promptEditorFocused && !ctx.paletteOpen
 
         // Board shortcuts only when palette is closed
         case .deselect, .deleteCard, .deleteCardForward:

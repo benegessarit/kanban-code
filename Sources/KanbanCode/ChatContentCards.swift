@@ -568,6 +568,7 @@ struct ChatInputBar: View {
     var userMessageHistory: [String] = [] // Most recent first
     var onSend: (String, [String]) -> Void = { _, _ in }
     var onQueuePrompt: ((String, Bool, [String]) -> Void)?
+    var onEscape: (() -> Void)?
 
     @Binding var text: String
     @Binding var pastedImages: [Data]
@@ -610,7 +611,8 @@ struct ChatInputBar: View {
                     onCmdSubmit: onQueuePrompt != nil ? { showQueueDialog = true } : nil,
                     onUpArrowAtStart: { recallHistoryUp() },
                     onDownArrowAtStart: { recallHistoryDown() },
-                    onImagePaste: { data in pastedImages.append(data) }
+                    onImagePaste: { data in pastedImages.append(data) },
+                    onEscape: onEscape
                 )
                 .focused($isFocused)
                 .frame(minHeight: 24)

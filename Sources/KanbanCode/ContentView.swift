@@ -1545,15 +1545,24 @@ struct ContentView: View {
         .keyboardShortcut(AppShortcut.newTerminal.key, modifiers: AppShortcut.newTerminal.modifiers)
         .hidden()
 
+        // Escape + prompt focused: send interrupt (Ctrl+C) to stop the assistant
+        Button("") {
+            guard AppShortcut.stopAssistant.isActive(in: shortcutContext) else { return }
+            if let card = store.state.selectedCard,
+               let session = card.link.tmuxLink?.sessionName {
+                Task { try? await TmuxAdapter().sendEscape(sessionName: session) }
+            }
+        }
+        .keyboardShortcut(AppShortcut.stopAssistant.key, modifiers: AppShortcut.stopAssistant.modifiers)
+        .hidden()
+
         // Escape — context-dependent:
         // 1. In fullscreen mode: do nothing (don't close the card)
         // 2. In chat mode with Claude working: send interrupt (Ctrl+C)
         // 3. Otherwise: deselect card (close drawer)
         Button("") {
             guard AppShortcut.deselect.isActive(in: shortcutContext) else { return }
-            // Fullscreen: never close the card with Esc
             if isExpandedDetail { return }
-            // Chat mode + working: send interrupt instead of closing
             if let card = store.state.selectedCard,
                let session = card.link.tmuxLink?.sessionName,
                card.activityState == .activelyWorking || card.activityState == .idleWaiting {

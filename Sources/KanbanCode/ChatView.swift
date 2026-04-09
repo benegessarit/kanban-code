@@ -13,7 +13,6 @@ struct ChatView: View {
     let activityState: ActivityState?
     let assistant: CodingAssistant
     var hasMoreTurns: Bool = false
-    var isLoadingMore: Bool = false
     var tmuxSessionName: String?
     var cardId: String = ""
     var onSendPrompt: (String, [String]) -> Void = { _, _ in }
@@ -24,6 +23,7 @@ struct ChatView: View {
     var sessionId: String?
     var onFork: (() -> Void)?
     var onCheckpoint: ((ConversationTurn) -> Void)?
+    var onEscape: (() -> Void)?
     var githubBaseURL: String?
     @Binding var draftText: String
     @Binding var draftImages: [Data]
@@ -151,6 +151,7 @@ struct ChatView: View {
                     onSendPrompt(text, images)
                 },
                 onQueuePrompt: onQueuePrompt,
+                onEscape: onEscape,
                 text: $draftText,
                 pastedImages: $draftImages
             )
@@ -199,8 +200,8 @@ private struct ChatMessageList: View {
 
     @State private var isAtBottom = true
     @State private var isNearTop = false
-    @State private var isLoadingMore = false
     @State private var firstVisibleLineNumber: Int?
+    @State private var loadMoreTask: Task<Void, Never>?
     @State private var hasNewMessages = false
     @State private var lastSeenCount = 0
     @State private var lastSeenLineNumber: Int?
@@ -209,6 +210,7 @@ private struct ChatMessageList: View {
     /// the "New messages" badge (user deliberately scrolled away). Reset to true
     /// when user sends a message, clicks "New messages", or scrolls back to bottom.
     @State private var shouldAutoScroll = true
+    @State private var scrollPosition = ScrollPosition(edge: .bottom)
 
     // Search state
     @State private var showSearch = false
@@ -230,12 +232,190 @@ private struct ChatMessageList: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 0) {
+            scrollableMessageList
+        // Search bar overlay
+        if showSearch {
+            chatSearchBar
+        }
+        }
+        .background {
+            Button("") {
+                showSearch = true
+                isSearchFieldFocused = true
+            }
+            .keyboardShortcut("f", modifiers: .command)
+            .hidden()
+        }
+    }
+
+    private var scrollableMessageList: some View {
+        scrollViewWithTracking
+            .task(id: tmuxSessionName) {
+                await pollBusyState()
+            }
+            .overlay(alignment: .bottom) { newMessagesButton }
+            .animation(.easeInOut(duration: 0.2), value: hasNewMessages)
+            .onReceive(NotificationCenter.default.publisher(for: .chatCardExpanded)) { _ in
+                if isAtBottom { scrollPosition.scrollTo(edge: .bottom) }
+            }
+    }
+
+    private var scrollViewWithTracking: some View {
+        ScrollView {
+            messageListContent
+        }
+        .scrollPosition($scrollPosition)
+        .modifier(ScrollBottomTracker(isAtBottom: $isAtBottom, hasNewMessages: $hasNewMessages, shouldAutoScroll: $shouldAutoScroll))
+        .modifier(ScrollNearTopDetector(isNearTop: $isNearTop))
+        .onChange(of: isNearTop) { if isNearTop { checkLoadMore() } }
+        .onScrollGeometryChange(for: Bool.self, of: { geo in
+            geo.contentOffset.y < -10  // overscroll / pull gesture
+        }, action: { wasOverscrolling, isOverscrolling in
+            if !wasOverscrolling && isOverscrolling { checkLoadMore() }
+        })
+        .onChange(of: turns.count) {
+            // Load completed — clear the loading marker so the spinner
+            // hides immediately and a new load can be triggered.
+            if loadMoreTask != nil {
+                loadMoreTask?.cancel()
+                loadMoreTask = nil
+            }
+        }
+        .onChange(of: turns.last?.lineNumber) { handleNewTurns() }
+        .onChange(of: currentMatchPosition) { handleMatchNavigation() }
+        .onChange(of: pendingMessage) {
+            if pendingMessage != nil {
+                shouldAutoScroll = true
+                hasNewMessages = false
+                scrollPosition.scrollTo(edge: .bottom)
+                pollKick += 1
+            }
+        }
+        .onAppear {
+            lastSeenCount = turns.count
+            lastSeenLineNumber = turns.last?.lineNumber
+            isAtBottom = true
+            shouldAutoScroll = true
+        }
+        .onChange(of: turns.first?.lineNumber) { handleFirstTurnChange() }
+    }
+
+    @ViewBuilder
+    private var newMessagesButton: some View {
+        if hasNewMessages {
+            Button {
+                scrollPosition.scrollTo(edge: .bottom)
+                hasNewMessages = false
+                isAtBottom = true
+                shouldAutoScroll = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 11, weight: .medium))
+                    Text("New messages")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.plain)
+            .glassEffect(.regular, in: .capsule)
+            .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+            .padding(.bottom, 8)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    private func handleNewTurns() {
+        guard let newLast = turns.last?.lineNumber else { return }
+        let isInitial = lastSeenLineNumber == nil
+        if !activeQuery.isEmpty {
+            if pendingMatchScroll {
+                pendingMatchScroll = false
+                scrollToCurrentMatch(delay: true)
+            }
+        } else {
+            let isNewAtBottom = newLast != lastSeenLineNumber
+            if isInitial || (isNewAtBottom && shouldAutoScroll) {
+                scrollPosition.scrollTo(edge: .bottom)
+            } else if isNewAtBottom {
+                hasNewMessages = true
+                shouldAutoScroll = false
+            }
+        }
+        lastSeenLineNumber = newLast
+        lastSeenCount = turns.count
+    }
+
+    private func handleMatchNavigation() {
+        guard !searchMatchIndices.isEmpty,
+              currentMatchPosition < searchMatchIndices.count else { return }
+        let idx = searchMatchIndices[currentMatchPosition]
+        if turns.contains(where: { $0.index == idx }) {
+            scrollToCurrentMatch(delay: false)
+        } else {
+            pendingMatchScroll = true
+            onLoadAroundTurn?(idx)
+        }
+    }
+
+    private func handleFirstTurnChange() {
+        let lastUnchanged = turns.last?.lineNumber == lastSeenLineNumber
+        if lastUnchanged {
+            lastSeenCount = turns.count
+            if let anchor = firstVisibleLineNumber {
+                scrollPosition.scrollTo(id: anchor, anchor: .top)
+            }
+        } else {
+            lastSeenLineNumber = nil
+            lastSeenCount = 0
+            isAtBottom = true
+            hasNewMessages = false
+            loadMoreTask?.cancel()
+            loadMoreTask = nil
+            scrollPosition = ScrollPosition(edge: .bottom)
+        }
+    }
+
+    private func pollBusyState() async {
+        guard let session = tmuxSessionName else {
+            isBusyFromPane = false
+            return
+        }
+        let tmux = TmuxAdapter()
+        while !Task.isCancelled {
+            let newBusy: Bool
+            do {
+                let output = try await tmux.capturePane(sessionName: session)
+                newBusy = PaneOutputParser.isWorking(output)
+            } catch {
+                newBusy = false
+            }
+            if newBusy { lastBusyDetected = .now }
+            if newBusy != isBusyFromPane && (newBusy || pendingMessage == nil) {
+                isBusyFromPane = newBusy
+            }
+            if let sid = sessionId {
+                let newUsage = ContextUsageReader.read(sessionId: sid)
+                if newUsage != contextUsage { contextUsage = newUsage }
+            }
+            let recentlyBusy = Date.now.timeIntervalSince(lastBusyDetected) < 10
+            let needsFastPoll = isBusyFromPane || pendingMessage != nil || recentlyBusy
+            let interval: Int = needsFastPoll ? 250 : 3000
+            let kickBefore = pollKick
+            let steps = max(1, interval / 250)
+            for _ in 0..<steps {
+                try? await Task.sleep(for: .milliseconds(250))
+                if pollKick != kickBefore || Task.isCancelled { break }
+            }
+        }
+    }
+
+    private var messageListContent: some View {
+            VStack(spacing: 0) {
                     // Spacer for search bar
                     if showSearch { Color.clear.frame(height: 36) }
-                    if hasMoreTurns && !turns.isEmpty {
+                    if loadMoreTask != nil {
                         ProgressView()
                             .controlSize(.small)
                             .frame(maxWidth: .infinity)
@@ -348,7 +528,7 @@ private struct ChatMessageList: View {
                                 .padding(.vertical, 10)
                                 .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 18))
                                 .opacity(0.5)
-                                .overlay(alignment: .leadingFirstTextBaseline) {
+                                .overlay(alignment: .leading) {
                                     ProgressView()
                                         .controlSize(.small)
                                         .opacity(0.5)
@@ -364,205 +544,11 @@ private struct ChatMessageList: View {
 
                     // Bottom spacer for scroll anchor — tall enough to keep
                     // the last message visible above the "working..." bar + input.
-                    Color.clear.frame(height: 30)
+                    Color.clear.frame(height: 48)
                         .id("bottom-spacer")
                 }
                 .padding(.horizontal, 16)
                 .textSelection(.enabled)
-            }
-            .defaultScrollAnchor(.bottom)
-            .modifier(ScrollBottomTracker(isAtBottom: $isAtBottom, hasNewMessages: $hasNewMessages, shouldAutoScroll: $shouldAutoScroll))
-            .modifier(ScrollNearTopDetector(isNearTop: $isNearTop))
-            .onChange(of: isNearTop) {
-                if isNearTop && hasMoreTurns && !isLoadingMore && activeQuery.isEmpty {
-                    triggerLoadMore()
-                }
-            }
-            .onChange(of: turns.last?.lineNumber) {
-                guard let newLast = turns.last?.lineNumber else { return }
-                let isInitial = lastSeenLineNumber == nil
-                // During search, handle pending match scroll instead of auto-scroll
-                if !activeQuery.isEmpty {
-                    if pendingMatchScroll {
-                        pendingMatchScroll = false
-                        scrollToCurrentMatch(proxy: proxy, delay: true)
-                    }
-                    lastSeenLineNumber = newLast
-                    lastSeenCount = turns.count
-                } else {
-                    // Only auto-scroll for NEW messages at the bottom, not load-more prepends
-                    let isNewAtBottom = newLast != lastSeenLineNumber
-                    if isInitial {
-                        scrollToBottom(proxy: proxy, delay: true)
-                    } else if isNewAtBottom && shouldAutoScroll {
-                        scrollToBottom(proxy: proxy, delay: false)
-                    } else if isNewAtBottom {
-                        hasNewMessages = true
-                        shouldAutoScroll = false
-                    }
-                    lastSeenLineNumber = newLast
-                    lastSeenCount = turns.count
-                }
-            }
-            .onChange(of: currentMatchPosition) {
-                guard !searchMatchIndices.isEmpty,
-                      currentMatchPosition < searchMatchIndices.count else { return }
-                let idx = searchMatchIndices[currentMatchPosition]
-                if turns.contains(where: { $0.index == idx }) {
-                    scrollToCurrentMatch(proxy: proxy, delay: false)
-                } else {
-                    pendingMatchScroll = true
-                    onLoadAroundTurn?(idx)
-                }
-            }
-            .onChange(of: pendingMessage) {
-                if pendingMessage != nil {
-                    // User just sent a message — always follow from now on.
-                    shouldAutoScroll = true
-                    hasNewMessages = false
-                    scrollToBottom(proxy: proxy, delay: false)
-                    scrollToBottom(proxy: proxy, delay: true)
-                }
-            }
-            .onAppear {
-                lastSeenCount = turns.count
-                lastSeenLineNumber = turns.last?.lineNumber
-                isAtBottom = true
-                shouldAutoScroll = true
-                // Scroll to the last real message — forces LazyVStack to
-                // render items around it. Scrolling to an invisible spacer
-                // can leave LazyVStack in a blank state.
-                if let lastLN = turns.last?.lineNumber {
-                    proxy.scrollTo(lastLN, anchor: .bottom)
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(50))
-                        proxy.scrollTo("bottom-spacer", anchor: .bottom)
-                    }
-                }
-            }
-            .onChange(of: turns.first?.lineNumber) {
-                // Distinguish card change (last also changed) from load-more (last unchanged)
-                let lastUnchanged = turns.last?.lineNumber == lastSeenLineNumber
-                if lastUnchanged {
-                    // Load-more prepended earlier turns — scroll to preserved position
-                    lastSeenCount = turns.count
-                    if let anchor = firstVisibleLineNumber {
-                        proxy.scrollTo(anchor, anchor: .top)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            proxy.scrollTo(anchor, anchor: .top)
-                        }
-                    }
-                    isLoadingMore = false
-                } else {
-                    // Card changed — reset and scroll
-                    lastSeenLineNumber = nil
-                    lastSeenCount = 0
-                    isAtBottom = true
-                    hasNewMessages = false
-                    isLoadingMore = false
-                    scrollToBottom(proxy: proxy, delay: true)
-                }
-            }
-            .task(id: tmuxSessionName) {
-                guard let session = tmuxSessionName else {
-                    isBusyFromPane = false
-                    return
-                }
-                let tmux = TmuxAdapter()
-                while !Task.isCancelled {
-                    let newBusy: Bool
-                    do {
-                        let output = try await tmux.capturePane(sessionName: session)
-                        newBusy = PaneOutputParser.isWorking(output)
-                    } catch {
-                        newBusy = false
-                    }
-                    if newBusy {
-                        lastBusyDetected = .now
-                    }
-                    // Don't flip to not-busy while a pending message exists —
-                    // Claude hasn't processed the prompt yet, tmux just hasn't caught up.
-                    if newBusy != isBusyFromPane && (newBusy || pendingMessage == nil) {
-                        isBusyFromPane = newBusy
-                    }
-                    // Poll context usage (lightweight file read, ~200 bytes)
-                    if let sid = sessionId {
-                        let newUsage = ContextUsageReader.read(sessionId: sid)
-                        if newUsage != contextUsage { contextUsage = newUsage }
-                    }
-                    // Adaptive polling: fast when busy or recently busy, slow when idle.
-                    // - Busy/pending/recently busy: 250ms for responsive indicator
-                    // - Idle (>10s since last busy): 3s to save CPU
-                    // The 10s cooldown prevents slow polling during brief idle gaps
-                    // between tool calls (Claude pauses briefly between each tool).
-                    let recentlyBusy = Date.now.timeIntervalSince(lastBusyDetected) < 10
-                    let needsFastPoll = isBusyFromPane || pendingMessage != nil || recentlyBusy
-                    let interval: Int = needsFastPoll ? 250 : 3000
-                    let kickBefore = pollKick
-                    let steps = max(1, interval / 250)
-                    for _ in 0..<steps {
-                        try? await Task.sleep(for: .milliseconds(250))
-                        if pollKick != kickBefore || Task.isCancelled { break }
-                    }
-                }
-            }
-            .onChange(of: pendingMessage) {
-                // Kick the pane poll to immediately check busy state after sending
-                if pendingMessage != nil {
-                    pollKick += 1
-                }
-            }
-            .overlay(alignment: .bottom) {
-                if hasNewMessages {
-                    Button {
-                        proxy.scrollTo("bottom-spacer", anchor: .bottom)
-                        hasNewMessages = false
-                        isAtBottom = true
-                        shouldAutoScroll = true
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.down")
-                                .font(.system(size: 11, weight: .medium))
-                            Text("New messages")
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                    }
-                    .buttonStyle(.plain)
-                    .glassEffect(.regular, in: .capsule)
-                    .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
-                    .padding(.bottom, 8)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-            .animation(.easeInOut(duration: 0.2), value: hasNewMessages)
-            .onReceive(NotificationCenter.default.publisher(for: .chatCardExpanded)) { _ in
-                if isAtBottom {
-                    // Multiple delayed attempts to catch layout changes from card expansion.
-                    // The expanded content renders asynchronously, so we need to retry.
-                    proxy.scrollTo("bottom-spacer", anchor: .bottom)
-                    for delay in [0.05, 0.15, 0.3] {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                            proxy.scrollTo("bottom-spacer", anchor: .bottom)
-                        }
-                    }
-                }
-            }
-        }
-        // Search bar overlay
-        if showSearch {
-            chatSearchBar
-        }
-        }
-        .background {
-            Button("") {
-                showSearch = true
-                isSearchFieldFocused = true
-            }
-            .keyboardShortcut("f", modifiers: .command)
-            .hidden()
-        }
     }
 
     // MARK: - Search Bar
@@ -691,42 +677,39 @@ private struct ChatMessageList: View {
         activeQuery = ""
     }
 
-    private func scrollToCurrentMatch(proxy: ScrollViewProxy, delay: Bool) {
+    private func scrollToCurrentMatch(delay: Bool) {
         guard !searchMatchIndices.isEmpty,
               currentMatchPosition < searchMatchIndices.count else { return }
         let idx = searchMatchIndices[currentMatchPosition]
         guard let turn = turns.first(where: { $0.index == idx }) else { return }
-        let lineNum = turn.lineNumber
         if delay {
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(80))
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    proxy.scrollTo(lineNum, anchor: .center)
+                    scrollPosition.scrollTo(id: turn.lineNumber, anchor: .center)
                 }
             }
         } else {
             withAnimation(.easeInOut(duration: 0.2)) {
-                proxy.scrollTo(lineNum, anchor: .center)
+                scrollPosition.scrollTo(id: turn.lineNumber, anchor: .center)
             }
         }
     }
 
-    private func triggerLoadMore() {
-        guard !isLoadingMore else { return }
-        isLoadingMore = true
-        // Remember the first visible turn so we can scroll back to it after prepend
+    /// Continuously loads more history while the user is near the top.
+    /// Uses a task guard to prevent overlapping calls and a 500ms cooldown
+    /// between loads so re-renders can settle before the next batch.
+    private func checkLoadMore() {
+        guard isNearTop, hasMoreTurns, activeQuery.isEmpty else { return }
+        guard loadMoreTask == nil else { return }
         firstVisibleLineNumber = turns.first?.lineNumber
         onLoadMore?()
-    }
-
-    private func scrollToBottom(proxy: ScrollViewProxy, delay: Bool) {
-        if delay {
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(50))
-                proxy.scrollTo("bottom-spacer", anchor: .bottom)
-            }
-        } else {
-            proxy.scrollTo("bottom-spacer", anchor: .bottom)
+        // Marker to prevent re-entry while loading. Cleared immediately
+        // when turns.count changes (load completed). Safety timeout in
+        // case the load silently fails and no turns change arrives.
+        loadMoreTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            loadMoreTask = nil
         }
     }
 
@@ -855,13 +838,13 @@ private struct ScrollBottomTracker: ViewModifier {
     }
 }
 
-/// Detects when the user scrolls within 300pt of the top.
+/// Detects when the user scrolls within 50pt of the top.
 private struct ScrollNearTopDetector: ViewModifier {
     @Binding var isNearTop: Bool
 
     func body(content: Content) -> some View {
         content.onScrollGeometryChange(for: Bool.self, of: { geo in
-            geo.contentOffset.y < 300
+            geo.contentOffset.y < 50
         }, action: { _, newNearTop in
             isNearTop = newNearTop
         })
