@@ -1,41 +1,6 @@
 import SwiftUI
 import WebKit
 
-// MARK: - Eruda DevTools script helpers
-
-/// Pure-logic helper for generating Eruda injection and toggle scripts.
-/// Testable without WKWebView — see BrowserDevToolsTests.
-enum ErudaScript {
-    /// JS that initializes Eruda (hidden by default). Injected after the library source.
-    static let initializationScript: String = """
-        if (typeof eruda !== 'undefined' && !eruda._isInit) {
-            eruda.init({ useShadowDom: true, autoScale: true });
-            eruda.hide();
-        }
-        """
-
-    /// JS to show the Eruda panel.
-    static let showScript = "if (typeof eruda !== 'undefined') { eruda.show(); }"
-
-    /// JS to hide the Eruda panel.
-    static let hideScript = "if (typeof eruda !== 'undefined') { eruda.hide(); }"
-
-    /// Returns show or hide script based on current visibility.
-    static func toggleScript(currentlyVisible: Bool) -> String {
-        currentlyVisible ? hideScript : showScript
-    }
-
-    /// Loads eruda.min.js from bundle and appends the initialization call.
-    /// Throws if the resource is missing.
-    static func fullInjectionScript() throws -> String {
-        guard let url = Bundle.appResources.url(forResource: "eruda.min", withExtension: "js") else {
-            throw CocoaError(.fileNoSuchFile)
-        }
-        let library = try String(contentsOf: url, encoding: .utf8)
-        return library + "\n" + initializationScript
-    }
-}
-
 // MARK: - Browser tab model
 
 /// Holds a WKWebView and publishes navigation state for SwiftUI.
@@ -51,7 +16,6 @@ final class BrowserTab: ObservableObject {
     @Published var canGoForward: Bool = false
     @Published var isLoading: Bool = false
     @Published var estimatedProgress: Double = 0
-    @Published var isDevToolsVisible: Bool = false
 
     /// Called when a Cmd+click, target="_blank", or window.open() requests
     /// a new tab. The parent view should create a new BrowserTab at this URL.
@@ -68,19 +32,9 @@ final class BrowserTab: ObservableObject {
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         config.defaultWebpagePreferences.allowsContentJavaScript = true
 
-        // Inject Eruda devtools script into every page load
-        if let erudaJS = try? ErudaScript.fullInjectionScript() {
-            let userScript = WKUserScript(
-                source: erudaJS,
-                injectionTime: .atDocumentEnd,
-                forMainFrameOnly: false
-            )
-            config.userContentController.addUserScript(userScript)
-        }
-
         let wv = WKWebView(frame: .zero, configuration: config)
         wv.allowsBackForwardNavigationGestures = true
-        wv.isInspectable = true
+        wv.isInspectable = true // right-click → Inspect Element
         self.webView = wv
 
         let coordinator = BrowserNavigationCoordinator()
@@ -150,13 +104,6 @@ final class BrowserTab: ObservableObject {
 
     func reload() { webView.reload() }
     func stopLoading() { webView.stopLoading() }
-
-    /// Toggle Eruda DevTools visibility in the web page.
-    func toggleDevTools() {
-        let script = ErudaScript.toggleScript(currentlyVisible: isDevToolsVisible)
-        webView.evaluateJavaScript(script) { _, _ in }
-        isDevToolsVisible.toggle()
-    }
 
     func navigate(to url: URL) {
         webView.load(URLRequest(url: url))
@@ -247,15 +194,16 @@ struct BrowserWebViewRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let container = NSView()
         container.wantsLayer = true
+        container.autoresizesSubviews = true
         let wv = tab.webView
-        wv.translatesAutoresizingMaskIntoConstraints = false
+        // Use autoresizing (not NSLayoutConstraint) so WebKit's docked Web
+        // Inspector can resize the web view to make room for itself. Hard
+        // constraints fight the inspector and leave a blank rectangle where
+        // it tries to render.
+        wv.translatesAutoresizingMaskIntoConstraints = true
+        wv.frame = container.bounds
+        wv.autoresizingMask = [.width, .height]
         container.addSubview(wv)
-        NSLayoutConstraint.activate([
-            wv.topAnchor.constraint(equalTo: container.topAnchor),
-            wv.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            wv.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            wv.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-        ])
         return container
     }
 
@@ -263,14 +211,10 @@ struct BrowserWebViewRepresentable: NSViewRepresentable {
         let wv = tab.webView
         if wv.superview !== nsView {
             wv.removeFromSuperview()
-            wv.translatesAutoresizingMaskIntoConstraints = false
+            wv.translatesAutoresizingMaskIntoConstraints = true
+            wv.frame = nsView.bounds
+            wv.autoresizingMask = [.width, .height]
             nsView.addSubview(wv)
-            NSLayoutConstraint.activate([
-                wv.topAnchor.constraint(equalTo: nsView.topAnchor),
-                wv.bottomAnchor.constraint(equalTo: nsView.bottomAnchor),
-                wv.leadingAnchor.constraint(equalTo: nsView.leadingAnchor),
-                wv.trailingAnchor.constraint(equalTo: nsView.trailingAnchor),
-            ])
         }
     }
 
@@ -328,12 +272,6 @@ struct BrowserContentView: View {
                     .padding(.vertical, 3)
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
 
-                Button(action: { tab.toggleDevTools() }) {
-                    Image(systemName: "hammer.fill")
-                        .foregroundStyle(tab.isDevToolsVisible ? Color.accentColor : .secondary)
-                }
-                .help("Toggle DevTools")
-                .keyboardShortcut("i", modifiers: [.command, .option])
             }
             .buttonStyle(.borderless)
             .font(.app(.caption))

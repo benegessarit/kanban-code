@@ -48,8 +48,8 @@ app: build
 	@if [ -d $(BUILD_DIR)/KanbanCode_KanbanCode.bundle ]; then \
 		cp -R $(BUILD_DIR)/KanbanCode_KanbanCode.bundle $(BUNDLE_DIR)/Contents/Resources/; \
 	fi
-	@# Code sign so macOS grants notification permissions
-	@codesign --force --sign - $(BUNDLE_DIR)
+	@# Code sign so macOS grants notification permissions and Web Inspector can attach
+	@codesign --force --sign - --entitlements KanbanCode.entitlements $(BUNDLE_DIR)
 	@# Register with Launch Services so macOS picks up the icon
 	@/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f $(BUNDLE_DIR) 2>/dev/null || true
 	@echo "Built $(BUNDLE_DIR)"
