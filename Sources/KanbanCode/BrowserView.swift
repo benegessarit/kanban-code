@@ -53,6 +53,10 @@ final class BrowserTab: ObservableObject {
     @Published var estimatedProgress: Double = 0
     @Published var isDevToolsVisible: Bool = false
 
+    /// Called when a Cmd+click, target="_blank", or window.open() requests
+    /// a new tab. The parent view should create a new BrowserTab at this URL.
+    var onRequestNewTab: ((URL) -> Void)?
+
     private var observers: [NSKeyValueObservation] = []
     private var navigationCoordinator: BrowserNavigationCoordinator?
 
@@ -82,6 +86,12 @@ final class BrowserTab: ObservableObject {
         let coordinator = BrowserNavigationCoordinator()
         self.navigationCoordinator = coordinator
         wv.navigationDelegate = coordinator
+        wv.uiDelegate = coordinator
+        coordinator.onRequestNewTab = { [weak self] url in
+            Task { @MainActor [weak self] in
+                self?.onRequestNewTab?(url)
+            }
+        }
 
         setupObservers()
         navigate(to: url)
@@ -186,7 +196,10 @@ final class BrowserTab: ObservableObject {
 /// Separate class so WKNavigationDelegate callbacks don't inherit @MainActor
 /// isolation from BrowserTab. See CLAUDE.md for the DispatchSource crash rule —
 /// the same principle applies to any WebKit delegate callback.
-private final class BrowserNavigationCoordinator: NSObject, WKNavigationDelegate {
+private final class BrowserNavigationCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    /// Called when a Cmd+click, target="_blank", or window.open() should open a new tab.
+    var onRequestNewTab: (@Sendable (URL) -> Void)?
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         // KVO observers on BrowserTab handle state updates.
     }
@@ -196,7 +209,32 @@ private final class BrowserNavigationCoordinator: NSObject, WKNavigationDelegate
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
+        // Cmd+click on a link → open in a new tab.
+        if navigationAction.navigationType == .linkActivated,
+           navigationAction.modifierFlags.contains(.command),
+           let url = navigationAction.request.url {
+            onRequestNewTab?(url)
+            decisionHandler(.cancel)
+            return
+        }
         decisionHandler(.allow)
+    }
+
+    // MARK: - WKUIDelegate
+
+    /// Called for target="_blank" links and JavaScript window.open() calls.
+    /// Returning nil tells WebKit not to create a child view — we handle it
+    /// ourselves by spawning a new BrowserTab via onRequestNewTab.
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        if let url = navigationAction.request.url {
+            onRequestNewTab?(url)
+        }
+        return nil
     }
 }
 
@@ -247,8 +285,12 @@ struct BrowserWebViewRepresentable: NSViewRepresentable {
 struct BrowserContentView: View {
     @ObservedObject var tab: BrowserTab
     var onNavigated: ((String, String?, String?) -> Void)? // (tabId, url?, title?)
+    /// True when this tab is the currently visible one. Shortcut actions
+    /// sent to all tabs use this to decide whether to act.
+    var isActive: Bool = false
     @State private var urlText: String = ""
     @State private var navigationDebounce: Task<Void, Never>?
+    @FocusState private var isURLFieldFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -278,6 +320,7 @@ struct BrowserContentView: View {
 
                 TextField("URL or search", text: $urlText)
                     .textFieldStyle(.plain)
+                    .focused($isURLFieldFocused)
                     .onSubmit {
                         tab.navigateSmart(urlText)
                     }
@@ -319,6 +362,14 @@ struct BrowserContentView: View {
         }
         .onAppear {
             urlText = tab.currentURL?.absoluteString ?? ""
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .browserFocusAddressBar)) { _ in
+            guard isActive else { return }
+            isURLFieldFocused = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .browserReload)) { _ in
+            guard isActive else { return }
+            tab.reload()
         }
     }
 

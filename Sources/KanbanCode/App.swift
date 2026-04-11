@@ -295,4 +295,6 @@ extension Notification.Name {
     static let chatCardExpanded = Notification.Name("chatCardExpanded")
     static let kanbanCodeAddLink = Notification.Name("kanbanCodeAddLink")
     static let kanbanCodeOpenProject = Notification.Name("kanbanCodeOpenProject")
+    static let browserFocusAddressBar = Notification.Name("browserFocusAddressBar")
+    static let browserReload = Notification.Name("browserReload")
 }

@@ -45,6 +45,10 @@ enum AppShortcut: CaseIterable {
     // Chat
     case stopAssistant          // Escape (when prompt focused in chat mode)
 
+    // Browser
+    case browserReload          // Cmd+R (when browser tab active)
+    case browserFocusAddress    // Cmd+L (when browser tab active)
+
     // Board
     case deselect               // Escape
     case deleteCard             // Delete
@@ -58,7 +62,8 @@ enum AppShortcut: CaseIterable {
         [.openPaletteK, .openPaletteP, .openCommandMode,
          .newTask, .openSettings,
          .toggleExpanded, .toggleSidebar, .newTerminal, .deepSearch,
-         .stopAssistant, .deselect, .deleteCard, .deleteCardForward,
+         .stopAssistant, .browserReload, .browserFocusAddress,
+         .deselect, .deleteCard, .deleteCardForward,
          .project1, .project2, .project3, .project4, .project5,
          .project6, .project7, .project8, .project9]
     }
@@ -73,6 +78,8 @@ enum AppShortcut: CaseIterable {
         case .toggleExpanded, .deepSearch: return .return
         case .toggleSidebar: return "b"
         case .newTerminal: return "t"
+        case .browserReload: return "r"
+        case .browserFocusAddress: return "l"
         case .stopAssistant: return .escape
         case .deselect: return .escape
         case .deleteCard: return .delete
@@ -97,6 +104,7 @@ enum AppShortcut: CaseIterable {
         case .toggleExpanded, .deepSearch: return .command
         case .toggleSidebar: return .command
         case .newTerminal: return .command
+        case .browserReload, .browserFocusAddress: return .command
         case .stopAssistant: return []
         case .deselect, .deleteCard, .deleteCardForward: return []
         case .project1, .project2, .project3, .project4, .project5,
@@ -151,6 +159,11 @@ enum AppShortcut: CaseIterable {
         // Stop assistant: only when prompt editor is focused (chat mode)
         case .stopAssistant:
             return ctx.promptEditorFocused && !ctx.paletteOpen
+
+        // Browser shortcuts: detail panel open, not in palette.
+        // The action handlers themselves check if a browser tab is selected.
+        case .browserReload, .browserFocusAddress:
+            return ctx.detailOpen && !ctx.paletteOpen && !ctx.promptEditorFocused
 
         // Board shortcuts only when palette is closed
         case .deselect, .deleteCard, .deleteCardForward:

@@ -811,11 +811,20 @@ struct CardDetailView: View {
 
                         // Browser tab content — use opacity to preserve WKWebView state
                         ForEach(browserTabs, id: \.id) { tab in
-                            BrowserContentView(tab: tab, onNavigated: { tabId, url, title in
-                                onUpdateBrowserTab(tabId, url, title)
-                            })
+                            BrowserContentView(
+                                tab: tab,
+                                onNavigated: { tabId, url, title in
+                                    onUpdateBrowserTab(tabId, url, title)
+                                },
+                                isActive: selectedBrowserTabId == tab.id
+                            )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .opacity(selectedBrowserTabId == tab.id ? 1 : 0)
+                                .onAppear {
+                                    tab.onRequestNewTab = { url in
+                                        openNewBrowserTab(url: url)
+                                    }
+                                }
                         }
 
                     } // else (terminal mode)
@@ -1264,6 +1273,17 @@ struct CardDetailView: View {
                 dropTargetTab = nil
             }
         }
+    }
+
+    /// Create a new browser tab at the given URL (used for Cmd+click and target="_blank").
+    private func openNewBrowserTab(url: URL) {
+        let tabId = "browser-\(UUID().uuidString)"
+        let urlString = url.absoluteString
+        onAddBrowserTab(tabId, urlString)
+        let tab = BrowserTabCache.shared.getOrCreate(cardId: card.id, tabId: tabId, url: url)
+        browserTabs.append(tab)
+        selectedBrowserTabId = tabId
+        selectedTerminalSession = nil
     }
 
     /// Hydrate live BrowserTab instances from persisted BrowserTabInfo in the link.

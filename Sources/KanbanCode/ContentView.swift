@@ -1556,6 +1556,22 @@ struct ContentView: View {
         .keyboardShortcut(AppShortcut.stopAssistant.key, modifiers: AppShortcut.stopAssistant.modifiers)
         .hidden()
 
+        // Cmd+R — reload active browser tab
+        Button("") {
+            guard AppShortcut.browserReload.isActive(in: shortcutContext) else { return }
+            NotificationCenter.default.post(name: .browserReload, object: nil)
+        }
+        .keyboardShortcut(AppShortcut.browserReload.key, modifiers: AppShortcut.browserReload.modifiers)
+        .hidden()
+
+        // Cmd+L — focus the active browser tab's address bar
+        Button("") {
+            guard AppShortcut.browserFocusAddress.isActive(in: shortcutContext) else { return }
+            NotificationCenter.default.post(name: .browserFocusAddressBar, object: nil)
+        }
+        .keyboardShortcut(AppShortcut.browserFocusAddress.key, modifiers: AppShortcut.browserFocusAddress.modifiers)
+        .hidden()
+
         // Escape — context-dependent:
         // 1. In fullscreen mode: do nothing (don't close the card)
         // 2. In chat mode with Claude working: send interrupt (Ctrl+C)
