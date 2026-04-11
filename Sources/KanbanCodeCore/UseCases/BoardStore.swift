@@ -1051,11 +1051,13 @@ public enum Reducer {
             // Equality-gated assignments — only trigger @Observable change notifications
             // for fields that actually differ. Prevents unnecessary SwiftUI re-renders
             // when reconciliation produces the same data as the previous cycle.
+            //
+            // NOTE: configuredProjects, excludedPaths, and globalRemoteSettings are
+            // NOT updated from the reconciled result. Reconcile captures them at the
+            // start (~250ms ago) and a concurrent addProject would be reverted.
+            // settingsLoaded is the only action that updates them.
             if state.tmuxSessions != result.tmuxSessions { state.tmuxSessions = result.tmuxSessions }
-            if state.configuredProjects != result.configuredProjects { state.configuredProjects = result.configuredProjects }
-            if state.excludedPaths != result.excludedPaths { state.excludedPaths = result.excludedPaths }
             if state.discoveredProjectPaths != result.discoveredProjectPaths { state.discoveredProjectPaths = result.discoveredProjectPaths }
-            if state.globalRemoteSettings != result.globalRemoteSettings { state.globalRemoteSettings = result.globalRemoteSettings }
 
             // Rebuild sessions map
             let newSessions = Dictionary(
