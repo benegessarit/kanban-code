@@ -76,6 +76,17 @@ struct KanbanCodeApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate, @unchecked Sendable {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Disable macOS smart substitutions app-wide (smart quotes, dashes, autocorrect).
+        // These break code input by replacing -- with em-dash, " with curly quotes, etc.
+        let defaults = UserDefaults.standard
+        defaults.set(false, forKey: "NSAutomaticQuoteSubstitutionEnabled")
+        defaults.set(false, forKey: "NSAutomaticDashSubstitutionEnabled")
+        defaults.set(false, forKey: "NSAutomaticTextReplacementEnabled")
+        defaults.set(false, forKey: "NSAutomaticSpellingCorrectionEnabled")
+        defaults.set(false, forKey: "NSAutomaticTextCompletionEnabled")
+        defaults.set(false, forKey: "NSAutomaticCapitalizationEnabled")
+        defaults.set(false, forKey: "NSAutomaticPeriodSubstitutionEnabled")
+
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         if let window = NSApp.windows.first {

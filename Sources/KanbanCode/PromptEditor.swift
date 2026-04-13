@@ -52,6 +52,14 @@ struct PromptEditor: NSViewRepresentable {
         textView.onEscape = onEscape
         textView.placeholderString = placeholder
 
+        // Disable macOS smart substitutions — prevents -- → em-dash, " → curly quotes, etc.
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isAutomaticTextCompletionEnabled = false
+        textView.smartInsertDeleteEnabled = false
+
         scrollView.documentView = textView
 
         return scrollView
