@@ -115,26 +115,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         }
     }
 
-    /// Install a `kanban` shell script to ~/.local/bin so users can run
-    /// `kanban`, `kanban .`, or `kanban /path/to/project` from any terminal.
+    /// Install a `kanban` shell script to ~/.local/bin.
+    /// If the TypeScript CLI has been built (`cli/dist/kanban.js` exists in the
+    /// repo), install a wrapper that delegates to it. Otherwise fall back to the
+    /// minimal open-project script so `kanban .` keeps working.
     private static func installCLI() {
         let binDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".local/bin")
         let scriptPath = binDir.appendingPathComponent("kanban")
-        // The CLI writes the path to a file, then activates the app.
-        // The app picks up the file in applicationDidBecomeActive.
-        // This avoids URL scheme issues that create duplicate windows.
-        let script = """
-        #!/bin/sh
-        # Installed by Kanban Code — opens the app and selects a project.
-        # Usage: kanban [path]   (defaults to current directory)
-        if [ -n "$1" ]; then
-            resolved="$(cd "$1" 2>/dev/null && pwd -P || echo "$1")"
-            mkdir -p ~/.kanban-code
-            echo "$resolved" > ~/.kanban-code/open-project
-        fi
-        open -a "KanbanCode"
-        """
+
+        // Find the repo root: the executable is at <repo>/build/KanbanCode.app/Contents/MacOS/KanbanCode
+        let exePath = Bundle.main.executablePath ?? ""
+        let repoDir = URL(fileURLWithPath: exePath)
+            .deletingLastPathComponent() // MacOS
+            .deletingLastPathComponent() // Contents
+            .deletingLastPathComponent() // KanbanCode.app
+            .deletingLastPathComponent() // build
+            .path
+        let cliPath = repoDir + "/cli/dist/kanban.js"
+
+        let script: String
+        if FileManager.default.fileExists(atPath: cliPath) {
+            script = """
+            #!/bin/sh
+            # Installed by Kanban Code — TypeScript CLI wrapper.
+            exec node "\(cliPath)" "$@"
+            """
+        } else {
+            script = """
+            #!/bin/sh
+            # Installed by Kanban Code — opens the app and selects a project.
+            # Usage: kanban [path]   (defaults to current directory)
+            if [ -n "$1" ]; then
+                resolved="$(cd "$1" 2>/dev/null && pwd -P || echo "$1")"
+                mkdir -p ~/.kanban-code
+                echo "$resolved" > ~/.kanban-code/open-project
+            fi
+            open -a "KanbanCode"
+            """
+        }
         do {
             try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
             try script.write(to: scriptPath, atomically: true, encoding: .utf8)

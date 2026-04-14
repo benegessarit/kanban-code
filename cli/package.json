@@ -1,0 +1,22 @@
+{
+  "name": "@kanban-code/cli",
+  "version": "0.1.0",
+  "description": "Kanban Code CLI — inspect cards, sessions, and orchestrate agents",
+  "type": "module",
+  "bin": {
+    "kanban": "./dist/kanban.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "dev": "tsx src/kanban.ts"
+  },
+  "dependencies": {
+    "commander": "^13.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.2",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}

@@ -69,6 +69,36 @@ npm run tauri build      # production .exe
 
 An onboarding wizard checks your dependencies and walks you through setup on first launch.
 
+### CLI
+
+The `kanban` CLI is automatically installed to `~/.local/bin/kanban` when you launch the app (requires Node.js). You can also install it manually:
+
+```bash
+cd kanban-code
+make install-cli
+```
+
+**Commands:**
+
+```
+kanban list                  # List cards grouped by column
+kanban list -c in_progress   # Filter by column
+kanban list --json           # Machine-readable JSON output
+kanban status                # Overview: card counts, terminals, tokens, cost
+kanban show <card>           # Detailed card info (session, tmux, PRs, transcript)
+kanban sessions              # Tmux sessions with card associations
+kanban capture <card>        # Capture terminal output (last 50 lines)
+kanban send <card> <message> # Send a prompt to a card's tmux session
+kanban interrupt <card>      # Send Escape to stop the assistant
+kanban transcript <card>     # Recent conversation transcript
+kanban projects              # List configured projects
+kanban open [path]           # Open a project in the app
+```
+
+Cards can be referenced by ID, ID prefix, name, tmux session name, or session ID. Every command supports `--json` for agent consumption.
+
+**Agent orchestration:** The CLI is designed to be used by a master agent that manages multiple Claude Code sessions. With `kanban list --json` it can see all active cards, their status, tokens, and context usage. With `kanban send` and `kanban capture` it can interact with running sessions via tmux.
+
 ## Features
 
 ### Kanban Board with Smart Columns

@@ -1,4 +1,4 @@
-.PHONY: build test run app run-app run-release clean
+.PHONY: build test run app run-app run-release clean cli install-cli
 
 BUNDLE_NAME = KanbanCode.app
 BUNDLE_DIR = build/$(BUNDLE_NAME)
@@ -61,6 +61,15 @@ run-release:
 	swift build -c release
 	@$(MAKE) app CONFIG=release
 	KANBAN_WATCHDOG=1 build/$(BUNDLE_NAME)/Contents/MacOS/KanbanCode
+
+cli:
+	@cd cli && npm install --silent && npm run build
+
+install-cli: cli
+	@mkdir -p $(HOME)/.local/bin
+	@printf '#!/bin/sh\nexec node "$(CURDIR)/cli/dist/kanban.js" "$$@"\n' > $(HOME)/.local/bin/kanban
+	@chmod 755 $(HOME)/.local/bin/kanban
+	@echo "Installed kanban CLI to ~/.local/bin/kanban"
 
 clean:
 	swift package clean
