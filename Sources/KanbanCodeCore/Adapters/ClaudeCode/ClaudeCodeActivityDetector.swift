@@ -12,6 +12,9 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
     private var sessionPaths: [String: String] = [:]
     /// Sessions that received a Stop but might get a follow-up prompt.
     private var pendingStops: [String: Date] = [:]
+    /// Last time UserPromptSubmit was seen per session — survives later Stop/Notification events.
+    /// Used by Stop/Notification handlers to tell "mid-conversation" from "dormant session".
+    private var lastUserPromptTimes: [String: Date] = [:]
     /// Delay before treating a Stop as final (seconds).
     private let stopDelay: TimeInterval
 
@@ -26,8 +29,11 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
         if event.eventName == "Stop" {
             // Record stop — will be resolved after stopDelay if no follow-up prompt
             pendingStops[event.sessionId] = event.timestamp
-        } else if event.eventName == "UserPromptSubmit" || event.eventName == "SessionStart" {
+        } else if event.eventName == "UserPromptSubmit" {
             // Clear pending stops on any new activity
+            pendingStops.removeValue(forKey: event.sessionId)
+            lastUserPromptTimes[event.sessionId] = event.timestamp
+        } else if event.eventName == "SessionStart" {
             pendingStops.removeValue(forKey: event.sessionId)
         }
     }
@@ -127,15 +133,31 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
             return .idleWaiting
 
         case "Stop":
-            // Stop means Claude's turn ended, but check if the transcript is still
-            // being written to — Claude may have resumed (e.g. user approved a tool,
-            // or a follow-up turn started without a new UserPromptSubmit hook).
-            if let path = sessionPaths[sessionId],
-               let fileAge = Self.fileAge(path),
-               fileAge < 5 {
-                return .activelyWorking
+            // Stop alone is noisy: it fires between tool calls, between agent
+            // auto-prompts, and at natural turn boundaries. Only demote to
+            // needsAttention when we have evidence the session is actually idle:
+            //   1. No recent UserPromptSubmit (dormant session — ghost card safety)
+            //   2. Transcript hasn't been written to within activeTimeout
+            //   3. Ctrl+C interrupt marker on last line
+            // Otherwise we stay activelyWorking — this is the fix for the
+            // "card flickers between In Progress and Waiting mid-conversation" bug.
+            let sinceLastPrompt = lastUserPromptTimes[sessionId].map {
+                Date.now.timeIntervalSince($0)
+            } ?? .greatestFiniteMagnitude
+            if sinceLastPrompt > activeTimeout {
+                return .needsAttention
             }
-            return .needsAttention
+            guard let path = sessionPaths[sessionId],
+                  let fileAge = Self.fileAge(path) else {
+                return .needsAttention
+            }
+            if fileAge > activeTimeout {
+                return .needsAttention
+            }
+            if fileAge > 3, Self.lastLineContainsInterrupt(path) {
+                return .needsAttention
+            }
+            return .activelyWorking
         case "SessionEnd":
             return .ended
         case "Notification":
