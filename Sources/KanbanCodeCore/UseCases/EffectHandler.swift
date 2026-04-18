@@ -369,6 +369,10 @@ public actor EffectHandler {
 
     /// Post a native macOS notification carrying enough routing info for the
     /// delegate to open the right drawer when the user taps it.
+    ///
+    /// The identifier is derived per-channel/dm so the summary banner emitted
+    /// by `flushBurst` REPLACES the immediate banner in Notification Center
+    /// rather than stacking — which would otherwise look like a duplicate.
     nonisolated static func postChatNotification(
         title: String,
         body: String,
@@ -385,7 +389,12 @@ public actor EffectHandler {
         content.body = body
         content.sound = .default
         content.userInfo = userInfo
-        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        // Use a key stable for the same chat target so the system dedups the
+        // immediate + summary banners within a burst window.
+        let kind = userInfo["chatKind"] ?? "chat"
+        let key = userInfo["channelName"] ?? userInfo["dmHandle"] ?? "unknown"
+        let identifier = "kanban-chat-\(kind)-\(key)"
+        let req = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
         do { try await center.add(req) } catch {
             KanbanCodeLog.info("notify", "chat notification failed: \(error)")
         }
