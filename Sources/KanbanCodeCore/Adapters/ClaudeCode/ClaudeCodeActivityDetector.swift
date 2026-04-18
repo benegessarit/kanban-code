@@ -18,7 +18,7 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
     /// Delay before treating a Stop as final (seconds).
     private let stopDelay: TimeInterval
 
-    public init(stopDelay: TimeInterval = 1.0, activeTimeout: TimeInterval = 300) {
+    public init(stopDelay: TimeInterval = 3.0, activeTimeout: TimeInterval = 300) {
         self.stopDelay = stopDelay
         self.activeTimeout = activeTimeout
     }
@@ -133,54 +133,31 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
             return .idleWaiting
 
         case "Stop":
-            // Stop alone is noisy: it fires between tool calls, between agent
-            // auto-prompts, and at natural turn boundaries. Only demote to
-            // needsAttention when we have evidence the session is actually idle:
-            //   1. No recent UserPromptSubmit (dormant session — ghost card safety)
-            //   2. Transcript hasn't been written to within activeTimeout
-            //   3. Ctrl+C interrupt marker on last line
-            // Otherwise we stay activelyWorking — this is the fix for the
-            // "card flickers between In Progress and Waiting mid-conversation" bug.
-            let sinceLastPrompt = lastUserPromptTimes[sessionId].map {
-                Date.now.timeIntervalSince($0)
-            } ?? .greatestFiniteMagnitude
-            if sinceLastPrompt > activeTimeout {
-                return .needsAttention
+            // Stop is the authoritative "turn ended" signal from Claude Code.
+            // BUT: ralph loops and fast human replies fire a new UserPromptSubmit
+            // within 1-2 seconds of Stop, and demoting for a few hundred ms
+            // before the next prompt causes a visible Waiting ↔ In Progress
+            // flicker. Use a short grace period (`stopDelay`) where we keep
+            // showing activelyWorking; after that, snap to needsAttention.
+            let sinceStop = Date.now.timeIntervalSince(lastEvent.timestamp)
+            if sinceStop < stopDelay {
+                return .activelyWorking
             }
-            guard let path = sessionPaths[sessionId],
-                  let fileAge = Self.fileAge(path) else {
-                return .needsAttention
-            }
-            if fileAge > activeTimeout {
-                return .needsAttention
-            }
-            if fileAge > 3, Self.lastLineContainsInterrupt(path) {
-                return .needsAttention
-            }
-            return .activelyWorking
+            return .needsAttention
         case "SessionEnd":
             return .ended
         case "Notification":
-            // Notification fires during work (tool approval, MCP prompt, etc.).
-            // Same shape as Stop: stay activelyWorking as long as we're inside
-            // an active conversation window with live transcript; otherwise
-            // treat as needsAttention. Previously used a tight 5s fileAge
-            // threshold that caused the same flicker as Stop did.
-            let sinceLastPrompt = lastUserPromptTimes[sessionId].map {
-                Date.now.timeIntervalSince($0)
-            } ?? .greatestFiniteMagnitude
-            if sinceLastPrompt > activeTimeout {
-                return .needsAttention
+            // Notification fires when Claude wants user attention (tool
+            // approval, bash permission prompt, etc). Default to
+            // needsAttention unless the transcript is still being written to
+            // very recently — which indicates the user just auto-approved and
+            // Claude is already resuming work.
+            if let path = sessionPaths[sessionId],
+               let fileAge = Self.fileAge(path),
+               fileAge < 5 {
+                return .activelyWorking
             }
-            guard let path = sessionPaths[sessionId],
-                  let fileAge = Self.fileAge(path),
-                  fileAge < activeTimeout else {
-                return .needsAttention
-            }
-            if fileAge > 3, Self.lastLineContainsInterrupt(path) {
-                return .needsAttention
-            }
-            return .activelyWorking
+            return .needsAttention
         default:
             // Unknown hook events — use polled state, never promote to activelyWorking
             return polledStates[sessionId] ?? .idleWaiting

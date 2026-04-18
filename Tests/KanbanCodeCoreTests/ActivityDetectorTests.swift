@@ -16,15 +16,26 @@ struct ActivityDetectorTests {
         #expect(state == .activelyWorking)
     }
 
-    @Test("Stop → immediate needsAttention")
+    @Test("Stop → needsAttention after grace period")
     func stopImmediate() async {
-        let detector = ClaudeCodeActivityDetector()
+        // Zero grace period so this test is deterministic
+        let detector = ClaudeCodeActivityDetector(stopDelay: 0)
         let event = HookEvent(sessionId: "s1", eventName: "Stop")
         await detector.handleHookEvent(event)
 
-        // Stop is immediate — no delay
         let state = await detector.activityState(for: "s1")
         #expect(state == .needsAttention)
+    }
+
+    @Test("Stop within grace period → activelyWorking (flicker suppression)")
+    func stopGracePeriod() async {
+        // 5-second grace
+        let detector = ClaudeCodeActivityDetector(stopDelay: 5)
+        let event = HookEvent(sessionId: "s1", eventName: "Stop", timestamp: Date.now)
+        await detector.handleHookEvent(event)
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .activelyWorking, "Within stopDelay, Stop should not yet demote — prevents flicker when a new UserPromptSubmit is imminent")
     }
 
     @Test("Stop + follow-up prompt → activelyWorking")
@@ -62,53 +73,19 @@ struct ActivityDetectorTests {
 
     // MARK: - Stop/Notification + file mtime (resumed work detection)
 
-    @Test("Stop + recent UserPromptSubmit + fresh file → activelyWorking (still in conversation)")
-    func stopWithFreshFile() async {
-        let detector = ClaudeCodeActivityDetector()
-        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "UserPromptSubmit"))
-        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Stop"))
-
-        let dir = NSTemporaryDirectory() + "kanban-code-stop-fresh-\(UUID().uuidString)"
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(atPath: dir) }
-        let path = (dir as NSString).appendingPathComponent("test.jsonl")
-        // File just modified — Claude is still writing
-        try? "data".write(toFile: path, atomically: true, encoding: .utf8)
-        let _ = await detector.pollActivity(sessionPaths: ["s1": path])
-
-        let state = await detector.activityState(for: "s1")
-        #expect(state == .activelyWorking, "Stop inside active conversation window should stay activelyWorking")
-    }
-
-    @Test("Stop without recent UserPromptSubmit → needsAttention (ghost card safety)")
-    func stopWithoutPromptGhostCardGuard() async {
-        let detector = ClaudeCodeActivityDetector()
-        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Stop"))
-
-        // Fresh transcript, but no UserPromptSubmit in-memory → dormant session on replay.
-        let dir = NSTemporaryDirectory() + "kanban-code-stop-ghost-\(UUID().uuidString)"
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(atPath: dir) }
-        let path = (dir as NSString).appendingPathComponent("test.jsonl")
-        try? "data".write(toFile: path, atomically: true, encoding: .utf8)
-        let _ = await detector.pollActivity(sessionPaths: ["s1": path])
-
-        let state = await detector.activityState(for: "s1")
-        #expect(state == .needsAttention, "Without recent UserPromptSubmit, Stop should not promote to activelyWorking")
-    }
-
-    @Test("Stop with ancient UserPromptSubmit → needsAttention")
-    func stopWithAncientPrompt() async {
-        let detector = ClaudeCodeActivityDetector(activeTimeout: 10)
-        // UserPromptSubmit 20 seconds ago — outside active window
+    @Test("Old Stop event → needsAttention (session truly stopped)")
+    func stopEventuallyDemotes() async {
+        let detector = ClaudeCodeActivityDetector(stopDelay: 1)
+        // Stop happened 10 seconds ago — well past the grace period
         await detector.handleHookEvent(HookEvent(
             sessionId: "s1",
-            eventName: "UserPromptSubmit",
-            timestamp: Date.now.addingTimeInterval(-20)
+            eventName: "Stop",
+            timestamp: Date.now.addingTimeInterval(-10)
         ))
-        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Stop"))
 
-        let dir = NSTemporaryDirectory() + "kanban-code-stop-ancient-\(UUID().uuidString)"
+        // Even with a fresh transcript the card should be needsAttention —
+        // the hook event itself is what determines turn boundaries, not mtime.
+        let dir = NSTemporaryDirectory() + "kanban-code-stop-old-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let path = (dir as NSString).appendingPathComponent("test.jsonl")
@@ -116,12 +93,12 @@ struct ActivityDetectorTests {
         let _ = await detector.pollActivity(sessionPaths: ["s1": path])
 
         let state = await detector.activityState(for: "s1")
-        #expect(state == .needsAttention)
+        #expect(state == .needsAttention, "Stop outside grace window should demote regardless of mtime")
     }
 
     @Test("Stop + stale file → needsAttention")
     func stopWithStaleFile() async {
-        let detector = ClaudeCodeActivityDetector()
+        let detector = ClaudeCodeActivityDetector(stopDelay: 0)
         await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Stop"))
 
         let dir = NSTemporaryDirectory() + "kanban-code-stop-stale-\(UUID().uuidString)"
@@ -137,10 +114,9 @@ struct ActivityDetectorTests {
         #expect(state == .needsAttention, "Stop + stale file means Claude is done")
     }
 
-    @Test("Notification + recent prompt + fresh file → activelyWorking (Claude working during notification)")
+    @Test("Notification + fresh file → activelyWorking (Claude working during notification)")
     func notificationWithFreshFile() async {
         let detector = ClaudeCodeActivityDetector()
-        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "UserPromptSubmit"))
         await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Notification"))
 
         let dir = NSTemporaryDirectory() + "kanban-code-notif-fresh-\(UUID().uuidString)"
@@ -151,23 +127,7 @@ struct ActivityDetectorTests {
         let _ = await detector.pollActivity(sessionPaths: ["s1": path])
 
         let state = await detector.activityState(for: "s1")
-        #expect(state == .activelyWorking, "Notification mid-conversation means Claude is still working")
-    }
-
-    @Test("Notification without recent UserPromptSubmit → needsAttention")
-    func notificationWithoutPrompt() async {
-        let detector = ClaudeCodeActivityDetector()
-        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Notification"))
-
-        let dir = NSTemporaryDirectory() + "kanban-code-notif-nopr-\(UUID().uuidString)"
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(atPath: dir) }
-        let path = (dir as NSString).appendingPathComponent("test.jsonl")
-        try? "data".write(toFile: path, atomically: true, encoding: .utf8)
-        let _ = await detector.pollActivity(sessionPaths: ["s1": path])
-
-        let state = await detector.activityState(for: "s1")
-        #expect(state == .needsAttention, "Notification without recent prompt = dormant session")
+        #expect(state == .activelyWorking, "Notification + fresh file means Claude is still working")
     }
 
     @Test("Notification + stale file → needsAttention")
@@ -188,29 +148,24 @@ struct ActivityDetectorTests {
         #expect(state == .needsAttention, "Notification + stale file means Claude needs attention")
     }
 
-    @Test("Stop → fresh file → stale file transitions correctly")
-    func stopResumeAndStopAgain() async {
-        // 5-second activeTimeout so stale test is deterministic
-        let detector = ClaudeCodeActivityDetector(activeTimeout: 5)
-        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "UserPromptSubmit"))
+    @Test("Stop grace window then new UserPromptSubmit → activelyWorking (ralph loop flow)")
+    func stopResumedByNewPrompt() async {
+        let detector = ClaudeCodeActivityDetector(stopDelay: 5)
+        // Stop happened "just now" (inside grace window)
         await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Stop"))
+        var state = await detector.activityState(for: "s1")
+        #expect(state == .activelyWorking)
 
-        let dir = NSTemporaryDirectory() + "kanban-code-stop-resume-\(UUID().uuidString)"
+        // New UserPromptSubmit lands — must flip to activelyWorking regardless of grace
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "UserPromptSubmit"))
+        let dir = NSTemporaryDirectory() + "kanban-code-resume-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let path = (dir as NSString).appendingPathComponent("test.jsonl")
-
-        // File just modified — Claude resumed
         try? "data".write(toFile: path, atomically: true, encoding: .utf8)
         let _ = await detector.pollActivity(sessionPaths: ["s1": path])
-        let active = await detector.activityState(for: "s1")
-        #expect(active == .activelyWorking)
-
-        // File goes stale (>activeTimeout) — Claude stopped for real
-        let staleDate = Date.now.addingTimeInterval(-10)
-        try? FileManager.default.setAttributes([.modificationDate: staleDate], ofItemAtPath: path)
-        let done = await detector.activityState(for: "s1")
-        #expect(done == .needsAttention)
+        state = await detector.activityState(for: "s1")
+        #expect(state == .activelyWorking)
     }
 
     @Test("Resolve pending stops returns empty (Stop is immediate)")
