@@ -36,6 +36,9 @@ struct ReducerTests {
         for link in links {
             state.links[link.id] = link
         }
+        // Populate the derived `cards` cache so reducers that read from it
+        // (e.g. `.reorderCard`) don't crash on an empty snapshot.
+        state.rebuildCards()
         return state
     }
 
@@ -232,6 +235,7 @@ struct ReducerTests {
         var state = stateWith([first, second, third])
 
         let effects = Reducer.reduce(state: &state, action: .reorderCard(cardId: "card_3", targetCardId: "card_1", above: true))
+        state.rebuildCards() // Production path in BoardStore.dispatch runs this after reduce.
 
         #expect(state.cards(in: .backlog).map(\.id) == ["card_3", "card_1", "card_2"])
         #expect(state.links["card_3"]?.sortOrder == 0)

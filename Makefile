@@ -17,7 +17,7 @@ test:
 run:
 	swift run KanbanCode
 
-app: build
+app: build cli install-cli
 	@mkdir -p $(BUNDLE_DIR)/Contents/MacOS
 	@mkdir -p $(BUNDLE_DIR)/Contents/Resources
 	@cp $(BUILD_DIR)/KanbanCode $(BUNDLE_DIR)/Contents/MacOS/KanbanCode
@@ -48,6 +48,12 @@ app: build
 	@if [ -d $(BUILD_DIR)/KanbanCode_KanbanCode.bundle ]; then \
 		cp -R $(BUILD_DIR)/KanbanCode_KanbanCode.bundle $(BUNDLE_DIR)/Contents/Resources/; \
 	fi
+	@# Bundle the kanban CLI inside the app so it's always available
+	@rm -rf $(BUNDLE_DIR)/Contents/Resources/cli
+	@mkdir -p $(BUNDLE_DIR)/Contents/Resources/cli
+	@cp -R cli/dist $(BUNDLE_DIR)/Contents/Resources/cli/
+	@cp -R cli/node_modules $(BUNDLE_DIR)/Contents/Resources/cli/
+	@cp cli/package.json $(BUNDLE_DIR)/Contents/Resources/cli/
 	@# Code sign so macOS grants notification permissions and Web Inspector can attach
 	@codesign --force --sign "Apple Development" --entitlements KanbanCode.entitlements $(BUNDLE_DIR)
 	@# Register with Launch Services so macOS picks up the icon

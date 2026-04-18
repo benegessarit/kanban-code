@@ -14,6 +14,7 @@ public enum DependencyChecker {
         public let ghAuthenticated: Bool
         public let tmuxAvailable: Bool
         public let mutagenAvailable: Bool
+        public let kanbanCliAvailable: Bool
 
         /// Per-assistant hook installation status.
         public let assistantHooks: [CodingAssistant: Bool]
@@ -25,7 +26,8 @@ public enum DependencyChecker {
             pandocAvailable: Bool,
             wkhtmltoimageAvailable: Bool, pushoverConfigured: Bool,
             ghAvailable: Bool, ghAuthenticated: Bool = false,
-            tmuxAvailable: Bool, mutagenAvailable: Bool
+            tmuxAvailable: Bool, mutagenAvailable: Bool,
+            kanbanCliAvailable: Bool = false
         ) {
             self.claudeAvailable = claudeAvailable
             self.geminiAvailable = geminiAvailable
@@ -37,6 +39,7 @@ public enum DependencyChecker {
             self.ghAuthenticated = ghAuthenticated
             self.tmuxAvailable = tmuxAvailable
             self.mutagenAvailable = mutagenAvailable
+            self.kanbanCliAvailable = kanbanCliAvailable
             self.assistantHooks = assistantHooks.isEmpty
                 ? [.claude: hooksInstalled]
                 : assistantHooks
@@ -53,6 +56,7 @@ public enum DependencyChecker {
         async let ghAuth = checkGhAuth()
         async let tmux = ShellCommand.isAvailable("tmux")
         async let mutagen = ShellCommand.isAvailable("mutagen")
+        async let kanbanCli = ShellCommand.isAvailable("kanban")
 
         // Check hooks for all assistants
         var hooks: [CodingAssistant: Bool] = [:]
@@ -80,7 +84,8 @@ public enum DependencyChecker {
             ghAvailable: gh,
             ghAuthenticated: ghAuth,
             tmuxAvailable: tmux,
-            mutagenAvailable: mutagen
+            mutagenAvailable: mutagen,
+            kanbanCliAvailable: kanbanCli
         )
     }
 

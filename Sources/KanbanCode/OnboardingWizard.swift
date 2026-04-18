@@ -382,6 +382,22 @@ struct OnboardingWizard: View {
                     }
                     .padding(.leading, 24)
                 }
+                statusCheckRow("kanban CLI on PATH", done: status?.kanbanCliAvailable ?? false)
+                if !(status?.kanbanCliAvailable ?? false) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
+                        Text("Run")
+                            .font(.app(.caption))
+                            .foregroundStyle(.secondary)
+                        Text("make install-cli")
+                            .font(.app(.caption, design: .monospaced))
+                        Text("in the repo to enable /channel commands from any tmux session.")
+                            .font(.app(.caption))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.leading, 24)
+                }
             }
 
             if let command = brewInstallCommand {

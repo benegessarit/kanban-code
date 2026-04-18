@@ -173,6 +173,31 @@ struct ChatView: View {
                 dismissedBusy = false
             }
         }
+        .environment(\.openURL, OpenURLAction { url in
+            // File paths: URL(string:) mangles paths with +, spaces, etc.
+            // Detect file:// or bare absolute paths and open via fileURLWithPath.
+            if url.scheme == "file" {
+                let path = url.path
+                if FileManager.default.fileExists(atPath: path) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                    return .handled
+                }
+            }
+            // Bare absolute paths that ended up as URL fragments or opaque strings
+            let str = url.absoluteString
+            if str.hasPrefix("/") || str.hasPrefix("file:///") {
+                let path = str.hasPrefix("file:///")
+                    ? String(str.dropFirst("file://".count))
+                    : str
+                let decoded = path.removingPercentEncoding ?? path
+                if FileManager.default.fileExists(atPath: decoded) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: decoded))
+                    return .handled
+                }
+            }
+            // Regular URLs — let the system handle
+            return .systemAction
+        })
     }
 
 }

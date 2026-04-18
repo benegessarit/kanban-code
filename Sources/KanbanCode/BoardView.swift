@@ -4,6 +4,12 @@ import KanbanCodeCore
 struct BoardView: View {
     var store: BoardStore
     @State private var dragState = DragState()
+    var onOpenChannel: (String) -> Void = { _ in }
+    var onNewChannel: () -> Void = {}
+    var onDeleteChannel: (String) -> Void = { _ in }
+    var onRenameChannel: (String) -> Void = { _ in }
+    var unreadCountForChannel: (Channel) -> Int = { _ in 0 }
+    var onlineCountForChannel: (Channel) -> Int = { _ in 0 }
     var onStartCard: (String) -> Void = { _ in }
     var onResumeCard: (String) -> Void = { _ in }
     var onForkCard: (String, Bool) -> Void = { _, _ in }
@@ -31,10 +37,55 @@ struct BoardView: View {
         boardContent
     }
 
+    @ViewBuilder
+    private var channelsPseudoColumn: some View {
+        let channels = store.state.channels
+        if !channels.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                // Subtle header so the column reads as "Channels" without competing with real columns.
+                HStack(spacing: 6) {
+                    Text("Channels")
+                        .font(.app(.caption, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .textCase(.uppercase)
+                    Spacer(minLength: 0)
+                    Button(action: onNewChannel) {
+                        Image(systemName: "plus")
+                            .font(.app(.caption))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("New chat channel")
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 2)
+
+                ForEach(channels) { ch in
+                    let msgs = store.state.channelMessages[ch.name]
+                    let last = msgs?.last
+                    ChannelTile(
+                        channel: ch,
+                        onlineCount: onlineCountForChannel(ch),
+                        lastMessageAt: last?.ts,
+                        lastMessageBody: last?.body,
+                        isSelected: store.state.selectedChannelName == ch.name,
+                        unreadCount: unreadCountForChannel(ch),
+                        onOpen: { onOpenChannel(ch.name) },
+                        onDelete: { onDeleteChannel(ch.name) },
+                        onRename: { onRenameChannel(ch.name) }
+                    )
+                }
+            }
+            .padding(.horizontal, 6)
+            .frame(width: 240, alignment: .top)
+        }
+    }
+
     private var boardContent: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: true) {
                 HStack(alignment: .top, spacing: 6) {
+                    channelsPseudoColumn
                     ForEach(store.state.visibleColumns, id: \.self) { column in
                         DroppableColumnView(
                             column: column,

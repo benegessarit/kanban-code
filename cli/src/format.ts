@@ -79,16 +79,32 @@ function formatCardLine(card: CardSummary): string {
     if (t.context.used > 0) meta.push(`${fmtTokens(t.context.used)}/${fmtTokens(t.context.max)} ctx (${t.context.percentage})`);
   }
   if (card.isRemote) meta.push("remote");
-  if (card.lastMessage) {
-    meta.push(`last: "${card.lastMessage.slice(0, 60)}..."`);
-  }
 
   if (meta.length) {
     parts.push(`    ${meta.join(" | ")}`);
   }
 
-  // Card ID (dimmed)
+  // Card ID
   parts.push(`    ${card.id}`);
+
+  // Block content (last message, peek) — rendered below the card, indented,
+  // with blank line separators to make cards easy to scan.
+  const hasBlock = card.lastMessage || card.peek;
+  if (card.lastMessage) {
+    parts.push("");
+    parts.push(`    Last message:`);
+    for (const line of card.lastMessage.split("\n").slice(0, 10)) {
+      parts.push(`      ${line}`);
+    }
+  }
+  if (card.peek) {
+    parts.push("");
+    parts.push(`    Pane peek:`);
+    for (const line of card.peek.split("\n")) {
+      parts.push(`      ${line}`);
+    }
+  }
+  if (hasBlock) parts.push("");
 
   return parts.join("\n");
 }

@@ -112,6 +112,9 @@ struct CardActionsMenu: View {
                     Button("Open on GitHub") { NSWorkspace.shared.open(url) }
                 }
                 Button("Copy PR Number") { copyToClipboard("#\(String(pr.number))") }
+                if let url = pr.url {
+                    Button("Copy PR Link") { copyToClipboard(url) }
+                }
                 if let onUnlink {
                     Button("Unlink PR") { onUnlink(.pr(number: pr.number)) }
                 }
@@ -125,6 +128,9 @@ struct CardActionsMenu: View {
                     Button("Open on GitHub") { NSWorkspace.shared.open(url) }
                 }
                 Button("Copy Issue Number") { copyToClipboard("#\(String(issue.number))") }
+                if let issueURL = issue.url ?? githubBaseURL.map({ GitRemoteResolver.issueURL(base: $0, number: issue.number) }) {
+                    Button("Copy Issue Link") { copyToClipboard(issueURL) }
+                }
                 if let onUnlink {
                     Button("Unlink Issue") { onUnlink(.issue) }
                 }

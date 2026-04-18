@@ -181,6 +181,7 @@ export interface CardSummary {
   prs: { number: number; status?: PRStatus; url?: string }[];
   lastActivity?: string;
   lastMessage?: string;
+  peek?: string;
   queuedPrompts: number;
   isRemote: boolean;
   tokens?: {

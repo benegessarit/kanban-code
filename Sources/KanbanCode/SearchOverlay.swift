@@ -9,6 +9,15 @@ struct SearchOverlay: View {
     var onResumeCard: (KanbanCodeCard) -> Void = { _ in }
     var onForkCard: (KanbanCodeCard) -> Void = { _ in }
     var onCheckpointCard: (KanbanCodeCard) -> Void = { _ in }
+    var channels: [Channel] = []
+    /// Map from channel name → last-opened timestamp (bumped on drawer selection).
+    /// Sorted alongside `card.link.lastOpenedAt` so the palette orders both by
+    /// recency-of-attention.
+    var channelLastOpened: [String: Date] = [:]
+    /// Map from channel name → last message timestamp. Used only for the
+    /// "3m ago" subtitle on the channel row.
+    var channelLastActivity: [String: Date] = [:]
+    var onSelectChannel: (String) -> Void = { _ in }
 
     // Command palette actions
     var commands: [CommandItem] = []
@@ -101,9 +110,12 @@ struct SearchOverlay: View {
             }
         }
         if initialQuery.isEmpty {
-            let sorted = recentSortedCards
-            if sorted.count >= 2 {
-                selectedId = sorted[1].id
+            // Second item = "the thing before what's currently open" — Enter jumps back.
+            let merged = mergedRecent
+            if merged.count >= 2 {
+                selectedId = merged[1].id
+            } else {
+                selectedId = merged.first?.id
             }
         }
     }
@@ -123,11 +135,11 @@ struct SearchOverlay: View {
             selectedId = filteredCommands.first?.id
         } else if !newValue.isEmpty {
             filteredCards = computeFilteredCards(query: newValue)
-            selectedId = filteredCards.first?.id
+            selectedId = filteredRecentItems.first?.id
         } else {
             filteredCards = []
-            let sorted = recentSortedCards
-            selectedId = sorted.count >= 2 ? sorted[1].id : sorted.first?.id
+            let merged = mergedRecent
+            selectedId = merged.count >= 2 ? merged[1].id : merged.first?.id
         }
     }
 
@@ -150,6 +162,38 @@ struct SearchOverlay: View {
             let t1 = $1.link.lastOpenedAt ?? $1.link.lastActivity ?? $1.link.updatedAt
             return t0 > t1
         }
+    }
+
+    /// Single merged list of channels + cards, sorted by recency-of-attention
+    /// (last opened) so Cmd+K → Enter returns the user to whatever drawer they
+    /// were last in, regardless of whether that was a chat or a card.
+    enum RecentItem: Identifiable {
+        case channel(Channel, opened: Date?, lastActivity: Date?)
+        case card(KanbanCodeCard)
+
+        var id: String {
+            switch self {
+            case .channel(let ch, _, _): return "channel:\(ch.name)"
+            case .card(let c): return c.id
+            }
+        }
+
+        var sortKey: Date {
+            switch self {
+            case .channel(_, let opened, let activity):
+                return opened ?? activity ?? .distantPast
+            case .card(let c):
+                return c.link.lastOpenedAt ?? c.link.lastActivity ?? c.link.updatedAt
+            }
+        }
+    }
+
+    private var mergedRecent: [RecentItem] {
+        let cardItems = snapshotCards.map(RecentItem.card)
+        let channelItems = channels.map {
+            RecentItem.channel($0, opened: channelLastOpened[$0.name], lastActivity: channelLastActivity[$0.name])
+        }
+        return (cardItems + channelItems).sorted { $0.sortKey > $1.sortKey }
     }
 
     private var queryTerms: [String] {
@@ -203,12 +247,24 @@ struct SearchOverlay: View {
         if isCommandMode {
             return filteredCommands.map(\.id)
         } else if query.isEmpty {
-            return Array(recentSortedCards.prefix(20)).map(\.id)
+            return Array(mergedRecent.prefix(24)).map(\.id)
         } else if !searchResults.isEmpty {
             return searchResults.map(\.id)
         } else {
-            return filteredCards.map(\.id)
+            // Merge matching channels into the filtered-card order by recency
+            // so arrow-key nav feels identical whether a channel or card is below.
+            return filteredRecentItems.map(\.id)
         }
+    }
+
+    /// When the user types a query, match against channel names + card fields and
+    /// interleave both in a single recency-ordered list.
+    private var filteredRecentItems: [RecentItem] {
+        let channelMatches = matchedChannelsForQuery.map {
+            RecentItem.channel($0, opened: channelLastOpened[$0.name], lastActivity: channelLastActivity[$0.name])
+        }
+        let cardMatches = filteredCards.map(RecentItem.card)
+        return (channelMatches + cardMatches).sorted { $0.sortKey > $1.sortKey }
     }
 
     private func moveSelection(by offset: Int) {
@@ -231,14 +287,17 @@ struct SearchOverlay: View {
     private func selectCurrentItem() {
         guard let currentId = selectedId else { return }
 
+        // Channels share the "channel:<name>" id scheme everywhere.
+        if currentId.hasPrefix("channel:") {
+            let name = String(currentId.dropFirst("channel:".count))
+            onSelectChannel(name)
+            isPresented = false
+            return
+        }
+
         if isCommandMode {
             if let cmd = filteredCommands.first(where: { $0.id == currentId }) {
                 cmd.action()
-                isPresented = false
-            }
-        } else if query.isEmpty {
-            if let card = recentSortedCards.prefix(20).first(where: { $0.id == currentId }) {
-                onSelectCard(card)
                 isPresented = false
             }
         } else if !searchResults.isEmpty {
@@ -247,14 +306,12 @@ struct SearchOverlay: View {
                 onSelectCard(card)
                 isPresented = false
             }
-        } else {
-            if let card = filteredCards.first(where: { $0.id == currentId }) {
-                onSelectCard(card)
-                isPresented = false
-            } else {
-                // No match — trigger deep search
-                Task { await deepSearch() }
-            }
+        } else if let card = snapshotCards.first(where: { $0.id == currentId }) {
+            onSelectCard(card)
+            isPresented = false
+        } else if !query.isEmpty {
+            // No match — trigger deep search
+            Task { await deepSearch() }
         }
     }
 
@@ -266,16 +323,32 @@ struct SearchOverlay: View {
                 .padding(.horizontal, 8)
                 .padding(.top, 4)
 
-            ForEach(Array(recentSortedCards.prefix(20))) { card in
-                let cardId = card.id
-                SearchCardRow(card: card, queryTerms: [], isHighlighted: cardId == selectedId)
-                    .id(cardId)
-                    .onTapGesture {
-                        onSelectCard(card)
-                        isPresented = false
-                    }
-                    .contextMenu { searchCardContextMenu(for: card) }
+            ForEach(Array(mergedRecent.prefix(24))) { item in
+                mergedItemRow(item, queryTerms: [])
             }
+        }
+    }
+
+    @ViewBuilder
+    private func mergedItemRow(_ item: RecentItem, queryTerms: [String]) -> some View {
+        switch item {
+        case .channel(let ch, _, let lastActivity):
+            let id = "channel:\(ch.name)"
+            ChannelSearchRow(channel: ch, lastActivity: lastActivity, isHighlighted: id == selectedId)
+                .id(id)
+                .onTapGesture {
+                    onSelectChannel(ch.name)
+                    isPresented = false
+                }
+        case .card(let card):
+            let cardId = card.id
+            SearchCardRow(card: card, queryTerms: queryTerms, isHighlighted: cardId == selectedId)
+                .id(cardId)
+                .onTapGesture {
+                    onSelectCard(card)
+                    isPresented = false
+                }
+                .contextMenu { searchCardContextMenu(for: card) }
         }
     }
 
@@ -308,7 +381,8 @@ struct SearchOverlay: View {
 
     private var filteredCardsView: some View {
         Group {
-            if filteredCards.isEmpty {
+            let merged = filteredRecentItems
+            if merged.isEmpty {
                 VStack(spacing: 8) {
                     Text("No matches")
                         .foregroundStyle(.secondary)
@@ -319,18 +393,18 @@ struct SearchOverlay: View {
                 .frame(maxWidth: .infinity)
                 .padding(.top, 20)
             } else {
-                ForEach(filteredCards) { card in
-                    let cardId = card.id
-                    SearchCardRow(card: card, queryTerms: queryTerms, isHighlighted: cardId == selectedId)
-                        .id(cardId)
-                        .onTapGesture {
-                            onSelectCard(card)
-                            isPresented = false
-                        }
-                        .contextMenu { searchCardContextMenu(for: card) }
+                ForEach(merged) { item in
+                    mergedItemRow(item, queryTerms: queryTerms)
                 }
             }
         }
+    }
+
+    private var matchedChannelsForQuery: [Channel] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+            .replacingOccurrences(of: "#", with: "")
+        guard !q.isEmpty else { return [] }
+        return channels.filter { $0.name.contains(q) }
     }
 
     private func computeFilteredCards(query: String) -> [KanbanCodeCard] {
@@ -707,5 +781,59 @@ struct HighlightedText: View {
             }
         }
         return attr
+    }
+}
+
+struct ChannelSearchRow: View {
+    let channel: Channel
+    var lastActivity: Date? = nil
+    let isHighlighted: Bool
+
+    private var relativeTime: String? {
+        guard let ts = lastActivity else { return nil }
+        let secs = Date().timeIntervalSince(ts)
+        switch secs {
+        case ..<60: return "just now"
+        case ..<3600: return "\(Int(secs / 60))m ago"
+        case ..<86400: return "\(Int(secs / 3600))h ago"
+        default: return "\(Int(secs / 86400))d ago"
+        }
+    }
+
+    // Mirrors `SearchCardRow`: two-line layout, title on top, metadata
+    // (icon + member count + time) on a secondary line.
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("#\(channel.name)")
+                    .font(.app(.body))
+                    .lineLimit(1)
+
+                HStack(spacing: 6) {
+                    Image(systemName: "number")
+                        .font(.app(.caption))
+                        .foregroundStyle(.secondary)
+                        .opacity(0.6)
+
+                    Text("\(channel.members.count) member\(channel.members.count == 1 ? "" : "s")")
+                        .font(.app(.caption))
+                        .foregroundStyle(.secondary)
+
+                    if let rel = relativeTime {
+                        Text(rel)
+                            .font(.app(.caption))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .background(
+            isHighlighted ? Color.accentColor.opacity(0.1) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 6)
+        )
     }
 }

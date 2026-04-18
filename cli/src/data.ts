@@ -77,13 +77,76 @@ export function listTmuxSessions(): TmuxSession[] {
   }
 }
 
-export function captureTmuxPane(sessionName: string): string {
+/// Capture tmux pane output.
+/// scrollback: 0 = visible pane only, N > 0 = include N lines of scrollback history,
+/// "all" = entire scrollback buffer.
+export function captureTmuxPane(
+  sessionName: string,
+  scrollback: number | "all" = 0
+): string {
   const tmux = findTmux();
+  const startFlag =
+    scrollback === "all"
+      ? "-S -"
+      : scrollback > 0
+        ? `-S -${scrollback}`
+        : "";
   try {
     return execSync(
-      `${tmux} capture-pane -t ${shellEscape(sessionName)} -p -S -50 2>/dev/null`,
+      `${tmux} capture-pane -t ${shellEscape(sessionName)} -p ${startFlag} 2>/dev/null`,
       { encoding: "utf-8" }
     );
+  } catch {
+    return "";
+  }
+}
+
+/// Capture a short, content-rich peek at a card's session.
+/// Skips Claude Code's UI chrome (input box, spinner, status line) and returns
+/// the last N lines of actual content above it. Returns empty string if not a
+/// Claude Code session or no useful content found.
+export function peekTmuxPane(
+  sessionName: string,
+  contentLines: number = 15
+): string {
+  const tmux = findTmux();
+  try {
+    // Capture enough to skip chrome and have content left
+    const raw = execSync(
+      `${tmux} capture-pane -t ${shellEscape(sessionName)} -p -S -${contentLines + 20} 2>/dev/null`,
+      { encoding: "utf-8" }
+    );
+    const lines = raw.split("\n");
+
+    // Find the Claude Code input box (line of ─ characters containing the branch
+    // pill) — that's where content ends and chrome begins. If not present,
+    // assume this is a shell and return the last N non-empty lines.
+    let inputBoxIdx = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      // The input box borders are made of ─ (U+2500)
+      if (line.includes("─") && line.length > 40) {
+        inputBoxIdx = i;
+        break;
+      }
+    }
+
+    let content: string[];
+    if (inputBoxIdx > 0) {
+      // Claude Code: take lines above the input box
+      content = lines.slice(0, inputBoxIdx);
+    } else {
+      // Shell or unknown: take everything
+      content = lines;
+    }
+
+    // Trim trailing blanks
+    while (content.length && content[content.length - 1].trim() === "") {
+      content.pop();
+    }
+
+    // Keep only the last N content lines
+    return content.slice(-contentLines).join("\n");
   } catch {
     return "";
   }

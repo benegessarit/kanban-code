@@ -2,13 +2,14 @@
 import { Command } from "commander";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import {
   readLinks,
   readSettings,
   listTmuxSessions,
   captureTmuxPane,
+  peekTmuxPane,
   sendTmuxKeys,
   pasteTmuxPrompt,
   sendTmuxEscape,
@@ -26,7 +27,30 @@ import {
   formatCardDetail,
   formatTmuxSessions,
 } from "./format.js";
-import type { KanbanColumn } from "./types.js";
+import type { KanbanColumn, Link } from "./types.js";
+import {
+  createChannel,
+  deleteChannel,
+  renameChannel,
+  getChannel,
+  joinChannel,
+  leaveChannel,
+  listChannels,
+  normalizeChannelName,
+  readMessages,
+  readTail,
+  readDirectMessages,
+  statChannel,
+} from "./channels.js";
+import {
+  cardForTmuxSession,
+  currentTmuxSessionName,
+  formatChannelBroadcast,
+  formatDirectMessage,
+  sendAndFanOut,
+  sendDirectMessage,
+} from "./broadcast.js";
+import { deriveHandle, formatHandle, stripAt } from "./handles.js";
 
 const program = new Command();
 
@@ -78,7 +102,8 @@ program
   .option("-c, --column <column>", "Filter by column (in_progress, requires_attention, in_review, done, backlog)")
   .option("-p, --project <path>", "Filter by project path")
   .option("-a, --all", "Include all_sessions (hidden by default)")
-  .option("--with-last-message", "Include last transcript message (slower)")
+  .option("--with-last-message", "Include last transcript message")
+  .option("--with-capture-peek", "Include a short peek at each card's tmux pane")
   .option("-j, --json", "Output as JSON")
   .action((opts) => {
     let links = readLinks();
@@ -119,6 +144,14 @@ program
       if (opts.withLastMessage && l.sessionLink?.sessionPath) {
         const turns = readLastTranscriptTurns(l.sessionLink.sessionPath, 1);
         if (turns.length) s.lastMessage = turns[turns.length - 1].text;
+      }
+      if (
+        opts.withCapturePeek &&
+        l.tmuxLink?.sessionName &&
+        liveTmux.has(l.tmuxLink.sessionName)
+      ) {
+        const peek = peekTmuxPane(l.tmuxLink.sessionName, 15);
+        if (peek.trim()) s.peek = peek;
       }
       return s;
     });
@@ -205,8 +238,9 @@ program
 
 program
   .command("capture")
-  .description("Capture current terminal output for a card")
+  .description("Capture a card's tmux pane — visible screen by default")
   .argument("<card>", "Card ID, ID prefix, or name search")
+  .option("-s, --scrollback <lines>", "Include N lines of scrollback history, or 'all'")
   .option("-j, --json", "Output as JSON")
   .action((cardQuery: string, opts) => {
     const links = readLinks();
@@ -220,7 +254,14 @@ program
       process.exit(1);
     }
 
-    const pane = captureTmuxPane(card.tmuxLink.sessionName);
+    const scrollback: number | "all" =
+      opts.scrollback === "all"
+        ? "all"
+        : opts.scrollback
+          ? parseInt(opts.scrollback, 10)
+          : 0;
+
+    const pane = captureTmuxPane(card.tmuxLink.sessionName, scrollback);
 
     if (opts.json) {
       output(
@@ -454,35 +495,515 @@ program
     }
   });
 
+// ── kanban channel ... ──────────────────────────────────────────────
+
+/**
+ * Resolve the caller's card + handle via $TMUX autodetect, or a --as override,
+ * or --as-user. Returns { cardId, handle }. cardId=null represents the user.
+ */
+function humanHandle(): string {
+  try {
+    const u = userInfo().username;
+    const slug = u.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    return slug || "user";
+  } catch {
+    return "user";
+  }
+}
+
+function resolveCaller(
+  opts: { as?: string; asUser?: boolean; asCardId?: string },
+  channelName: string | undefined
+): { cardId: string | null; handle: string } {
+  if (opts.asUser) return { cardId: null, handle: humanHandle() };
+  const links = readLinks();
+  if (opts.as) {
+    const handle = stripAt(opts.as);
+    // Explicit cardId override wins.
+    if (opts.asCardId) {
+      return { cardId: opts.asCardId, handle };
+    }
+    // Prefer a live card whose handle matches in the target channel.
+    if (channelName) {
+      const ch = getChannel(channelName);
+      const m = ch?.members.find((x) => x.handle === handle);
+      if (m) return { cardId: m.cardId, handle };
+    }
+    // Fallback: no specific card, just the chosen handle.
+    return { cardId: null, handle };
+  }
+  const session = currentTmuxSessionName();
+  if (!session) {
+    throw new Error(
+      "Could not detect your tmux session. Run inside tmux or pass --as <handle> / --as-user."
+    );
+  }
+  const card = cardForTmuxSession(links, session);
+  if (!card) {
+    throw new Error(
+      `Tmux session "${session}" is not linked to any kanban card. Pass --as <handle> or --as-user.`
+    );
+  }
+  // Handle: prefer the already-registered handle for this channel, else derive.
+  if (channelName) {
+    const ch = getChannel(channelName);
+    const m = ch?.members.find((x) => x.cardId === card.id);
+    if (m) return { cardId: card.id, handle: m.handle };
+    const taken = new Set((ch?.members ?? []).map((x) => x.handle));
+    const handle = deriveHandle(card.name ?? card.id, taken);
+    return { cardId: card.id, handle };
+  }
+  // No channel context — generate handle from display name alone.
+  const handle = deriveHandle(card.name ?? card.id, new Set());
+  return { cardId: card.id, handle };
+}
+
+function relativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  const now = Date.now();
+  const secs = Math.max(1, Math.round((now - then) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  return `${days}d ago`;
+}
+
+function liveTmuxSet(): Set<string> {
+  try {
+    return new Set(listTmuxSessions().map((s) => s.name));
+  } catch {
+    return new Set();
+  }
+}
+
+const channelCmd = program.command("channel").description("Chat channels for multi-agent coordination");
+
+channelCmd
+  .command("list")
+  .description("List all channels with member count and last activity")
+  .option("-j, --json", "Output as JSON")
+  .action((opts) => {
+    const channels = listChannels();
+    const live = liveTmuxSet();
+    const links = readLinks();
+    const rows = channels.map((ch) => {
+      const st = statChannel(ch.name);
+      const onlineCount = ch.members.filter((m) => {
+        if (m.cardId === null) return true;
+        const link = links.find((l) => l.id === m.cardId);
+        return link?.tmuxLink?.sessionName && live.has(link.tmuxLink.sessionName);
+      }).length;
+      return {
+        name: ch.name,
+        members: ch.members.length,
+        online: onlineCount,
+        lastMessageAt: st?.lastMessageAt,
+        lastMessagePreview: st?.lastMessage?.body?.slice(0, 80),
+      };
+    });
+    if (opts.json) {
+      output(rows, { json: true });
+      return;
+    }
+    if (rows.length === 0) {
+      console.log("No channels yet. Create one: kanban channel create <name>");
+      return;
+    }
+    for (const r of rows) {
+      const ago = r.lastMessageAt ? relativeTime(r.lastMessageAt) : "—";
+      console.log(`#${r.name.padEnd(20)} ${r.online}/${r.members} online  ${ago.padEnd(10)} ${r.lastMessagePreview ?? ""}`);
+    }
+  });
+
+channelCmd
+  .command("create")
+  .description("Create a new channel")
+  .argument("<name>", "Channel name (letters, digits, _ -)")
+  .option("--as <handle>", "Act as this handle")
+    .option("--as-card-id <id>", "Explicit card id for the --as handle (testing + overrides)")
+  .option("--as-user", "Act as the human user")
+  .option("-j, --json", "Output as JSON")
+  .action((name: string, opts) => {
+    try {
+      const clean = normalizeChannelName(name);
+      const caller = resolveCaller(opts, undefined);
+      const ch = createChannel(clean, { createdBy: caller });
+      // Auto-join the creator.
+      joinChannel(clean, caller);
+      if (opts.json) {
+        output({ channel: ch, joined: caller }, { json: true });
+      } else {
+        console.log(`Created #${clean} (joined as ${formatHandle(caller.handle)})`);
+      }
+    } catch (e) {
+      console.error(String(e instanceof Error ? e.message : e));
+      process.exit(1);
+    }
+  });
+
+channelCmd
+  .command("join")
+  .description("Join a channel")
+  .argument("<name>", "Channel name")
+  .option("--as <handle>", "Act as this handle")
+    .option("--as-card-id <id>", "Explicit card id for the --as handle (testing + overrides)")
+  .option("--as-user", "Act as the human user")
+  .option("-n, --tail <N>", "Print the last N messages as catch-up", "10")
+  .option("-j, --json", "Output as JSON")
+  .action((name: string, opts) => {
+    try {
+      const clean = normalizeChannelName(name);
+      const ch = getChannel(clean);
+      if (!ch) {
+        console.error(`Channel "#${clean}" does not exist`);
+        process.exit(1);
+      }
+      const caller = resolveCaller(opts, clean);
+      const { alreadyMember, channel } = joinChannel(clean, caller);
+      const tailN = parseInt(String(opts.tail ?? "10"), 10);
+      const tail = readTail(clean, isNaN(tailN) ? 10 : tailN);
+      if (opts.json) {
+        output({ alreadyMember, channel, tail }, { json: true });
+        return;
+      }
+      if (alreadyMember) {
+        console.log(`Already a member of #${clean} as ${formatHandle(caller.handle)}`);
+      } else {
+        console.log(`Joined #${clean} as ${formatHandle(caller.handle)}`);
+      }
+      if (tail.length > 0) {
+        console.log(`\nRecent (${tail.length}):`);
+        for (const m of tail) {
+          console.log(`  ${formatHandle(m.from.handle)}: ${m.body}`);
+        }
+      }
+    } catch (e) {
+      console.error(String(e instanceof Error ? e.message : e));
+      process.exit(1);
+    }
+  });
+
+channelCmd
+  .command("leave")
+  .description("Leave a channel")
+  .argument("<name>", "Channel name")
+  .option("--as <handle>", "Act as this handle")
+    .option("--as-card-id <id>", "Explicit card id for the --as handle (testing + overrides)")
+  .option("--as-user", "Act as the human user")
+  .option("-j, --json", "Output as JSON")
+  .action((name: string, opts) => {
+    try {
+      const clean = normalizeChannelName(name);
+      const caller = resolveCaller(opts, clean);
+      const ch = leaveChannel(clean, { cardId: caller.cardId, handle: caller.handle });
+      if (!ch) {
+        console.error(`Channel "#${clean}" does not exist`);
+        process.exit(1);
+      }
+      if (opts.json) {
+        output({ channel: ch }, { json: true });
+      } else {
+        console.log(`Left #${clean}`);
+      }
+    } catch (e) {
+      console.error(String(e instanceof Error ? e.message : e));
+      process.exit(1);
+    }
+  });
+
+channelCmd
+  .command("members")
+  .description("List members of a channel with online status")
+  .argument("<name>", "Channel name")
+  .option("-j, --json", "Output as JSON")
+  .action((name: string, opts) => {
+    const clean = normalizeChannelName(name);
+    const ch = getChannel(clean);
+    if (!ch) {
+      console.error(`Channel "#${clean}" does not exist`);
+      process.exit(1);
+    }
+    const live = liveTmuxSet();
+    const links = readLinks();
+    const rows = ch.members.map((m) => {
+      let online = false;
+      if (m.cardId === null) online = true;
+      else {
+        const link = links.find((l) => l.id === m.cardId);
+        const s = link?.tmuxLink?.sessionName;
+        online = !!(s && live.has(s));
+      }
+      return { handle: m.handle, cardId: m.cardId, online, joinedAt: m.joinedAt };
+    });
+    if (opts.json) {
+      output(rows, { json: true });
+      return;
+    }
+    console.log(`#${clean} — ${rows.length} member(s)`);
+    for (const r of rows) {
+      const dot = r.online ? "●" : "○";
+      console.log(`  ${dot} ${formatHandle(r.handle).padEnd(24)} ${r.cardId ?? "(user)"}`);
+    }
+  });
+
+channelCmd
+  .command("send")
+  .description("Send a message to a channel (broadcasts to all members)")
+  .argument("<name>", "Channel name")
+  .argument("<message...>", "Message body (joined with spaces)")
+  .option("--as <handle>", "Act as this handle")
+    .option("--as-card-id <id>", "Explicit card id for the --as handle (testing + overrides)")
+  .option("--as-user", "Act as the human user")
+  .option("--no-fanout", "Write to log but do not tmux-broadcast")
+  .option(
+    "--image <path>",
+    "Attach an image (repeat to attach multiple)",
+    (v: string, acc: string[]) => (acc ? [...acc, v] : [v]),
+    [] as string[]
+  )
+  .option("-j, --json", "Output as JSON")
+  .action((name: string, message: string[], opts) => {
+    try {
+      const clean = normalizeChannelName(name);
+      const ch = getChannel(clean);
+      if (!ch) {
+        console.error(`Channel "#${clean}" does not exist`);
+        process.exit(1);
+      }
+      const caller = resolveCaller(opts, clean);
+      // Auto-join on first send so we stay consistent.
+      joinChannel(clean, caller);
+      const links = readLinks();
+      const body = message.join(" ");
+      const live = liveTmuxSet();
+      const imagePaths: string[] = Array.isArray(opts.image) ? opts.image : [];
+      const { msg, result } = sendAndFanOut(
+        clean,
+        caller,
+        body,
+        links,
+        undefined,
+        {
+          sender: opts.fanout === false ? () => ({ ok: true }) : undefined,
+          liveSessionProbe: (s) => live.has(s),
+        },
+        imagePaths
+      );
+      if (opts.json) {
+        output({ msg, result }, { json: true });
+      } else {
+        console.log(`${formatHandle(caller.handle)} → #${clean}: ${body}`);
+        if (result.delivered.length > 0) {
+          console.log(`  delivered to: ${result.delivered.map((d) => formatHandle(d.handle)).join(", ")}`);
+        }
+        if (result.skippedOffline.length > 0) {
+          console.log(`  skipped: ${result.skippedOffline.map((d) => `${formatHandle(d.handle)} (${d.reason})`).join(", ")}`);
+        }
+      }
+    } catch (e) {
+      console.error(String(e instanceof Error ? e.message : e));
+      process.exit(1);
+    }
+  });
+
+channelCmd
+  .command("history")
+  .description("Show channel message history")
+  .argument("<name>", "Channel name")
+  .option("-n, --tail <N>", "Show last N messages (default all)", "50")
+  .option("-j, --json", "Output as JSON")
+  .action((name: string, opts) => {
+    const clean = normalizeChannelName(name);
+    const ch = getChannel(clean);
+    if (!ch) {
+      console.error(`Channel "#${clean}" does not exist`);
+      process.exit(1);
+    }
+    const n = parseInt(String(opts.tail ?? "50"), 10);
+    const msgs = isNaN(n) ? readMessages(clean) : readTail(clean, n);
+    if (opts.json) {
+      output(msgs, { json: true });
+      return;
+    }
+    for (const m of msgs) {
+      const ago = relativeTime(m.ts);
+      const tag = m.type === "message" ? "" : `[${m.type}] `;
+      console.log(`  ${ago.padEnd(10)} ${formatHandle(m.from.handle).padEnd(20)} ${tag}${m.body}`);
+    }
+  });
+
+channelCmd
+  .command("delete")
+  .description("Delete a channel (does not delete history file)")
+  .argument("<name>", "Channel name")
+  .option("-j, --json", "Output as JSON")
+  .action((name: string, opts) => {
+    const clean = normalizeChannelName(name);
+    const ok = deleteChannel(clean);
+    if (opts.json) {
+      output({ deleted: ok }, { json: true });
+      return;
+    }
+    if (ok) console.log(`Deleted #${clean}`);
+    else {
+      console.error(`Channel "#${clean}" does not exist`);
+      process.exit(1);
+    }
+  });
+
+channelCmd
+  .command("rename")
+  .description("Rename a channel. Moves the .jsonl log file to the new name.")
+  .argument("<old>", "Current channel name")
+  .argument("<new>", "New channel name")
+  .option("-j, --json", "Output as JSON")
+  .action((oldName: string, newName: string, opts) => {
+    try {
+      const ok = renameChannel(oldName, newName);
+      const oldClean = normalizeChannelName(oldName);
+      const newClean = normalizeChannelName(newName);
+      if (opts.json) {
+        output({ renamed: ok, from: oldClean, to: newClean }, { json: true });
+        return;
+      }
+      if (ok) console.log(`Renamed #${oldClean} → #${newClean}`);
+      else {
+        console.error(`Channel "#${oldClean}" does not exist`);
+        process.exit(1);
+      }
+    } catch (err) {
+      console.error(String((err as Error).message ?? err));
+      process.exit(1);
+    }
+  });
+
+// ── kanban dm ───────────────────────────────────────────────────────
+
+function findCardByHandle(handle: string): Link | undefined {
+  const want = stripAt(handle);
+  const channels = listChannels();
+  for (const ch of channels) {
+    const m = ch.members.find((x) => x.handle === want);
+    if (m && m.cardId) {
+      const l = readLinks().find((x) => x.id === m.cardId);
+      if (l) return l;
+    }
+  }
+  return undefined;
+}
+
+const dmCmd = program.command("dm").description("Send a direct message to another agent");
+
+dmCmd
+  .command("send", { isDefault: true })
+  .description("Send a DM (default action)")
+  .argument("<handle>", "Target handle (with or without @)")
+  .argument("<message...>", "Message body")
+  .option("--as <handle>", "Act as this handle")
+    .option("--as-card-id <id>", "Explicit card id for the --as handle (testing + overrides)")
+  .option("--as-user", "Act as the human user")
+  .option(
+    "--image <path>",
+    "Attach an image (repeat to attach multiple)",
+    (v: string, acc: string[]) => (acc ? [...acc, v] : [v]),
+    [] as string[]
+  )
+  .option("-j, --json", "Output as JSON")
+  .action((handle: string, message: string[], opts) => {
+    try {
+      const caller = resolveCaller(opts, undefined);
+      const target = findCardByHandle(handle);
+      if (!target) {
+        console.error(`Unknown handle "${handle}"`);
+        process.exit(1);
+      }
+      const body = message.join(" ");
+      const live = liveTmuxSet();
+      const links = readLinks();
+      const imagePaths: string[] = Array.isArray(opts.image) ? opts.image : [];
+      const { msg, delivered, error } = sendDirectMessage(
+        caller,
+        { cardId: target.id, handle: stripAt(handle) },
+        body,
+        links,
+        undefined,
+        { liveSessionProbe: (s) => live.has(s) },
+        imagePaths
+      );
+      if (opts.json) {
+        output({ msg, delivered, error }, { json: true });
+      } else {
+        const tag = delivered ? "delivered" : (error ?? "not delivered");
+        console.log(`${formatHandle(caller.handle)} → ${formatHandle(stripAt(handle))}: ${body} [${tag}]`);
+      }
+      if (!delivered) process.exit(2);
+    } catch (e) {
+      console.error(String(e instanceof Error ? e.message : e));
+      process.exit(1);
+    }
+  });
+
+dmCmd
+  .command("history")
+  .description("Show DM history with another handle")
+  .argument("<handle>", "Other party's handle")
+  .option("--as <handle>", "Act as this handle")
+    .option("--as-card-id <id>", "Explicit card id for the --as handle (testing + overrides)")
+  .option("--as-user", "Act as the human user")
+  .option("-j, --json", "Output as JSON")
+  .action((handle: string, opts) => {
+    try {
+      const caller = resolveCaller(opts, undefined);
+      const target = findCardByHandle(handle);
+      const other = target ? target.id : `@${stripAt(handle)}`;
+      const self = caller.cardId ?? `@${caller.handle}`;
+      const msgs = readDirectMessages(self, other);
+      if (opts.json) {
+        output(msgs, { json: true });
+        return;
+      }
+      for (const m of msgs) {
+        console.log(`  ${relativeTime(m.ts).padEnd(10)} ${formatHandle(m.from.handle)}: ${m.body}`);
+      }
+    } catch (e) {
+      console.error(String(e instanceof Error ? e.message : e));
+      process.exit(1);
+    }
+  });
+
 // ── Default: kanban [path] opens the app ─────────────────────────────
 
 // Handle the case where user runs `kanban .` or `kanban /some/path`
-// without a subcommand — this is the original bash script behavior
+// without a subcommand — this is the original bash script behavior.
 program
   .argument("[path]", "Project path to open (defaults to current directory)")
-  .action((path: string | undefined, _opts, cmd) => {
-    // Only trigger if no subcommand was matched
-    if (cmd.args.length === 0 && !path) {
+  .action((path: string | undefined) => {
+    if (!path) {
       // Bare `kanban` with no args — show help
       program.help();
       return;
     }
-    // If path looks like a directory, open it
-    if (path && !program.commands.some((c) => c.name() === path || c.aliases().includes(path))) {
-      const resolved = resolve(path);
-      if (existsSync(resolved)) {
-        const kanbanDir = join(homedir(), ".kanban-code");
-        mkdirSync(kanbanDir, { recursive: true });
-        writeFileSync(join(kanbanDir, "open-project"), resolved);
-        try {
-          execSync('open -a "KanbanCode"');
-        } catch {
-          console.error("Failed to open KanbanCode app");
-          process.exit(1);
-        }
-        return;
+    const resolved = resolve(path);
+    if (existsSync(resolved)) {
+      const kanbanDir = join(homedir(), ".kanban-code");
+      mkdirSync(kanbanDir, { recursive: true });
+      writeFileSync(join(kanbanDir, "open-project"), resolved);
+      try {
+        execSync('open -a "KanbanCode"');
+      } catch {
+        console.error("Failed to open KanbanCode app");
+        process.exit(1);
       }
+      return;
     }
+    // Not a folder and not a known command — help the user out
+    console.error(
+      `'${path}' is not a folder or known command. Did you mean to run a command?\n`
+    );
+    program.help({ error: true });
   });
 
 program.parse();

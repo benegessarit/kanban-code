@@ -289,10 +289,15 @@ final class BatchedTerminalView: LocalProcessTerminalView {
         case .leftMouseUp:
             if event.modifierFlags.contains(.command) {
                 let pos = screenPosition(from: event)
-                if let detected = detectURL(col: pos.col, screenRow: pos.screenRow),
-                   let url = URL(string: detected.url) {
+                if let detected = detectURL(col: pos.col, screenRow: pos.screenRow) {
                     clearURLHighlight()
-                    NSWorkspace.shared.open(url)
+                    let raw = detected.url
+                    // File paths: use URL(fileURLWithPath:) to handle +, spaces, etc.
+                    if raw.hasPrefix("/"), FileManager.default.fileExists(atPath: raw) {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: raw))
+                    } else if let url = URL(string: raw) {
+                        NSWorkspace.shared.open(url)
+                    }
                     return nil // consume the event
                 }
             }

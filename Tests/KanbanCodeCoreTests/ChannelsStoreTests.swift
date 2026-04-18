@@ -1,0 +1,107 @@
+import Testing
+import Foundation
+@testable import KanbanCodeCore
+
+@Suite("ChannelsStore")
+struct ChannelsStoreTests {
+    private func tmpBase() -> String {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kanban-channels-\(UUID().uuidString)")
+            .path
+        return base
+    }
+
+    @Test func createAndLoadChannel() async throws {
+        let base = tmpBase()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let store = ChannelsStore(baseDir: base)
+        let by = ChannelParticipant(cardId: nil, handle: "user")
+
+        let ch = try await store.createChannel(name: "general", by: by)
+        #expect(ch.name == "general")
+
+        let loaded = await store.loadChannels()
+        #expect(loaded.count == 1)
+        #expect(loaded[0].name == "general")
+    }
+
+    @Test func joinAppendsEvent() async throws {
+        let base = tmpBase()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let store = ChannelsStore(baseDir: base)
+        _ = try await store.createChannel(name: "general", by: ChannelParticipant(cardId: nil, handle: "user"))
+        let (_, already) = try await store.join(
+            channel: "general",
+            member: ChannelParticipant(cardId: "card_A", handle: "alice")
+        )
+        #expect(already == false)
+
+        let msgs = await store.loadMessages(channel: "general")
+        #expect(msgs.count == 1)
+        #expect(msgs[0].type == .join)
+        #expect(msgs[0].body.contains("@alice joined"))
+    }
+
+    @Test func sendAppendsMessageLine() async throws {
+        let base = tmpBase()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let store = ChannelsStore(baseDir: base)
+        _ = try await store.createChannel(name: "general", by: ChannelParticipant(cardId: nil, handle: "user"))
+        _ = try await store.send(
+            channel: "general",
+            from: ChannelParticipant(cardId: nil, handle: "user"),
+            body: "hello"
+        )
+        let msgs = await store.loadMessages(channel: "general")
+        #expect(msgs.count == 1)
+        #expect(msgs[0].body == "hello")
+        #expect(msgs[0].type == .message)
+    }
+
+    @Test func jsonlOnDiskInteroperatesWithCLIFormat() async throws {
+        // Write a file using the same format the TS CLI writes, then read it
+        // back through the Swift store and verify we parse it correctly.
+        let base = tmpBase()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let channelsDir = (base as NSString).appendingPathComponent("channels")
+        try FileManager.default.createDirectory(atPath: channelsDir, withIntermediateDirectories: true)
+
+        let channelsFile = (channelsDir as NSString).appendingPathComponent("channels.json")
+        let cliJson = """
+        {
+          "channels": [
+            {
+              "id": "ch_abc",
+              "name": "general",
+              "createdAt": "2026-04-18T15:00:00.000Z",
+              "createdBy": {"cardId": null, "handle": "user"},
+              "members": [
+                {"cardId": "card_A", "handle": "alice", "joinedAt": "2026-04-18T15:05:00.000Z"}
+              ]
+            }
+          ]
+        }
+        """
+        try cliJson.write(toFile: channelsFile, atomically: true, encoding: .utf8)
+
+        let logFile = (channelsDir as NSString).appendingPathComponent("general.jsonl")
+        let cliJsonl = """
+        {"id":"msg_1","ts":"2026-04-18T15:10:00.000Z","from":{"cardId":"card_A","handle":"alice"},"body":"hi","type":"message"}
+        {"id":"msg_2","ts":"2026-04-18T15:11:00.000Z","from":{"cardId":null,"handle":"user"},"body":"hi back"}
+        """
+        try cliJsonl.write(toFile: logFile, atomically: true, encoding: .utf8)
+
+        let store = ChannelsStore(baseDir: base)
+        let chs = await store.loadChannels()
+        #expect(chs.count == 1)
+        #expect(chs[0].name == "general")
+        #expect(chs[0].members.first?.handle == "alice")
+
+        let msgs = await store.loadMessages(channel: "general")
+        #expect(msgs.count == 2)
+        #expect(msgs[0].body == "hi")
+        #expect(msgs[1].body == "hi back")
+        // Second message has no type field — should default to .message
+        #expect(msgs[1].type == .message)
+    }
+}

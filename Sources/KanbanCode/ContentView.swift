@@ -48,10 +48,18 @@ struct LaunchConfig: Identifiable {
     }
 }
 
+/// Tiny Identifiable wrapper so `.sheet(item:)` can present the rename dialog
+/// keyed on the channel name.
+private struct RenameTarget: Identifiable, Equatable {
+    let name: String
+    var id: String { name }
+}
+
 struct ContentView: View {
     // Properties are internal (not private) to allow extensions in separate files
     @State var store: BoardStore
     @State var orchestrator: BackgroundOrchestrator
+    @State var channelsWatcher: ChannelsWatcher = ChannelsWatcher()
     @State var searchInitialQuery = ""
     @State var terminalHadFocusBeforeSearch = false
     @State var deepSearchTrigger = false
@@ -59,6 +67,8 @@ struct ContentView: View {
     @State var sidebarVisibility: NavigationSplitViewVisibility = .detailOnly
     @State var showNewTask = false
     @State var showOnboarding = false
+    @State var showCreateChannel = false
+    @State var renameChannelName: String? = nil
     @AppStorage("appearanceMode") var appearanceMode: AppearanceMode = .auto
     @AppStorage("boardViewMode") var boardViewModeRaw = BoardViewMode.kanban.rawValue
     @State var showProcessManager = false
@@ -147,8 +157,10 @@ struct ContentView: View {
 
     private var showInspector: Binding<Bool> {
         Binding(
-            get: { store.state.selectedCardId != nil },
-            set: { if !$0 { store.dispatch(.selectCard(cardId: nil)) } }
+            get: { store.state.openDrawer != .none },
+            set: { visible in
+                if !visible { store.dispatch(.closeDrawer) }
+            }
         )
     }
 
@@ -182,7 +194,8 @@ struct ContentView: View {
             setClipboardImage: { data in
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setData(data, forType: .png)
-            }
+            },
+            notifier: MacOSNotificationClient()
         )
 
         let boardStore = BoardStore(
@@ -293,6 +306,12 @@ struct ContentView: View {
     private var boardView: some View {
         BoardView(
             store: store,
+            onOpenChannel: { name in store.dispatch(.selectChannel(name: name)) },
+            onNewChannel: { showCreateChannel = true },
+            onDeleteChannel: { name in store.dispatch(.showDialog(.confirmDeleteChannel(name: name))) },
+            onRenameChannel: { name in renameChannelName = name },
+            unreadCountForChannel: { ch in unreadCount(for: ch) },
+            onlineCountForChannel: { ch in onlineCount(for: ch) },
             onStartCard: { cardId in startCard(cardId: cardId) },
             onResumeCard: { cardId in resumeCard(cardId: cardId) },
             onForkCard: { cardId, _ in store.dispatch(.showDialog(.confirmFork(cardId: cardId))) },
@@ -359,6 +378,12 @@ struct ContentView: View {
     private var sidebarListView: some View {
         ListBoardView(
             store: store,
+            onOpenChannel: { name in store.dispatch(.selectChannel(name: name)) },
+            onNewChannel: { showCreateChannel = true },
+            onDeleteChannel: { name in store.dispatch(.showDialog(.confirmDeleteChannel(name: name))) },
+            onRenameChannel: { name in renameChannelName = name },
+            unreadCountForChannel: { ch in unreadCount(for: ch) },
+            onlineCountForChannel: { ch in onlineCount(for: ch) },
             onStartCard: { cardId in startCard(cardId: cardId) },
             onResumeCard: { cardId in resumeCard(cardId: cardId) },
             onForkCard: { cardId, _ in store.dispatch(.showDialog(.confirmFork(cardId: cardId))) },
@@ -433,6 +458,11 @@ struct ContentView: View {
                             Image(systemName: "square.and.pencil")
                         }
                         .help("New task (⌘N)")
+
+                        Button { showCreateChannel = true } label: {
+                            Image(systemName: "number")
+                        }
+                        .help("New chat channel")
 
                         Button { Task { await store.reconcile() } } label: {
                             Image(systemName: "arrow.clockwise")
@@ -576,7 +606,12 @@ struct ContentView: View {
 
     @ViewBuilder
     private var inspectorContent: some View {
-        if let card = store.state.selectedCard {
+        if let dm = store.state.selectedDMParticipant {
+            dmChatContent(other: dm)
+        } else if let name = store.state.selectedChannelName,
+                  let ch = store.state.channels.first(where: { $0.name == name }) {
+            channelChatContent(channel: ch)
+        } else if let card = store.state.selectedCard {
             makeCardDetailView(card: card)
         }
     }
@@ -600,13 +635,19 @@ struct ContentView: View {
     private var boardWithOverlays: some View {
         Group {
             if isExpandedDetail {
-                if let card = store.state.selectedCard {
+                if let dm = store.state.selectedDMParticipant {
+                    dmChatContent(other: dm)
+                } else if let name = store.state.selectedChannelName,
+                          let ch = store.state.channels.first(where: { $0.name == name }) {
+                    channelChatContent(channel: ch)
+                } else if let card = store.state.selectedCard {
                     makeCardDetailView(card: card)
                 } else {
                     expandedEmptyState
                 }
             } else {
-                // Normal: kanban board with inspector
+                // Normal: kanban board with inspector.
+                // When a channel/DM is selected the inspector shows chat instead of card detail.
                 boardView
                     .ignoresSafeArea(edges: .top)
                     .inspector(isPresented: showInspector) {
@@ -716,6 +757,25 @@ struct ContentView: View {
             .sheet(isPresented: $showAddFromPath) {
                 addFromPathSheet
             }
+            .sheet(isPresented: $showCreateChannel) {
+                CreateChannelDialog(isPresented: $showCreateChannel) { name in
+                    store.dispatch(.createChannel(name: name))
+                }
+            }
+            .sheet(item: Binding(
+                get: { renameChannelName.map { RenameTarget(name: $0) } },
+                set: { renameChannelName = $0?.name }
+            )) { target in
+                RenameChannelDialog(
+                    isPresented: Binding(
+                        get: { renameChannelName != nil },
+                        set: { if !$0 { renameChannelName = nil } }
+                    ),
+                    currentName: target.name
+                ) { newName in
+                    store.dispatch(.renameChannel(old: target.name, new: newName))
+                }
+            }
             .sheet(item: $launchConfig) { config in
                 LaunchConfirmationDialog(
                     cardId: config.cardId,
@@ -814,6 +874,7 @@ struct ContentView: View {
         case .confirmMoveToFolder: return "Move to Folder?"
         case .confirmMigration: return "Migrate Session?"
         case .remoteWorktreeCleanup: return "Remote Worktree"
+        case .confirmDeleteChannel(let name): return "Delete #\(name)?"
         }
     }
 
@@ -887,6 +948,12 @@ struct ContentView: View {
                 Task { await executeLocalWorktreeCleanup(cardId: cardId, localPath: localPath) }
                 store.dispatch(.dismissDialog)
             }
+        case .confirmDeleteChannel(let name):
+            Button("Cancel", role: .cancel) { store.dispatch(.dismissDialog) }
+            Button("Delete #\(name)", role: .destructive) {
+                store.dispatch(.deleteChannel(name: name))
+                store.dispatch(.dismissDialog)
+            }
         }
     }
 
@@ -918,6 +985,8 @@ struct ContentView: View {
             let source = card?.link.effectiveAssistant.displayName ?? "current assistant"
             Text("Migrate from \(source) to \(targetAssistant.displayName)? A backup will be kept.")
         case .remoteWorktreeCleanup(_, _, _, let errorMessage): Text(errorMessage)
+        case .confirmDeleteChannel(let name):
+            Text("This removes the channel and its membership metadata. Messages in \(name).jsonl are left on disk so you can recover them manually if needed.")
         }
     }
 
@@ -1017,10 +1086,58 @@ struct ContentView: View {
                     systemTray.update()
                 }
             }
+            .task(id: "channels-bootstrap") {
+                // Initial load + start the file-system watcher (no polling).
+                store.dispatch(.refreshChannels)
+                store.dispatch(.refreshChannelReadState)
+                store.dispatch(.loadDrafts)
+                channelsWatcher.start()
+                // Load one-shot: the watcher will push changes from here on.
+                for ch in store.state.channels {
+                    store.dispatch(.refreshChannelMessages(channelName: ch.name))
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeChannelsChanged)) { _ in
+                store.dispatch(.refreshChannels)
+                channelsWatcher.syncChannelLogs(store.state.channels.map(\.name))
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeChannelMessagesChanged)) { note in
+                if let name = note.userInfo?["channelName"] as? String {
+                    store.dispatch(.refreshChannelMessages(channelName: name))
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeDMLogsChanged)) { _ in
+                if let other = store.state.selectedDMParticipant {
+                    store.dispatch(.refreshDMMessages(other: other))
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeReadStateChanged)) { _ in
+                store.dispatch(.refreshChannelReadState)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeSelectChannel)) { note in
+                if let name = note.userInfo?["channelName"] as? String {
+                    store.dispatch(.selectChannel(name: name))
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeSelectDM)) { note in
+                if let handle = note.userInfo?["dmHandle"] as? String {
+                    // Look up the card for this handle in any channel's membership.
+                    var cardId: String?
+                    for ch in store.state.channels {
+                        if let m = ch.members.first(where: { $0.handle == handle }), let cid = m.cardId {
+                            cardId = cid
+                            break
+                        }
+                    }
+                    let other = ChannelParticipant(cardId: cardId, handle: handle)
+                    store.dispatch(.selectDM(other: other))
+                }
+            }
             .onAppear { installKeyMonitor() }
             .onDisappear {
                 if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
                 keyMonitor = nil
+                channelsWatcher.stop()
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeToggleSearch)) { _ in
                 if showSearch { closePalette() } else { openPalette() }
@@ -1090,6 +1207,7 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 store.appIsActive = true
+                store.dispatch(.setAppFrontmost(true))
                 Task {
                     await store.reconcile()
                     systemTray.update()
@@ -1097,6 +1215,7 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
                 store.appIsActive = false
+                store.dispatch(.setAppFrontmost(false))
             }
     }
 
@@ -1120,6 +1239,11 @@ struct ContentView: View {
                             Image(systemName: "square.and.pencil")
                         }
                         .help("New task (⌘N)")
+
+                        Button { showCreateChannel = true } label: {
+                            Image(systemName: "number")
+                        }
+                        .help("New chat channel")
 
                         Button { Task { await store.reconcile() } } label: {
                             Image(systemName: "arrow.clockwise")
@@ -1308,6 +1432,14 @@ struct ContentView: View {
                     onCheckpointCard: { card in
                         switchToProjectIfNeeded(for: card)
                         store.dispatch(.selectCard(cardId: card.id))
+                    },
+                    channels: store.state.channels,
+                    channelLastOpened: store.state.channelLastOpened,
+                    channelLastActivity: store.state.channels.reduce(into: [String: Date]()) { acc, ch in
+                        if let ts = store.state.channelMessages[ch.name]?.last?.ts { acc[ch.name] = ts }
+                    },
+                    onSelectChannel: { name in
+                        store.dispatch(.selectChannel(name: name))
                     },
                     commands: paletteCommands,
                     initialQuery: searchInitialQuery,
@@ -2262,6 +2394,135 @@ struct ContentView: View {
         }
     }
 
+
+    // MARK: - Channels UI
+
+    private func onlineCount(for ch: Channel) -> Int {
+        let live = store.state.tmuxSessions
+        return ch.members.reduce(0) { acc, m in
+            guard let cardId = m.cardId, let link = store.state.links[cardId] else {
+                return acc + (m.cardId == nil ? 1 : 0)
+            }
+            if let sess = link.tmuxLink?.sessionName, live.contains(sess) {
+                return acc + 1
+            }
+            return acc
+        }
+    }
+
+    private func unreadCount(for ch: Channel) -> Int {
+        // If the user is actively looking at this channel, there are no unread
+        // messages — by definition.
+        if store.state.selectedChannelName == ch.name && store.state.appIsFrontmost {
+            return 0
+        }
+        let msgs = store.state.channelMessages[ch.name] ?? []
+        guard !msgs.isEmpty else { return 0 }
+        let myHandle = store.state.humanHandle
+
+        // Only real chat messages (not joins/leaves) count toward unread.
+        let realMsgs = msgs.filter { $0.type == .message }
+        guard !realMsgs.isEmpty else { return 0 }
+
+        // No marker = treat as fully read. The reducer seeds the marker on
+        // first-load to avoid blasting N unreads for pre-existing history.
+        guard let lastReadId = store.state.channelLastReadMessageId[ch.name] else {
+            return 0
+        }
+
+        // Count messages strictly after `lastReadId`, skipping my own.
+        if let idx = realMsgs.firstIndex(where: { $0.id == lastReadId }) {
+            return realMsgs[(idx + 1)...].filter {
+                !($0.from.cardId == nil && $0.from.handle == myHandle)
+            }.count
+        }
+        // lastReadId isn't in the current slice (rare — rotation, message
+        // deletion). Fall back to counting everything not from me.
+        return realMsgs.filter {
+            !($0.from.cardId == nil && $0.from.handle == myHandle)
+        }.count
+    }
+
+    @ViewBuilder
+    private func channelChatContent(channel: Channel) -> some View {
+        let msgs = store.state.channelMessages[channel.name] ?? []
+        let onlineMap = channelOnlineByHandle(channel)
+        let activityMap = channelActivityByHandle(channel)
+        ChannelChatView(
+            channel: channel,
+            messages: msgs,
+            onlineByHandle: onlineMap,
+            onSend: { body, imagePaths in
+                store.dispatch(.sendChannelMessage(channelName: channel.name, body: body, imagePaths: imagePaths))
+            },
+            onClose: { store.dispatch(.selectChannel(name: nil)) },
+            onCopyDMCommand: { m in
+                let cmd = "kanban dm @\(m.handle) \"your message here\""
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(cmd, forType: .string)
+            },
+            onOpenDM: { m in
+                let other = ChannelParticipant(cardId: m.cardId, handle: m.handle)
+                store.dispatch(.selectDM(other: other))
+            },
+            activityByHandle: activityMap,
+            draft: Binding(
+                get: { store.state.channelDrafts[channel.name] ?? "" },
+                set: { store.dispatch(.setChannelDraft(channelName: channel.name, body: $0)) }
+            )
+        )
+    }
+
+    private func channelActivityByHandle(_ ch: Channel) -> [String: ActivityState] {
+        var out: [String: ActivityState] = [:]
+        for m in ch.members {
+            guard let cardId = m.cardId, let link = store.state.links[cardId],
+                  let sid = link.sessionLink?.sessionId,
+                  let state = store.state.activityMap[sid]
+            else { continue }
+            out[m.handle] = state
+        }
+        return out
+    }
+
+    @ViewBuilder
+    private func dmChatContent(other: ChannelParticipant) -> some View {
+        let key = Reducer.dmKey(other)
+        let msgs = store.state.dmMessages[key] ?? []
+        let online: Bool = {
+            guard let cid = other.cardId, let link = store.state.links[cid],
+                  let sess = link.tmuxLink?.sessionName else { return false }
+            return store.state.tmuxSessions.contains(sess)
+        }()
+        DMChatView(
+            other: other,
+            messages: msgs,
+            onlineForOther: online,
+            onSend: { body, imagePaths in
+                store.dispatch(.sendDirectMessage(to: other, body: body, imagePaths: imagePaths))
+            },
+            onClose: { store.dispatch(.selectDM(other: nil)) },
+            draft: Binding(
+                get: { store.state.dmDrafts[key] ?? "" },
+                set: { store.dispatch(.setDMDraft(other: other, body: $0)) }
+            )
+        )
+    }
+
+    private func channelOnlineByHandle(_ ch: Channel) -> [String: Bool] {
+        let live = store.state.tmuxSessions
+        var out: [String: Bool] = [:]
+        for m in ch.members {
+            if let cardId = m.cardId, let link = store.state.links[cardId],
+               let sess = link.tmuxLink?.sessionName {
+                out[m.handle] = live.contains(sess)
+            } else {
+                // User / cardless: always "online" (the human is the app)
+                out[m.handle] = m.cardId == nil
+            }
+        }
+        return out
+    }
 
     // Launch, resume, fork, migration, worktree cleanup, and sync status
     // methods have been extracted to:

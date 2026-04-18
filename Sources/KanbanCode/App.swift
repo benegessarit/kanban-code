@@ -9,6 +9,7 @@ struct KanbanCodeApp: App {
 
     init() {
         MainThreadWatchdog.shared.start()
+        ChatBootstrap.run()
     }
 
     var body: some Scene {
@@ -115,45 +116,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         }
     }
 
-    /// Install a `kanban` shell script to ~/.local/bin.
-    /// If the TypeScript CLI has been built (`cli/dist/kanban.js` exists in the
-    /// repo), install a wrapper that delegates to it. Otherwise fall back to the
-    /// minimal open-project script so `kanban .` keeps working.
+    /// Install a `kanban` shell script to ~/.local/bin that delegates to the
+    /// TypeScript CLI bundled inside the app at Contents/Resources/cli/dist/kanban.js.
     private static func installCLI() {
         let binDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".local/bin")
         let scriptPath = binDir.appendingPathComponent("kanban")
 
-        // Find the repo root: the executable is at <repo>/build/KanbanCode.app/Contents/MacOS/KanbanCode
-        let exePath = Bundle.main.executablePath ?? ""
-        let repoDir = URL(fileURLWithPath: exePath)
-            .deletingLastPathComponent() // MacOS
-            .deletingLastPathComponent() // Contents
-            .deletingLastPathComponent() // KanbanCode.app
-            .deletingLastPathComponent() // build
-            .path
-        let cliPath = repoDir + "/cli/dist/kanban.js"
-
-        let script: String
-        if FileManager.default.fileExists(atPath: cliPath) {
-            script = """
-            #!/bin/sh
-            # Installed by Kanban Code — TypeScript CLI wrapper.
-            exec node "\(cliPath)" "$@"
-            """
-        } else {
-            script = """
-            #!/bin/sh
-            # Installed by Kanban Code — opens the app and selects a project.
-            # Usage: kanban [path]   (defaults to current directory)
-            if [ -n "$1" ]; then
-                resolved="$(cd "$1" 2>/dev/null && pwd -P || echo "$1")"
-                mkdir -p ~/.kanban-code
-                echo "$resolved" > ~/.kanban-code/open-project
-            fi
-            open -a "KanbanCode"
-            """
+        guard let resourceURL = Bundle.main.resourceURL else {
+            print("[Kanban Code] Cannot install CLI: no resource URL")
+            return
         }
+        let cliPath = resourceURL.appendingPathComponent("cli/dist/kanban.js").path
+
+        guard FileManager.default.fileExists(atPath: cliPath) else {
+            print("[Kanban Code] Cannot install CLI: \(cliPath) not found")
+            return
+        }
+
+        let script = """
+        #!/bin/sh
+        # Installed by Kanban Code — TypeScript CLI wrapper.
+        exec node "\(cliPath)" "$@"
+        """
         do {
             try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
             try script.write(to: scriptPath, atomically: true, encoding: .utf8)
@@ -266,20 +251,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         completionHandler([.banner, .sound])
     }
 
-    // Handle notification click — open app and select the card
+    // Handle notification click — open app and route to the right drawer.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        if let cardId = response.notification.request.content.userInfo["cardId"] as? String {
+        let info = response.notification.request.content.userInfo
+        if let cardId = info["cardId"] as? String {
             NotificationCenter.default.post(name: .kanbanCodeSelectCard, object: nil, userInfo: ["cardId": cardId])
+        } else if let kind = info["chatKind"] as? String {
+            switch kind {
+            case "channel":
+                if let name = info["channelName"] as? String {
+                    NotificationCenter.default.post(
+                        name: .kanbanCodeSelectChannel, object: nil,
+                        userInfo: ["channelName": name]
+                    )
+                }
+            case "dm":
+                if let handle = info["dmHandle"] as? String {
+                    NotificationCenter.default.post(
+                        name: .kanbanCodeSelectDM, object: nil,
+                        userInfo: ["dmHandle": handle]
+                    )
+                }
+            default:
+                break
+            }
         }
         MainActor.assumeIsolated {
             NSApp.activate(ignoringOtherApps: true)
         }
         completionHandler()
     }
+}
+
+extension Notification.Name {
+    static let kanbanCodeSelectChannel = Notification.Name("kanbanCodeSelectChannel")
+    static let kanbanCodeSelectDM = Notification.Name("kanbanCodeSelectDM")
 }
 
 

@@ -560,10 +560,25 @@ struct WorkingIndicator: View {
 
 // MARK: - Chat Input Bar
 
+/// Visual style for `ChatInputBar`.
+/// - `.card`: original chat-mode design used inside a card's chat drawer. Pill container
+///   with shadow, floating bottom-right buttons (queue + send), context-usage donut,
+///   message-history recall, Cmd+Enter queue dialog.
+/// - `.irc`: compact single-row IRC-style composer used in channel / DM chat. No queued
+///   prompts, no usage donut, no history recall. Expands vertically as the user types
+///   newlines (shift+enter). Send button glued to the right of the editor. Image paste
+///   still works.
+enum ChatInputStyle {
+    case card
+    case irc
+}
+
 struct ChatInputBar: View {
-    let assistant: CodingAssistant
+    var style: ChatInputStyle = .card
+    let assistant: CodingAssistant?
     let isReady: Bool
     var cardId: String = ""
+    var placeholderOverride: String? = nil
     var contextUsage: ContextUsage?
     var userMessageHistory: [String] = [] // Most recent first
     var onSend: (String, [String]) -> Void = { _, _ in }
@@ -581,7 +596,65 @@ struct ChatInputBar: View {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var resolvedPlaceholder: String {
+        if let p = placeholderOverride { return p }
+        if let a = assistant { return "Message \(a.displayName)..." }
+        return "Message"
+    }
+
+    @ViewBuilder
     var body: some View {
+        switch style {
+        case .card: cardBody
+        case .irc:  ircBody
+        }
+    }
+
+    // IRC: borderless editor + trailing send button inside a single invisible
+    // container. Images (when pasted) stack above. No queue / donut / history.
+    private var ircBody: some View {
+        HStack(alignment: .bottom, spacing: 6) {
+            VStack(spacing: 0) {
+                if !pastedImages.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(Array(pastedImages.enumerated()), id: \.element) { index, data in
+                                ChatImageThumbnail(imageData: data) {
+                                    pastedImages.remove(at: index)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.bottom, 4)
+                }
+                PromptEditor(
+                    text: $text,
+                    font: .systemFont(ofSize: 13),
+                    placeholder: resolvedPlaceholder,
+                    maxHeight: 160,
+                    identity: cardId,
+                    onSubmit: send,
+                    onImagePaste: { data in pastedImages.append(data) },
+                    onEscape: onEscape
+                )
+                .focused($isFocused)
+                .frame(minHeight: 24)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            Button(action: send) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 22))
+                    .foregroundStyle(canSend ? Color.primary : Color.primary.opacity(0.2))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend)
+        }
+        .padding(10)
+        .onAppear { focusInput() }
+    }
+
+    // Original card-chat composer (unchanged).
+    private var cardBody: some View {
         VStack(spacing: 6) {
             ZStack(alignment: .bottomTrailing) {
                 VStack(spacing: 0) {
@@ -604,7 +677,7 @@ struct ChatInputBar: View {
                 PromptEditor(
                     text: $text,
                     font: .systemFont(ofSize: 13),
-                    placeholder: "Message \(assistant.displayName)...",
+                    placeholder: resolvedPlaceholder,
                     maxHeight: 160,
                     identity: cardId,
                     onSubmit: send,
@@ -668,7 +741,7 @@ struct ChatInputBar: View {
                 isPresented: $showQueueDialog,
                 existingPrompt: prefill,
                 existingImages: existingImages,
-                assistant: assistant,
+                assistant: assistant ?? .claude,
                 onSave: { body, sendAuto, images in
                     let imagePaths: [String] = images.compactMap { img in
                         var mutable = img

@@ -1,0 +1,234 @@
+import { test, describe, beforeEach, afterEach } from "node:test";
+import { strict as assert } from "node:assert";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Link } from "./types.js";
+import {
+  createChannel,
+  joinChannel,
+  readMessages,
+} from "./channels.js";
+import {
+  cardForTmuxSession,
+  formatChannelBroadcast,
+  formatDirectMessage,
+  sendAndFanOut,
+  sendDirectMessage,
+  fanOutChannelMessage,
+} from "./broadcast.js";
+
+let base: string;
+function tmp(): string { return mkdtempSync(join(tmpdir(), "kanban-broadcast-test-")); }
+
+function mkLink(id: string, tmuxName: string, name?: string): Link {
+  return {
+    id,
+    name: name ?? id,
+    column: "in_progress",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    tmuxLink: { sessionName: tmuxName },
+    isRemote: false,
+    prLinks: [],
+    manualOverrides: {
+      worktreePath: false,
+      tmuxSession: false,
+      name: false,
+      column: false,
+      prLink: false,
+      issueLink: false,
+    },
+    source: "manual",
+    manuallyArchived: false,
+  } as unknown as Link;
+}
+
+describe("formatting", () => {
+  test("formatChannelBroadcast shape", () => {
+    const s = formatChannelBroadcast("general", "alice", "hello world");
+    assert.equal(s, "[Message from #general @alice]: hello world");
+  });
+  test("formatDirectMessage shape", () => {
+    const s = formatDirectMessage("alice", "privately");
+    assert.equal(s, "[DM from @alice]: privately");
+  });
+  test("accepts handle with or without @", () => {
+    assert.equal(
+      formatChannelBroadcast("x", "@alice", "hi"),
+      "[Message from #x @alice]: hi"
+    );
+  });
+});
+
+describe("cardForTmuxSession", () => {
+  test("resolves by primary session", () => {
+    const links = [mkLink("card_A", "session-a"), mkLink("card_B", "session-b")];
+    assert.equal(cardForTmuxSession(links, "session-b")?.id, "card_B");
+    assert.equal(cardForTmuxSession(links, "session-x"), undefined);
+  });
+});
+
+describe("fanOutChannelMessage", () => {
+  beforeEach(() => { base = tmp(); });
+  afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+
+  test("delivers to every member except sender, with correct format", () => {
+    createChannel("general", {}, base);
+    joinChannel("general", { cardId: "card_A", handle: "alice" }, base);
+    joinChannel("general", { cardId: "card_B", handle: "bob" }, base);
+    joinChannel("general", { cardId: "card_C", handle: "carol" }, base);
+
+    const links = [
+      mkLink("card_A", "session-a"),
+      mkLink("card_B", "session-b"),
+      mkLink("card_C", "session-c"),
+    ];
+
+    const calls: { session: string; text: string }[] = [];
+    const { msg, result } = sendAndFanOut(
+      "general",
+      { cardId: "card_A", handle: "alice" },
+      "hi team",
+      links,
+      base,
+      { sender: (s, t) => { calls.push({ session: s, text: t }); return { ok: true }; } }
+    );
+
+    // Sender should not be called for themselves.
+    assert.deepEqual(
+      calls.map((c) => c.session).sort(),
+      ["session-b", "session-c"].sort()
+    );
+    for (const c of calls) {
+      assert.equal(c.text, `[Message from #general @alice]: hi team`);
+    }
+    assert.equal(result.delivered.length, 2);
+    assert.equal(result.skippedSender.handle, "alice");
+    assert.equal(msg.body, "hi team");
+
+    // Message was appended to the log too.
+    const log = readMessages("general", base);
+    const normals = log.filter((m) => m.type === "message");
+    assert.equal(normals.length, 1);
+    assert.equal(normals[0].body, "hi team");
+  });
+
+  test("skips offline members via liveSessionProbe", () => {
+    createChannel("general", {}, base);
+    joinChannel("general", { cardId: "card_A", handle: "alice" }, base);
+    joinChannel("general", { cardId: "card_B", handle: "bob" }, base);
+
+    const links = [mkLink("card_A", "session-a"), mkLink("card_B", "session-b-dead")];
+
+    const calls: string[] = [];
+    const { result } = sendAndFanOut(
+      "general",
+      { cardId: "card_A", handle: "alice" },
+      "anybody?",
+      links,
+      base,
+      {
+        sender: (s) => { calls.push(s); return { ok: true }; },
+        liveSessionProbe: (s) => s === "session-a",
+      }
+    );
+
+    assert.equal(calls.length, 0);
+    assert.equal(result.delivered.length, 0);
+    assert.equal(result.skippedOffline.length, 1);
+    assert.equal(result.skippedOffline[0].reason, "tmux session offline");
+  });
+
+  test("skips members with no tmux session", () => {
+    createChannel("general", {}, base);
+    joinChannel("general", { cardId: "card_A", handle: "alice" }, base);
+    joinChannel("general", { cardId: "card_B", handle: "bob" }, base);
+    const links = [mkLink("card_A", "session-a")]; // no link for card_B
+
+    const { result } = sendAndFanOut(
+      "general",
+      { cardId: "card_A", handle: "alice" },
+      "bob where are you",
+      links,
+      base,
+      { sender: () => ({ ok: true }), liveSessionProbe: () => true }
+    );
+    assert.equal(result.delivered.length, 0);
+    assert.equal(result.skippedOffline[0].handle, "bob");
+  });
+
+  test("user (cardId=null) message delivers to all agents", () => {
+    createChannel("general", {}, base);
+    joinChannel("general", { cardId: null, handle: "user" }, base);
+    joinChannel("general", { cardId: "card_A", handle: "alice" }, base);
+    const links = [mkLink("card_A", "session-a")];
+
+    const calls: string[] = [];
+    const { result } = sendAndFanOut(
+      "general",
+      { cardId: null, handle: "user" },
+      "from the human",
+      links,
+      base,
+      { sender: (s) => { calls.push(s); return { ok: true }; } }
+    );
+    assert.deepEqual(calls, ["session-a"]);
+    assert.equal(result.delivered.length, 1);
+  });
+
+  test("sender bubbles up to skippedOffline on send error", () => {
+    createChannel("general", {}, base);
+    joinChannel("general", { cardId: "card_A", handle: "alice" }, base);
+    joinChannel("general", { cardId: "card_B", handle: "bob" }, base);
+    const links = [mkLink("card_A", "session-a"), mkLink("card_B", "session-b")];
+
+    const { result } = sendAndFanOut(
+      "general",
+      { cardId: "card_A", handle: "alice" },
+      "boom",
+      links,
+      base,
+      { sender: () => ({ ok: false, error: "simulated tmux error" }) }
+    );
+    assert.equal(result.delivered.length, 0);
+    assert.equal(result.skippedOffline[0].reason, "simulated tmux error");
+  });
+});
+
+describe("sendDirectMessage", () => {
+  beforeEach(() => { base = tmp(); });
+  afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+
+  test("delivers to recipient only and persists to DM log", () => {
+    const links = [mkLink("card_A", "session-a"), mkLink("card_B", "session-b")];
+    const calls: { session: string; text: string }[] = [];
+    const { msg, delivered } = sendDirectMessage(
+      { cardId: "card_A", handle: "alice" },
+      { cardId: "card_B", handle: "bob" },
+      "private note",
+      links,
+      base,
+      { sender: (s, t) => { calls.push({ session: s, text: t }); return { ok: true }; } }
+    );
+    assert.equal(delivered, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].session, "session-b");
+    assert.equal(calls[0].text, "[DM from @alice]: private note");
+    assert.equal(msg.body, "private note");
+  });
+
+  test("reports recipient offline without delivery", () => {
+    const links = [mkLink("card_A", "session-a")]; // no card_B
+    const { delivered, error } = sendDirectMessage(
+      { cardId: "card_A", handle: "alice" },
+      { cardId: "card_B", handle: "bob" },
+      "anybody?",
+      links,
+      base,
+      { sender: () => ({ ok: true }) }
+    );
+    assert.equal(delivered, false);
+    assert.match(error ?? "", /no tmux session/);
+  });
+});
