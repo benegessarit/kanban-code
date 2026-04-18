@@ -137,9 +137,10 @@ struct ActivityDetectorTests {
         #expect(state == .needsAttention, "Stop + stale file means Claude is done")
     }
 
-    @Test("Notification + fresh file → activelyWorking (Claude working during notification)")
+    @Test("Notification + recent prompt + fresh file → activelyWorking (Claude working during notification)")
     func notificationWithFreshFile() async {
         let detector = ClaudeCodeActivityDetector()
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "UserPromptSubmit"))
         await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Notification"))
 
         let dir = NSTemporaryDirectory() + "kanban-code-notif-fresh-\(UUID().uuidString)"
@@ -150,7 +151,23 @@ struct ActivityDetectorTests {
         let _ = await detector.pollActivity(sessionPaths: ["s1": path])
 
         let state = await detector.activityState(for: "s1")
-        #expect(state == .activelyWorking, "Notification + fresh file means Claude is still working")
+        #expect(state == .activelyWorking, "Notification mid-conversation means Claude is still working")
+    }
+
+    @Test("Notification without recent UserPromptSubmit → needsAttention")
+    func notificationWithoutPrompt() async {
+        let detector = ClaudeCodeActivityDetector()
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Notification"))
+
+        let dir = NSTemporaryDirectory() + "kanban-code-notif-nopr-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = (dir as NSString).appendingPathComponent("test.jsonl")
+        try? "data".write(toFile: path, atomically: true, encoding: .utf8)
+        let _ = await detector.pollActivity(sessionPaths: ["s1": path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .needsAttention, "Notification without recent prompt = dormant session")
     }
 
     @Test("Notification + stale file → needsAttention")

@@ -161,14 +161,26 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
         case "SessionEnd":
             return .ended
         case "Notification":
-            // Notification fires during work too (e.g. tool approval requests).
-            // If the transcript is still being written, Claude is working.
-            if let path = sessionPaths[sessionId],
-               let fileAge = Self.fileAge(path),
-               fileAge < 5 {
-                return .activelyWorking
+            // Notification fires during work (tool approval, MCP prompt, etc.).
+            // Same shape as Stop: stay activelyWorking as long as we're inside
+            // an active conversation window with live transcript; otherwise
+            // treat as needsAttention. Previously used a tight 5s fileAge
+            // threshold that caused the same flicker as Stop did.
+            let sinceLastPrompt = lastUserPromptTimes[sessionId].map {
+                Date.now.timeIntervalSince($0)
+            } ?? .greatestFiniteMagnitude
+            if sinceLastPrompt > activeTimeout {
+                return .needsAttention
             }
-            return .needsAttention
+            guard let path = sessionPaths[sessionId],
+                  let fileAge = Self.fileAge(path),
+                  fileAge < activeTimeout else {
+                return .needsAttention
+            }
+            if fileAge > 3, Self.lastLineContainsInterrupt(path) {
+                return .needsAttention
+            }
+            return .activelyWorking
         default:
             // Unknown hook events — use polled state, never promote to activelyWorking
             return polledStates[sessionId] ?? .idleWaiting
