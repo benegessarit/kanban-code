@@ -622,60 +622,60 @@ struct ChatInputBar: View {
     // IRC: borderless editor + trailing send button inside a single invisible
     // container. Images (when pasted) stack above. No queue / donut / history.
     private var ircBody: some View {
-        VStack(spacing: 0) {
-            // Mention popover is a SIBLING above the composer so it never
-            // visually covers the text the user is typing — its presence
-            // naturally pushes the composer down.
+        HStack(alignment: .bottom, spacing: 6) {
+            VStack(spacing: 0) {
+                if !pastedImages.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(Array(pastedImages.enumerated()), id: \.element) { index, data in
+                                ChatImageThumbnail(imageData: data) {
+                                    pastedImages.remove(at: index)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.bottom, 4)
+                }
+                PromptEditor(
+                    text: $text,
+                    font: .systemFont(ofSize: 13),
+                    placeholder: resolvedPlaceholder,
+                    maxHeight: 160,
+                    identity: cardId,
+                    onSubmit: send,
+                    onArrowUp: { moveMentionSelection(by: -1) },
+                    onArrowDown: { moveMentionSelection(by: 1) },
+                    onImagePaste: { data in pastedImages.append(data) },
+                    onEscape: { handleEscape() }
+                )
+                .focused($isFocused)
+                .frame(minHeight: 24)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            Button(action: send) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 22))
+                    .foregroundStyle(canSend ? Color.primary : Color.primary.opacity(0.2))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend)
+        }
+        .padding(10)
+        // Float the mention popover above the composer WITHOUT taking layout
+        // space: overlay the list at top-leading, then shift it up by its own
+        // height via an alignmentGuide that treats its bottom as its top.
+        .overlay(alignment: .topLeading) {
             if !mentionCandidates.isEmpty, let query = mentionQuery {
                 let matches = Self.filteredMentionMatches(query: query, candidates: mentionCandidates)
                 if !matches.isEmpty {
                     MentionSuggestionList(matches: matches, selectedIndex: mentionSelectedIndex) { handle in
                         insertMention(handle)
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 6)
+                    .alignmentGuide(.top) { d in d[.bottom] + 4 }
+                    .padding(.leading, 10)
                     .transition(.opacity)
                 }
             }
-            HStack(alignment: .bottom, spacing: 6) {
-                VStack(spacing: 0) {
-                    if !pastedImages.isEmpty {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 6) {
-                                ForEach(Array(pastedImages.enumerated()), id: \.element) { index, data in
-                                    ChatImageThumbnail(imageData: data) {
-                                        pastedImages.remove(at: index)
-                                    }
-                                }
-                            }
-                        }
-                        .padding(.bottom, 4)
-                    }
-                    PromptEditor(
-                        text: $text,
-                        font: .systemFont(ofSize: 13),
-                        placeholder: resolvedPlaceholder,
-                        maxHeight: 160,
-                        identity: cardId,
-                        onSubmit: send,
-                        onArrowUp: { moveMentionSelection(by: -1) },
-                        onArrowDown: { moveMentionSelection(by: 1) },
-                        onImagePaste: { data in pastedImages.append(data) },
-                        onEscape: { handleEscape() }
-                    )
-                    .focused($isFocused)
-                    .frame(minHeight: 24)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-                Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 22))
-                        .foregroundStyle(canSend ? Color.primary : Color.primary.opacity(0.2))
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
-            }
-            .padding(10)
         }
         .onChange(of: text) { _, newValue in
             let newQuery = Self.activeMentionQuery(in: newValue)
