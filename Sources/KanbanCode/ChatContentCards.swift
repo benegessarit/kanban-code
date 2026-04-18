@@ -619,54 +619,58 @@ struct ChatInputBar: View {
     // IRC: borderless editor + trailing send button inside a single invisible
     // container. Images (when pasted) stack above. No queue / donut / history.
     private var ircBody: some View {
-        HStack(alignment: .bottom, spacing: 6) {
-            VStack(spacing: 0) {
-                if !pastedImages.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(Array(pastedImages.enumerated()), id: \.element) { index, data in
-                                ChatImageThumbnail(imageData: data) {
-                                    pastedImages.remove(at: index)
-                                }
-                            }
-                        }
-                    }
-                    .padding(.bottom, 4)
-                }
-                PromptEditor(
-                    text: $text,
-                    font: .systemFont(ofSize: 13),
-                    placeholder: resolvedPlaceholder,
-                    maxHeight: 160,
-                    identity: cardId,
-                    onSubmit: send,
-                    onImagePaste: { data in pastedImages.append(data) },
-                    onEscape: onEscape
-                )
-                .focused($isFocused)
-                .frame(minHeight: 24)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-            Button(action: send) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 22))
-                    .foregroundStyle(canSend ? Color.primary : Color.primary.opacity(0.2))
-            }
-            .buttonStyle(.plain)
-            .disabled(!canSend)
-        }
-        .padding(10)
-        .overlay(alignment: .bottomLeading) {
+        VStack(spacing: 0) {
+            // Mention popover is a SIBLING above the composer so it never
+            // visually covers the text the user is typing — its presence
+            // naturally pushes the composer down.
             if !mentionCandidates.isEmpty, let query = mentionQuery {
                 let matches = Self.filteredMentionMatches(query: query, candidates: mentionCandidates)
                 if !matches.isEmpty {
                     MentionSuggestionList(matches: matches) { handle in
                         insertMention(handle)
                     }
-                    .offset(y: -4)
-                    .alignmentGuide(.bottom) { $0[.top] }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 6)
+                    .transition(.opacity)
                 }
             }
+            HStack(alignment: .bottom, spacing: 6) {
+                VStack(spacing: 0) {
+                    if !pastedImages.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(Array(pastedImages.enumerated()), id: \.element) { index, data in
+                                    ChatImageThumbnail(imageData: data) {
+                                        pastedImages.remove(at: index)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.bottom, 4)
+                    }
+                    PromptEditor(
+                        text: $text,
+                        font: .systemFont(ofSize: 13),
+                        placeholder: resolvedPlaceholder,
+                        maxHeight: 160,
+                        identity: cardId,
+                        onSubmit: send,
+                        onImagePaste: { data in pastedImages.append(data) },
+                        onEscape: onEscape
+                    )
+                    .focused($isFocused)
+                    .frame(minHeight: 24)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                Button(action: send) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundStyle(canSend ? Color.primary : Color.primary.opacity(0.2))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSend)
+            }
+            .padding(10)
         }
         .onChange(of: text) { _, newValue in
             mentionQuery = Self.activeMentionQuery(in: newValue)
@@ -864,33 +868,50 @@ struct MentionSuggestionList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(matches.prefix(6)), id: \.self) { handle in
-                Button {
+                MentionRow(handle: handle) {
                     onSelect(handle)
-                } label: {
-                    HStack(spacing: 6) {
-                        Text("@\(handle)")
-                            .font(.app(.body))
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .background(Color.clear)
-                .onHover { _ in /* hover highlight handled by system if needed */ }
             }
         }
-        .frame(minWidth: 140, maxWidth: 260, alignment: .leading)
+        .frame(minWidth: 160, maxWidth: 280, alignment: .leading)
+        .padding(.vertical, 4)
         .background(
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: 8)
                 .fill(Color(nsColor: .controlBackgroundColor))
-                .shadow(radius: 4, y: 2)
+                .shadow(radius: 6, y: 2)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
         )
+    }
+}
+
+private struct MentionRow: View {
+    let handle: String
+    let onSelect: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 6) {
+                Text("@\(handle)")
+                    .font(.app(.body))
+                    .foregroundStyle(hovered ? Color.white : Color.primary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(hovered ? Color.accentColor : Color.clear)
+                    .padding(.horizontal, 4)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
     }
 }
 
