@@ -235,6 +235,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     userInfo: ["path": path]
                 )
             }
+            // kanbancode://channel/<name> — from `kanban channel open <name>` CLI.
+            if url.host == "channel",
+               let name = url.pathComponents.dropFirst().first, !name.isEmpty {
+                let normalized = name.hasPrefix("#") ? String(name.dropFirst()) : name
+                NotificationCenter.default.post(
+                    name: .kanbanCodeSelectChannel, object: nil,
+                    userInfo: ["channelName": normalized]
+                )
+            }
+            // kanbancode://dm/<handle> or ?handle=<h>&cardId=<c>
+            if url.host == "dm" {
+                let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                let pathHandle = url.pathComponents.dropFirst().first
+                let queryHandle = components?.queryItems?.first(where: { $0.name == "handle" })?.value
+                let cardId = components?.queryItems?.first(where: { $0.name == "cardId" })?.value
+                if let handle = (queryHandle?.isEmpty == false ? queryHandle : pathHandle),
+                   !handle.isEmpty {
+                    var info: [String: String] = ["handle": handle.hasPrefix("@") ? String(handle.dropFirst()) : handle]
+                    if let cardId, !cardId.isEmpty { info["cardId"] = cardId }
+                    NotificationCenter.default.post(
+                        name: .kanbanCodeSelectDM, object: nil, userInfo: info
+                    )
+                }
+            }
         }
         NSApp.activate(ignoringOtherApps: true)
         if let window = NSApp.windows.first(where: { $0.canBecomeMain }) {

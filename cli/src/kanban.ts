@@ -855,6 +855,21 @@ channelCmd
   });
 
 channelCmd
+  .command("open")
+  .description("Open a channel in the Kanban Code app via kanbancode:// deep link.")
+  .argument("<name>", "Channel name (with or without leading #)")
+  .action((name: string) => {
+    const clean = normalizeChannelName(name);
+    try {
+      execSync(`open "kanbancode://channel/${clean}"`, { stdio: "ignore" });
+      console.log(`Opened #${clean}`);
+    } catch (err) {
+      console.error(`Failed to open app: ${(err as Error).message ?? err}`);
+      process.exit(1);
+    }
+  });
+
+channelCmd
   .command("rename")
   .description("Rename a channel. Moves the .jsonl log file to the new name.")
   .argument("<old>", "Current channel name")
@@ -970,6 +985,25 @@ dmCmd
       }
     } catch (e) {
       console.error(String(e instanceof Error ? e.message : e));
+      process.exit(1);
+    }
+  });
+
+dmCmd
+  .command("open")
+  .description("Open a DM with another handle in the Kanban Code app.")
+  .argument("<handle>", "Other party's handle (with or without @)")
+  .action((handle: string) => {
+    const clean = stripAt(handle);
+    const card = findCardByHandle(handle);
+    const url = card
+      ? `kanbancode://dm/${clean}?cardId=${card.id}`
+      : `kanbancode://dm/${clean}`;
+    try {
+      execSync(`open "${url}"`, { stdio: "ignore" });
+      console.log(`Opened DM with @${clean}`);
+    } catch (err) {
+      console.error(`Failed to open app: ${(err as Error).message ?? err}`);
       process.exit(1);
     }
   });
