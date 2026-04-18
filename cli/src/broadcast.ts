@@ -69,23 +69,26 @@ export function cardForTmuxSession(links: Link[], sessionName: string): Link | u
 
 // ── Formatting ────────────────────────────────────────────────────────
 
+function renderImageRefs(imagePaths?: string[]): string {
+  if (!imagePaths || imagePaths.length === 0) return "";
+  return "\n" + imagePaths.map((p) => `![](${p})`).join("\n");
+}
+
 export function formatChannelBroadcast(
   channel: string,
   handle: string,
   body: string,
-  imageCount: number = 0
+  imagePaths?: string[]
 ): string {
-  const hint = imageCount > 0 ? ` [${imageCount} image(s) attached]` : "";
-  return `[Message from #${channel} ${formatHandle(handle)}]: ${body}${hint}`;
+  return `[Message from #${channel} ${formatHandle(handle)}]: ${body}${renderImageRefs(imagePaths)}`;
 }
 
 export function formatDirectMessage(
   handle: string,
   body: string,
-  imageCount: number = 0
+  imagePaths?: string[]
 ): string {
-  const hint = imageCount > 0 ? ` [${imageCount} image(s) attached]` : "";
-  return `[DM from ${formatHandle(handle)}]: ${body}${hint}`;
+  return `[DM from ${formatHandle(handle)}]: ${body}${renderImageRefs(imagePaths)}`;
 }
 
 // ── Fan-out ───────────────────────────────────────────────────────────
@@ -135,7 +138,7 @@ export function fanOutChannelMessage(
       channel.name,
       msg.from.handle,
       msg.body,
-      msg.imagePaths?.length ?? 0
+      msg.imagePaths
     );
     const res = sender(session, text);
     if (res.ok) {
@@ -200,7 +203,7 @@ export function sendDirectMessage(
   const session = link?.tmuxLink?.sessionName;
   if (!session) return { msg, delivered: false, error: "recipient has no tmux session" };
   if (!probe(session)) return { msg, delivered: false, error: "recipient offline" };
-  const text = formatDirectMessage(from.handle, body, persisted.length);
+  const text = formatDirectMessage(from.handle, body, persisted.length > 0 ? persisted : undefined);
   const r = sender(session, text);
   return { msg, delivered: r.ok, error: r.error };
 }

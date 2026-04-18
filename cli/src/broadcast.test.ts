@@ -59,6 +59,21 @@ describe("formatting", () => {
       "[Message from #x @alice]: hi"
     );
   });
+  test("appends markdown image refs when imagePaths present", () => {
+    const s = formatChannelBroadcast("x", "alice", "look", [
+      "/tmp/a.png",
+      "/tmp/b.png",
+    ]);
+    assert.equal(s, "[Message from #x @alice]: look\n![](/tmp/a.png)\n![](/tmp/b.png)");
+  });
+  test("DM appends markdown image refs when imagePaths present", () => {
+    const s = formatDirectMessage("alice", "psst", ["/tmp/a.png"]);
+    assert.equal(s, "[DM from @alice]: psst\n![](/tmp/a.png)");
+  });
+  test("empty imagePaths yields no trailing content", () => {
+    assert.equal(formatChannelBroadcast("x", "alice", "hi", []), "[Message from #x @alice]: hi");
+    assert.equal(formatDirectMessage("alice", "hi", []), "[DM from @alice]: hi");
+  });
 });
 
 describe("cardForTmuxSession", () => {
