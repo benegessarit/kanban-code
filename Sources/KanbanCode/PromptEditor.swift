@@ -19,6 +19,12 @@ struct PromptEditor: NSViewRepresentable {
     /// history recall). Used to route arrows into the @-mention picker.
     var onArrowUp: (() -> Bool)?
     var onArrowDown: (() -> Bool)?
+    /// Enter-key pre-submit hook. If this returns a non-nil string, the text
+    /// view is directly replaced with that string (bypassing the binding
+    /// update-guard that blocks async state pushes while typing), and
+    /// `onSubmit` is NOT called. Used for @-mention autocomplete — typing
+    /// `@ali<Enter>` must visibly expand to `@alice ` in the editor.
+    var onEnterIntercept: (() -> String?)?
     var onImagePaste: ((Data) -> Void)?
     var onEscape: (() -> Void)?
 
@@ -55,6 +61,7 @@ struct PromptEditor: NSViewRepresentable {
         textView.onDownArrowAtStart = onDownArrowAtStart
         textView.onArrowUp = onArrowUp
         textView.onArrowDown = onArrowDown
+        textView.onEnterIntercept = onEnterIntercept
         textView.onImagePaste = onImagePaste
         textView.onEscape = onEscape
         textView.placeholderString = placeholder
@@ -95,6 +102,7 @@ struct PromptEditor: NSViewRepresentable {
         textView.onDownArrowAtStart = onDownArrowAtStart
         textView.onArrowUp = onArrowUp
         textView.onArrowDown = onArrowDown
+        textView.onEnterIntercept = onEnterIntercept
         textView.onImagePaste = onImagePaste
         textView.onEscape = onEscape
         textView.font = font
@@ -182,6 +190,7 @@ final class SubmitTextView: NSTextView {
     var onDownArrowAtStart: (() -> String?)?
     var onArrowUp: (() -> Bool)?
     var onArrowDown: (() -> Bool)?
+    var onEnterIntercept: (() -> String?)?
     var onImagePaste: ((Data) -> Void)?
     var onEscape: (() -> Void)?
     var placeholderString: String = ""
@@ -230,6 +239,21 @@ final class SubmitTextView: NSTextView {
         }
 
         if isReturn && !hasShift {
+            // Enter-key pre-submit intercept (e.g. @-mention autocomplete).
+            // The handler returns a replacement string if it wants to swallow
+            // Enter. Apply it directly to the NSTextView — bypasses the
+            // updateNSView guard that blocks binding-driven text pushes while
+            // the editor is first responder.
+            if let handler = onEnterIntercept, let replacement = handler() {
+                string = replacement
+                setSelectedRange(NSRange(location: (replacement as NSString).length, length: 0))
+                if let delegate = self.delegate as? PromptEditor.Coordinator {
+                    delegate.parent.text = replacement
+                }
+                (enclosingScrollView as? PromptEditorScrollView)?.recalcIntrinsicHeight()
+                needsDisplay = true
+                return
+            }
             // Enter → send
             if let delegate = self.delegate as? PromptEditor.Coordinator {
                 delegate.parent.text = self.string

@@ -622,6 +622,43 @@ struct ChatInputBar: View {
     // IRC: borderless editor + trailing send button inside a single invisible
     // container. Images (when pasted) stack above. No queue / donut / history.
     private var ircBody: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Popover row — takes 0 layout space, but its content overflows
+            // UPWARD via `.frame(height: 0, alignment: .bottom)`. The popover's
+            // visible bottom edge sits 6pt above the composer's top edge, so it
+            // never covers what the user is typing. Renders ABOVE siblings
+            // (Divider, messageList) because it's drawn later in the VStack.
+            mentionPopoverSlot
+            ircComposer
+        }
+        .zIndex(10)
+    }
+
+    @ViewBuilder
+    private var mentionPopoverSlot: some View {
+        if !mentionCandidates.isEmpty, let query = mentionQuery {
+            let matches = Self.filteredMentionMatches(query: query, candidates: mentionCandidates)
+            if !matches.isEmpty {
+                MentionSuggestionList(
+                    matches: matches,
+                    selectedIndex: mentionSelectedIndex,
+                    onHover: { idx in mentionSelectedIndex = idx }
+                ) { handle in
+                    insertMention(handle)
+                }
+                .fixedSize()
+                .padding(.leading, 10)
+                .padding(.bottom, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: 0, alignment: .bottom)
+                .zIndex(100)
+                .allowsHitTesting(true)
+                .transition(.opacity)
+            }
+        }
+    }
+
+    private var ircComposer: some View {
         HStack(alignment: .bottom, spacing: 6) {
             VStack(spacing: 0) {
                 if !pastedImages.isEmpty {
@@ -645,6 +682,7 @@ struct ChatInputBar: View {
                     onSubmit: send,
                     onArrowUp: { moveMentionSelection(by: -1) },
                     onArrowDown: { moveMentionSelection(by: 1) },
+                    onEnterIntercept: { computeMentionReplacement() },
                     onImagePaste: { data in pastedImages.append(data) },
                     onEscape: { handleEscape() }
                 )
@@ -661,22 +699,6 @@ struct ChatInputBar: View {
             .disabled(!canSend)
         }
         .padding(10)
-        // Float the mention popover above the composer WITHOUT taking layout
-        // space: overlay the list at top-leading, then shift it up by its own
-        // height via an alignmentGuide that treats its bottom as its top.
-        .overlay(alignment: .topLeading) {
-            if !mentionCandidates.isEmpty, let query = mentionQuery {
-                let matches = Self.filteredMentionMatches(query: query, candidates: mentionCandidates)
-                if !matches.isEmpty {
-                    MentionSuggestionList(matches: matches, selectedIndex: mentionSelectedIndex) { handle in
-                        insertMention(handle)
-                    }
-                    .alignmentGuide(.top) { d in d[.bottom] + 4 }
-                    .padding(.leading, 10)
-                    .transition(.opacity)
-                }
-            }
-        }
         .onChange(of: text) { _, newValue in
             let newQuery = Self.activeMentionQuery(in: newValue)
             if newQuery != mentionQuery {
@@ -697,8 +719,11 @@ struct ChatInputBar: View {
     /// Up/Down arrow handler: when the picker is open, navigate within it and
     /// return true to consume the event. When closed, return false so the
     /// editor does its normal thing (caret move, history recall).
+    /// Re-derive the query from current text instead of @State mentionQuery —
+    /// same race-condition fix as `send()`.
     private func moveMentionSelection(by delta: Int) -> Bool {
-        guard let query = mentionQuery else { return false }
+        guard !mentionCandidates.isEmpty,
+              let query = Self.activeMentionQuery(in: text) else { return false }
         let matches = Self.filteredMentionMatches(query: query, candidates: mentionCandidates)
         guard !matches.isEmpty else { return false }
         let capped = min(matches.count, 6)
@@ -861,20 +886,33 @@ struct ChatInputBar: View {
         mentionQuery = nil
     }
 
-    private func send() {
-        // Mention picker intercept: if the picker is open and something matches,
-        // Enter inserts the *selected* row (navigated via arrows) instead of
-        // sending. Typing `@alic<Enter>` expands to `@alice ` — and
-        // `@a<Down><Enter>` picks the second match.
-        if let query = mentionQuery {
-            let matches = Self.filteredMentionMatches(query: query, candidates: mentionCandidates)
-            let visible = Array(matches.prefix(6))
-            if !visible.isEmpty {
-                let idx = max(0, min(mentionSelectedIndex, visible.count - 1))
-                insertMention(visible[idx])
-                return
-            }
+    /// If the user is currently typing an @-mention AND the picker has at
+    /// least one match, compute the text-after-insertion. Returns nil when
+    /// no mention is in progress (normal Enter-submit applies). This runs
+    /// via `PromptEditor.onEnterIntercept`, which applies the replacement
+    /// directly to the NSTextView — the binding-based path loses it because
+    /// `PromptEditor.updateNSView` guards against pushing text while the
+    /// editor is first responder.
+    private func computeMentionReplacement() -> String? {
+        guard !mentionCandidates.isEmpty,
+              let query = Self.activeMentionQuery(in: text),
+              let atIdx = text.lastIndex(of: "@") else { return nil }
+        let matches = Self.filteredMentionMatches(query: query, candidates: mentionCandidates)
+        let visible = Array(matches.prefix(6))
+        guard !visible.isEmpty else { return nil }
+        let idx = max(0, min(mentionSelectedIndex, visible.count - 1))
+        let handle = visible[idx]
+        // Schedule picker dismissal — @State reset must happen on main queue,
+        // not inside the keyDown handler which is called synchronously from
+        // AppKit's event loop.
+        DispatchQueue.main.async {
+            mentionQuery = nil
+            mentionSelectedIndex = 0
         }
+        return String(text[..<atIdx]) + "@\(handle) "
+    }
+
+    private func send() {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         // Save images to temp files for the prompt queue
@@ -916,6 +954,7 @@ struct ChatInputBar: View {
 struct MentionSuggestionList: View {
     let matches: [String]
     var selectedIndex: Int = 0
+    var onHover: (Int) -> Void = { _ in }
     let onSelect: (String) -> Void
 
     var body: some View {
@@ -924,7 +963,10 @@ struct MentionSuggestionList: View {
             ForEach(Array(visible.enumerated()), id: \.element) { index, handle in
                 MentionRow(
                     handle: handle,
-                    isSelected: index == selectedIndex
+                    isSelected: index == selectedIndex,
+                    onHover: { hovering in
+                        if hovering { onHover(index) }
+                    }
                 ) {
                     onSelect(handle)
                 }
@@ -947,16 +989,18 @@ struct MentionSuggestionList: View {
 private struct MentionRow: View {
     let handle: String
     let isSelected: Bool
+    let onHover: (Bool) -> Void
     let onSelect: () -> Void
-    @State private var hovered = false
 
     var body: some View {
-        let active = isSelected || hovered
+        // Single source of truth for highlight: `isSelected`. Hover over a row
+        // bumps the selectedIndex in the parent (via onHover), which makes THIS
+        // row isSelected. Prevents "two rows highlighted at once" confusion.
         Button(action: onSelect) {
             HStack(spacing: 6) {
                 Text("@\(handle)")
                     .font(.app(.body))
-                    .foregroundStyle(active ? Color.white : Color.primary)
+                    .foregroundStyle(isSelected ? Color.white : Color.primary)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 10)
@@ -964,13 +1008,13 @@ private struct MentionRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(active ? Color.accentColor : Color.clear)
+                    .fill(isSelected ? Color.accentColor : Color.clear)
                     .padding(.horizontal, 4)
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { hovered = $0 }
+        .onHover { onHover($0) }
     }
 }
 
