@@ -301,6 +301,16 @@ struct CardDetailView: View {
             if selectedTab == .history {
                 startHistoryWatcher()
             }
+            // `.onChange(of: focusTerminal)` only fires when the value *changes*
+            // after the view is mounted. On a card switch, focusTerminal may
+            // already be `true` from the parent's card-select handler before
+            // the new CardDetailView observes it — so onChange never fires.
+            // Explicitly honor the focus request at task-entry time.
+            if focusTerminal && card.link.tmuxLink != nil {
+                selectedTab = .terminal
+                terminalGrabFocus = true
+                focusTerminal = false
+            }
         }
         .onChange(of: selectedTab) {
             if selectedTab == .terminal {
