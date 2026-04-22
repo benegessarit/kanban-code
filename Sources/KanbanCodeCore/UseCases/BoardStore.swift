@@ -522,6 +522,17 @@ public enum Reducer {
         .persistChannelReadState(channels: state.channelLastReadMessageId, dms: state.dmLastReadMessageId)
     }
 
+    /// Id of the latest *real* chat message in a channel.
+    /// Pinning the read-marker to the last entry of any type was a subtle bug:
+    /// when the last line in the jsonl is a join / leave / system event,
+    /// `unreadCount` filters it out before searching, can't locate the marker,
+    /// and falls back to "count every real message as unread" — so opening the
+    /// channel appeared to clear the badge but it came back on the next render.
+    /// Always pin to the last `.message`, skipping metadata events.
+    static func latestReadableMessageId(in messages: [ChannelMessage]) -> String? {
+        messages.last(where: { $0.type == .message })?.id
+    }
+
     public static func reduce(state: inout AppState, action: Action) -> [Effect] {
         switch action {
 
@@ -772,7 +783,7 @@ public enum Reducer {
             // marker either): treat everything as read so the tile doesn't
             // blast a badge for pre-existing history.
             if isFirstLoad, state.channelLastReadMessageId[name] == nil,
-               let latestId = messages.last?.id {
+               let latestId = Self.latestReadableMessageId(in: messages) {
                 state.channelLastReadMessageId[name] = latestId
                 effects.append(Self.persistReadState(state))
             }
@@ -793,7 +804,8 @@ public enum Reducer {
 
             // If this channel's drawer is open, auto-mark-read so inbound
             // messages don't resurrect the unread badge.
-            if state.selectedChannelName == name, let latestId = messages.last?.id {
+            if state.selectedChannelName == name,
+               let latestId = Self.latestReadableMessageId(in: messages) {
                 if state.channelLastReadMessageId[name] != latestId {
                     state.channelLastReadMessageId[name] = latestId
                     effects.append(Self.persistReadState(state))
@@ -807,10 +819,10 @@ public enum Reducer {
             if let name = name {
                 state.channelLastOpened[name] = .now
                 var effects: [Effect] = [.loadChannelMessages(channelName: name)]
-                // Mark-as-read: pin lastRead to the currently-latest id. If
+                // Mark-as-read: pin lastRead to the latest real message id. If
                 // messages haven't loaded yet, the subsequent
                 // `channelMessagesLoaded` path will pin it to the real latest.
-                if let latestId = state.channelMessages[name]?.last?.id {
+                if let latestId = Self.latestReadableMessageId(in: state.channelMessages[name] ?? []) {
                     if state.channelLastReadMessageId[name] != latestId {
                         state.channelLastReadMessageId[name] = latestId
                         effects.append(Self.persistReadState(state))
@@ -821,7 +833,7 @@ public enum Reducer {
             return []
 
         case .markChannelRead(let name):
-            guard let latestId = state.channelMessages[name]?.last?.id else { return [] }
+            guard let latestId = Self.latestReadableMessageId(in: state.channelMessages[name] ?? []) else { return [] }
             if state.channelLastReadMessageId[name] != latestId {
                 state.channelLastReadMessageId[name] = latestId
                 return [Self.persistReadState(state)]
@@ -1032,10 +1044,13 @@ public enum Reducer {
             }
             state.channelMessages[channelName] = msgs
             // If I sent this message OR I'm currently looking at this channel,
-            // bump the read marker to the new message's id.
+            // bump the read marker — but ONLY for real chat messages. Joins /
+            // leaves / system events don't count as "read content", and pinning
+            // to them makes the unread counter's lookup miss (→ every real
+            // message re-counts as unread).
             let mine = msg.from.cardId == nil && msg.from.handle == state.humanHandle
             let focused = state.selectedChannelName == channelName
-            if mine || focused {
+            if (mine || focused), msg.type == .message {
                 state.channelLastReadMessageId[channelName] = msg.id
                 return [Self.persistReadState(state)]
             }

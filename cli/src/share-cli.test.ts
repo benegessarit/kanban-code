@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 
 import { createChannel, joinChannel, readMessages } from "./channels.js";
-import { parseDuration, runShare } from "./share-cli.js";
+import { parseDuration, runShare, warmDns, warmTunnel } from "./share-cli.js";
 
 let base: string;
 function tmp(): string { return mkdtempSync(join(tmpdir(), "kanban-share-cli-test-")); }
@@ -28,7 +28,136 @@ describe("parseDuration", () => {
     assert.throws(() => parseDuration("abc"));
     assert.throws(() => parseDuration("-5m"));
     assert.throws(() => parseDuration("0"));
+  });
+});
+
+describe("warmDns", () => {
+  test("returns once both resolve4 AND lookup succeed", async () => {
+    let resolveCalls = 0;
+    let lookupCalls = 0;
+    await warmDns("example.com", {
+      intervalMs: 20,
+      timeoutMs: 1000,
+      resolveImpl: async () => { resolveCalls++; return ["1.2.3.4"]; },
+      lookupImpl: async () => { lookupCalls++; },
+    });
+    assert.equal(resolveCalls, 1);
+    assert.equal(lookupCalls, 1);
+  });
+
+  test("keeps polling until upstream record appears", async () => {
+    let resolveCalls = 0;
+    // First 3 resolve calls fail, 4th returns a record.
+    const resolveImpl = async (): Promise<string[]> => {
+      resolveCalls++;
+      if (resolveCalls < 4) throw new Error("NXDOMAIN");
+      return ["1.2.3.4"];
+    };
+    await warmDns("example.com", {
+      intervalMs: 20,
+      timeoutMs: 2000,
+      resolveImpl,
+      lookupImpl: async () => {},
+    });
+    assert.equal(resolveCalls, 4);
+  });
+
+  test("keeps polling when OS cache still holds NXDOMAIN after upstream ready", async () => {
+    let lookupCalls = 0;
+    const lookupImpl = async (): Promise<void> => {
+      lookupCalls++;
+      if (lookupCalls < 3) throw new Error("EAI_NONAME");
+    };
+    await warmDns("example.com", {
+      intervalMs: 20,
+      timeoutMs: 2000,
+      resolveImpl: async () => ["1.2.3.4"],
+      lookupImpl,
+    });
+    assert.equal(lookupCalls, 3);
+  });
+
+  test("times out with a clear error when nothing ever resolves", async () => {
+    await assert.rejects(
+      warmDns("never.example.invalid", {
+        intervalMs: 20,
+        timeoutMs: 200,
+        resolveImpl: async () => { throw new Error("NXDOMAIN"); },
+        lookupImpl: async () => { throw new Error("EAI_NONAME"); },
+      }),
+      /dns-warmup-timeout/,
+    );
     assert.throws(() => parseDuration("5d"));
+  });
+});
+
+describe("warmTunnel", () => {
+  // Minimal fake `Response` — just what warmTunnel reads.
+  function fakeRes(status: number, headers: Record<string, string> = {}) {
+    return { status, headers: { get: (n: string) => headers[n.toLowerCase()] ?? null } };
+  }
+
+  test("returns when the Express server answers (detected via x-powered-by)", async () => {
+    let n = 0;
+    await warmTunnel("https://tunnel.example/", {
+      intervalMs: 10,
+      timeoutMs: 2000,
+      fetchImpl: async () => { n++; return fakeRes(401, { "x-powered-by": "Express" }); },
+    });
+    assert.equal(n, 1);
+  });
+
+  test("keeps polling through Cloudflare's edge 404 (Error 1033) until the connector wires up", async () => {
+    let n = 0;
+    await warmTunnel("https://tunnel.example/", {
+      intervalMs: 10,
+      timeoutMs: 2000,
+      fetchImpl: async () => {
+        n++;
+        // Cloudflare's Error 1033 comes back with server: cloudflare and no
+        // x-powered-by header.
+        if (n < 3) return fakeRes(404, { server: "cloudflare" });
+        return fakeRes(401, { "x-powered-by": "Express" });
+      },
+    });
+    assert.equal(n, 3);
+  });
+
+  test("swallows fetch errors and keeps polling", async () => {
+    let n = 0;
+    await warmTunnel("https://tunnel.example/", {
+      intervalMs: 10,
+      timeoutMs: 2000,
+      fetchImpl: async () => {
+        n++;
+        if (n < 2) throw new Error("ECONNREFUSED");
+        return fakeRes(401, { "x-powered-by": "Express" });
+      },
+    });
+    assert.equal(n, 2);
+  });
+
+  test("times out if the tunnel never becomes reachable", async () => {
+    await assert.rejects(
+      warmTunnel("https://tunnel.example/", {
+        intervalMs: 10,
+        timeoutMs: 100,
+        fetchImpl: async () => fakeRes(404, { server: "cloudflare" }),
+      }),
+      /tunnel-warmup-timeout/,
+    );
+  });
+
+  // Make sure the probe hits /api/channels, not the root (which serves HTML
+  // from express.static and lacks `x-powered-by` on some Express versions).
+  test("probes /api/channels (a known Express route) not the root", async () => {
+    let lastUrl = "";
+    await warmTunnel("https://tunnel.example/", {
+      intervalMs: 10,
+      timeoutMs: 1000,
+      fetchImpl: async (u: string) => { lastUrl = u; return fakeRes(401, { "x-powered-by": "Express" }); },
+    });
+    assert.ok(lastUrl.endsWith("/api/channels"), `expected probe at /api/channels, got ${lastUrl}`);
   });
 });
 
@@ -77,6 +206,9 @@ describe("runShare", () => {
       sender: () => ({ ok: true }),
       baseDir: base,
       startTunnel: start as unknown as Parameters<typeof runShare>[0]["startTunnel"],
+      warmDnsImpl: async () => {},
+
+      warmTunnelImpl: async () => {},
       writeLine: (l) => lines.push(l),
       writeError: () => {},
     });
@@ -107,6 +239,9 @@ describe("runShare", () => {
       sender: () => ({ ok: true }),
       baseDir: base,
       startTunnel: start as unknown as Parameters<typeof runShare>[0]["startTunnel"],
+      warmDnsImpl: async () => {},
+
+      warmTunnelImpl: async () => {},
       writeLine: (l) => lines.push(l),
       writeError: () => {},
     });
@@ -142,6 +277,9 @@ describe("runShare", () => {
       sender: (s, t) => { tmuxPastes.push({ session: s, text: t }); return { ok: true }; },
       baseDir: base,
       startTunnel: start as unknown as Parameters<typeof runShare>[0]["startTunnel"],
+      warmDnsImpl: async () => {},
+
+      warmTunnelImpl: async () => {},
       writeLine: (l) => lines.push(l),
       writeError: () => {},
     });
@@ -160,7 +298,7 @@ describe("runShare", () => {
     // Fanout hit every agent with the warning-prefixed broadcast.
     assert.equal(tmuxPastes.length, 2);
     for (const p of tmuxPastes) {
-      assert.ok(p.text.startsWith("⚠️"), `paste to ${p.session} should be flagged external`);
+      assert.ok(p.text.startsWith("The message below"), `paste to ${p.session} should be flagged external`);
       assert.ok(p.text.includes("[Message from #general @ext_dana]: hello from e2e"));
     }
 
@@ -182,6 +320,9 @@ describe("runShare", () => {
       sender: () => ({ ok: true }),
       baseDir: base,
       startTunnel: start as unknown as Parameters<typeof runShare>[0]["startTunnel"],
+      warmDnsImpl: async () => {},
+
+      warmTunnelImpl: async () => {},
       writeLine: () => {},
       writeError: () => {},
     });
@@ -206,6 +347,9 @@ describe("runShare", () => {
       sender: () => ({ ok: true }),
       baseDir: base,
       startTunnel: start as unknown as Parameters<typeof runShare>[0]["startTunnel"],
+      warmDnsImpl: async () => {},
+
+      warmTunnelImpl: async () => {},
       writeLine: () => {},
       writeError: () => {},
     });

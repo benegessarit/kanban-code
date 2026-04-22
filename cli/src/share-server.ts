@@ -9,7 +9,7 @@
 import express, { Request, Response, NextFunction, Express } from "express";
 import { watch } from "chokidar";
 import { mkdirSync, createReadStream, writeFileSync, statSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve as resolvePath } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import type { Link } from "./types.js";
@@ -98,15 +98,34 @@ export function buildShareApp(deps: ShareServerDeps): Express {
     next();
   };
 
-  // ── Info ──────────────────────────────────────────────────────────
-  app.get("/api/channels/:name/info", requireToken, requireChannel, (_req, res) => {
-    const ch = getChannel(deps.channelName, deps.baseDir)!;
-    res.json({
+  // Build the info payload for `deps.channelName`. Factored out so the
+  // per-channel info route and the multi-channel discovery route share it.
+  const channelInfo = (): { name: string; members: { handle: string }[]; remainingMs: number; expiresAt: string } | null => {
+    const ch = getChannel(deps.channelName, deps.baseDir);
+    if (!ch) return null;
+    return {
       name: ch.name,
       members: ch.members.map((m) => ({ handle: m.handle })),
       remainingMs: Math.max(0, deps.expiresAt - Date.now()),
       expiresAt: new Date(deps.expiresAt).toISOString(),
-    });
+    };
+  };
+
+  // ── Discovery ─────────────────────────────────────────────────────
+  // Returns every channel this token has access to. Today that's always a
+  // single entry (the channel this share is bound to), but the payload shape
+  // is an array so the web client doesn't need to change when we broaden a
+  // single share link to cover multiple channels.
+  app.get("/api/channels", requireToken, (_req, res) => {
+    const info = channelInfo();
+    res.json({ channels: info ? [info] : [] });
+  });
+
+  // ── Info ──────────────────────────────────────────────────────────
+  app.get("/api/channels/:name/info", requireToken, requireChannel, (_req, res) => {
+    const info = channelInfo();
+    if (!info) { res.status(404).type("text/plain").send("channel not found"); return; }
+    res.json(info);
   });
 
   // ── History ───────────────────────────────────────────────────────
@@ -189,6 +208,36 @@ export function buildShareApp(deps: ShareServerDeps): Express {
       res.json({ path });
     });
 
+  // ── Image fetch ────────────────────────────────────────────────────
+  // Browsers can't fetch the absolute filesystem paths we record in
+  // `imagePaths` (that form is for tmux consumers, where Claude can
+  // Read() the file directly). Serve the same bytes over HTTP here so
+  // the web client can render them via <img src>.
+  //
+  // Path traversal is prevented by:
+  //   1. Strict regex on msgId + filename
+  //   2. Resolving the final path and asserting it's under <baseDir>/channels/images/
+  app.get("/api/images/:msgId/:filename", requireToken, (req, res) => {
+    const msgId = typeof req.params.msgId === "string" ? req.params.msgId : "";
+    const filename = typeof req.params.filename === "string" ? req.params.filename : "";
+    if (!/^(?:img|msg)_[a-zA-Z0-9]{1,64}$/.test(msgId) ||
+        !/^[a-zA-Z0-9_-]{1,64}\.(?:png|jpg|jpeg|gif|webp)$/i.test(filename)) {
+      res.status(400).type("text/plain").send("bad image path");
+      return;
+    }
+    const baseImages = resolvePath(deps.baseDir, "channels", "images");
+    const full = resolvePath(baseImages, msgId, filename);
+    if (!full.startsWith(baseImages + "/") && full !== baseImages) {
+      res.status(403).type("text/plain").send("forbidden");
+      return;
+    }
+    res.sendFile(full, (err) => {
+      if (err && !res.headersSent) {
+        res.status(404).type("text/plain").send("not found");
+      }
+    });
+  });
+
   // ── SSE stream ────────────────────────────────────────────────────
   // Emits every `ChannelMessage` appended to the channel jsonl after the
   // stream is opened. A tail-offset (byte position) is tracked per
@@ -203,6 +252,12 @@ export function buildShareApp(deps: ShareServerDeps): Express {
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
+    // Kick the downstream buffer past Cloudflare's write threshold. Without
+    // this the initial ": connected" comment (~30 bytes) gets held in the
+    // HTTP/2 frame buffer and EventSource never fires `open`, which looks
+    // identical to "SSE broken" on the client. ~2 KB of padding reliably
+    // commits the flush end-to-end through cloudflared + the CF edge.
+    res.write(`: ${"padding".padEnd(2048, " ")}\n\n`);
     // Prime the connection so the client's EventSource `open` fires.
     res.write(`: connected ${new Date().toISOString()}\n\n`);
 

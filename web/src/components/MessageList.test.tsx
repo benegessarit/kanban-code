@@ -69,6 +69,50 @@ describe("MessageList", () => {
     expect(link).toHaveAttribute("target", "_blank");
   });
 
+  test("renders attached images via /api/images/ URLs", () => {
+    const origUrl = window.location.href;
+    window.history.replaceState(null, "", "/?token=tk_xyz");
+    try {
+      render(
+        <MessageList
+          messages={[msg({
+            id: "m1",
+            body: "look at this",
+            handle: "alice",
+            imagePaths: ["/Users/me/.kanban-code/channels/images/img_abc123/0.png"],
+          })]}
+          ownHandle="ext_dana"
+        />,
+      );
+      const img = screen.getByRole("img", { name: /attached image/i });
+      expect(img).toHaveAttribute("src", "/api/images/img_abc123/0.png?token=tk_xyz");
+    } finally {
+      window.history.replaceState(null, "", origUrl);
+    }
+  });
+
+  test("silently skips image entries with unexpected paths (doesn't crash)", () => {
+    const origUrl = window.location.href;
+    window.history.replaceState(null, "", "/?token=t");
+    try {
+      render(
+        <MessageList
+          messages={[msg({
+            id: "m1",
+            body: "hi",
+            handle: "alice",
+            imagePaths: ["/tmp/somewhere/else.png"],
+          })]}
+          ownHandle="ext_dana"
+        />,
+      );
+      expect(screen.queryByRole("img", { name: /attached image/i })).not.toBeInTheDocument();
+      expect(screen.getByText("hi")).toBeInTheDocument();
+    } finally {
+      window.history.replaceState(null, "", origUrl);
+    }
+  });
+
   test("own messages get a distinct style (green handle color class)", () => {
     const { container } = render(
       <MessageList

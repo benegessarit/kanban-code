@@ -137,6 +137,56 @@ struct ChannelReducerTests {
         #expect(sawPersist)
     }
 
+    // Regression: the last entry in the jsonl was a join event, so pinning
+    // `last?.id` pointed at an id that the unread counter filters out of its
+    // search, and counted *every* real message as unread on the next render.
+    // After the fix, we pin to the last `.message`, skipping join/leave/system.
+    @Test func markChannelReadSkipsTrailingJoinEvents() {
+        var state = AppState()
+        let alice = ChannelParticipant(cardId: "card_A", handle: "alice")
+        let bob = ChannelParticipant(cardId: "card_B", handle: "bob")
+        state.channelMessages["general"] = [
+            ChannelMessage(id: "m1", ts: Date(timeIntervalSince1970: 100), from: alice, body: "hi"),
+            ChannelMessage(id: "m2", ts: Date(timeIntervalSince1970: 200), from: alice, body: "later"),
+            ChannelMessage(id: "j1", ts: Date(timeIntervalSince1970: 300), from: bob, body: "joined", type: .join),
+        ]
+        _ = Reducer.reduce(state: &state, action: .markChannelRead(name: "general"))
+        #expect(state.channelLastReadMessageId["general"] == "m2",
+                "read marker must pin to the last real message, not the trailing join event")
+    }
+
+    @Test func selectChannelSkipsTrailingJoinEvents() {
+        var state = AppState()
+        let alice = ChannelParticipant(cardId: "card_A", handle: "alice")
+        let bob = ChannelParticipant(cardId: "card_B", handle: "bob")
+        state.channelMessages["general"] = [
+            ChannelMessage(id: "m1", ts: Date(timeIntervalSince1970: 100), from: alice, body: "hi"),
+            ChannelMessage(id: "m2", ts: Date(timeIntervalSince1970: 200), from: alice, body: "later"),
+            ChannelMessage(id: "j1", ts: Date(timeIntervalSince1970: 300), from: bob, body: "joined", type: .join),
+        ]
+        _ = Reducer.reduce(state: &state, action: .selectChannel(name: "general"))
+        #expect(state.channelLastReadMessageId["general"] == "m2")
+    }
+
+    @Test func incomingJoinEventWhileFocusedDoesNotMoveReadMarker() {
+        // If the drawer is open and someone joins, the reducer used to pin the
+        // read marker to the join event id — breaking the unread counter from
+        // that point forward.
+        var state = AppState()
+        state.selectedChannelName = "general"
+        let alice = ChannelParticipant(cardId: "card_A", handle: "alice")
+        let bob = ChannelParticipant(cardId: "card_B", handle: "bob")
+        state.channelMessages["general"] = [
+            ChannelMessage(id: "m1", ts: Date(timeIntervalSince1970: 100), from: alice, body: "hi"),
+        ]
+        state.channelLastReadMessageId["general"] = "m1"
+
+        let join = ChannelMessage(id: "j1", ts: Date(timeIntervalSince1970: 200), from: bob, body: "joined", type: .join)
+        _ = Reducer.reduce(state: &state, action: .channelMessageAppended(channelName: "general", message: join))
+        #expect(state.channelLastReadMessageId["general"] == "m1",
+                "a join event must not advance the read marker")
+    }
+
     @Test func selectChannelMarksAsRead() {
         var state = AppState()
         let p = ChannelParticipant(cardId: "card_A", handle: "alice")

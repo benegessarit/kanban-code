@@ -177,6 +177,33 @@ sleep 10
     }
   });
 
+  test("default args include `--config /dev/null` to bypass stale ~/.cloudflared/config.yml", async () => {
+    // Regression: if the user has a prior `~/.cloudflared/config.yml` with
+    // ingress rules (from a named tunnel setup), cloudflared silently ignores
+    // `--url` and routes every request through those rules — which almost
+    // always end in a `http_status:404` catch-all, making our quick tunnel
+    // return 404 for everything. Nailing --config /dev/null is the only
+    // reliable way to keep `--url` authoritative.
+    let capturedArgs: readonly string[] = [];
+    const fakeSpawn: typeof spawn = ((cmd: string, args: readonly string[]) => {
+      void cmd;
+      capturedArgs = args;
+      return spawn("/bin/sh", ["-c", "echo https://fake.trycloudflare.com; sleep 10"]);
+    }) as unknown as typeof spawn;
+    const handle = await startCloudflaredTunnel({
+      port: 9999,
+      spawnImpl: fakeSpawn,
+      timeoutMs: 2000,
+    });
+    const configIdx = capturedArgs.indexOf("--config");
+    assert.ok(configIdx >= 0, `expected --config in args, got: ${JSON.stringify(capturedArgs)}`);
+    assert.equal(capturedArgs[configIdx + 1], "/dev/null");
+    assert.ok(capturedArgs.includes("tunnel"));
+    assert.ok(capturedArgs.includes("--url"));
+    assert.ok(capturedArgs.some((a) => a.includes("http://localhost:9999")));
+    await handle.stop(200);
+  });
+
   test("injected spawnImpl is used (tests never call npx)", async () => {
     let sawInjectedCall = false;
     const fakeSpawn: typeof spawn = ((cmd: string, args: readonly string[], _opts: unknown) => {

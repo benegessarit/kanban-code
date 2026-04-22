@@ -106,6 +106,43 @@ describe("share-server info endpoint", () => {
   });
 });
 
+describe("share-server discovery endpoint (GET /api/channels)", () => {
+  beforeEach(() => {
+    base = tmp();
+    createChannel("general", {}, base);
+    joinChannel("general", { cardId: "card_A", handle: "alice" }, base);
+    joinChannel("general", { cardId: "card_B", handle: "bob" }, base);
+  });
+  afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+
+  test("returns an array of the channels the token has access to", async () => {
+    const app = buildShareApp(mkDeps());
+    const r = await request(app).get("/api/channels?token=tk_good");
+    assert.equal(r.status, 200);
+    assert.ok(Array.isArray(r.body.channels), "payload must be an array");
+    assert.equal(r.body.channels.length, 1, "one share link == one channel (today)");
+    const ch = r.body.channels[0];
+    assert.equal(ch.name, "general");
+    assert.deepEqual(
+      ch.members.map((m: { handle: string }) => m.handle).sort(),
+      ["alice", "bob"],
+    );
+    assert.ok(ch.remainingMs > 0);
+  });
+
+  test("requires a token", async () => {
+    const app = buildShareApp(mkDeps());
+    const r = await request(app).get("/api/channels");
+    assert.equal(r.status, 401);
+  });
+
+  test("rejects an expired share", async () => {
+    const app = buildShareApp(mkDeps({ expiresAt: Date.now() - 1000 }));
+    const r = await request(app).get("/api/channels?token=tk_good");
+    assert.equal(r.status, 410);
+  });
+});
+
 describe("share-server history endpoint", () => {
   beforeEach(() => {
     base = tmp();
@@ -160,7 +197,7 @@ describe("share-server send endpoint", () => {
     // Every agent was fanned out to, with the warning prefix.
     assert.equal(deps.calls.length, 2);
     for (const c of deps.calls) {
-      assert.ok(c.text.startsWith("⚠️"), `missing warning prefix on ${c.session}`);
+      assert.ok(c.text.startsWith("The message below"), `missing warning prefix on ${c.session}`);
       assert.ok(c.text.includes("[Message from #general @ext_dana]: hello everyone"));
     }
   });
@@ -244,6 +281,43 @@ describe("share-server images endpoint", () => {
       .send(Buffer.from("lolz"));
     assert.equal(r.status, 415);
   });
+
+  test("uploaded image can be fetched back via /api/images/:msgId/:filename", async () => {
+    const app = buildShareApp(mkDeps());
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x11, 0x22]);
+    const up = await request(app)
+      .post("/api/channels/general/images?token=tk_good")
+      .set("Content-Type", "image/png")
+      .send(png);
+    assert.equal(up.status, 200);
+    // Round-trip: derive {msgId, filename} from the absolute path just like the
+    // web client does, then GET it back.
+    const parts = (up.body.path as string).split("/");
+    const filename = parts.pop()!;
+    const msgId = parts.pop()!;
+    const get = await request(app).get(`/api/images/${msgId}/${filename}?token=tk_good`);
+    assert.equal(get.status, 200);
+    // Header check — Express sets content-type by extension.
+    assert.match(get.headers["content-type"] ?? "", /^image\/png/);
+    assert.deepEqual(Buffer.from(get.body).subarray(0, 8), png.subarray(0, 8));
+  });
+
+  test("image fetch rejects path traversal attempts", async () => {
+    const app = buildShareApp(mkDeps());
+    // Bad msgId (contains ../)
+    const r1 = await request(app).get("/api/images/..%2F..%2Fetc/passwd?token=tk_good");
+    assert.ok(r1.status === 400 || r1.status === 404,
+      `expected 400/404 for traversal, got ${r1.status}`);
+    // Well-formed but non-existent
+    const r2 = await request(app).get("/api/images/img_nonexistent/0.png?token=tk_good");
+    assert.equal(r2.status, 404);
+  });
+
+  test("image fetch requires a token", async () => {
+    const app = buildShareApp(mkDeps());
+    const r = await request(app).get("/api/images/img_abc/0.png");
+    assert.equal(r.status, 401);
+  });
 });
 
 describe("share-server SSE stream", () => {
@@ -253,6 +327,40 @@ describe("share-server SSE stream", () => {
     joinChannel("general", { cardId: "card_A", handle: "alice" }, base);
   });
   afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+
+  test("flushes ~2 KB of padding on connect so CDN buffers commit immediately", async () => {
+    // Regression: without the padding, Cloudflare + HTTP/2 held the tiny
+    // ": connected …" comment in their frame buffer — the browser received
+    // headers but zero body bytes, and EventSource never fired `open`, which
+    // looked identical to "SSE broken" on the client side.
+    const app = buildShareApp(mkDeps());
+    const { createServer } = await import("node:http");
+    const server = createServer(app);
+    await new Promise<void>((res) => server.listen(0, () => res()));
+    const port = (server.address() as { port: number }).port;
+
+    const resp = await fetch(
+      `http://localhost:${port}/api/channels/general/stream?token=tk_good&handle=dana`,
+    );
+    assert.equal(resp.status, 200);
+    const reader = resp.body!.getReader();
+    // Read everything that arrives within 200 ms — the padding is sent synchronously.
+    const start = Date.now();
+    let total = 0;
+    while (Date.now() - start < 200) {
+      const { done, value } = await Promise.race([
+        reader.read(),
+        new Promise<ReadableStreamReadResult<Uint8Array>>((r) =>
+          setTimeout(() => r({ done: true, value: undefined }), 50),
+        ),
+      ]);
+      if (done) break;
+      if (value) total += value.length;
+    }
+    reader.cancel();
+    server.close();
+    assert.ok(total >= 2000, `expected ≥2 KB of initial bytes (was ${total}) to flush CDN buffers`);
+  });
 
   test("streams new messages appended to the channel jsonl", async () => {
     const app = buildShareApp(mkDeps());

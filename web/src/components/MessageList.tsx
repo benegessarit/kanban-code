@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ChannelMessage } from "@/lib/types";
+import { imageFilesystemPathToHttpUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -86,6 +87,30 @@ export function MessageList({ messages, ownHandle }: Props): React.ReactElement 
               <div className="text-sm whitespace-pre-wrap break-words">
                 {renderBody(m.body)}
               </div>
+              {m.imagePaths && m.imagePaths.length > 0 && (
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {m.imagePaths.map((p, i) => {
+                    const url = imageFilesystemPathToHttpUrl(p);
+                    if (!url) return null;
+                    return (
+                      <a
+                        key={`${m.id}-img-${i}`}
+                        href={url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="block"
+                      >
+                        <img
+                          src={url}
+                          alt="attached image"
+                          className="max-h-64 rounded border border-border/60 object-contain"
+                          loading="lazy"
+                        />
+                      </a>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         );

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { MessageList } from "./MessageList";
 import { Composer } from "./Composer";
+import { ThemeToggle } from "./ThemeToggle";
 import * as api from "@/lib/api";
 import type { ChannelInfo, ChannelMessage } from "@/lib/types";
 import { Hash } from "lucide-react";
@@ -106,6 +107,7 @@ export function ChatRoom({ channelName, myHandle }: Props): React.ReactElement {
         <span className="ml-auto text-xs text-muted-foreground tabular-nums">
           {formatRemaining(remainingMs)}
         </span>
+        <ThemeToggle className="-mr-1" />
       </header>
 
       <MessageList messages={messages} ownHandle={`ext_${myHandle}`} />

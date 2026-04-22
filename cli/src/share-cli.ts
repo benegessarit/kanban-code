@@ -15,6 +15,8 @@
 import { createServer, type Server } from "node:http";
 import { randomBytes } from "node:crypto";
 import { AddressInfo } from "node:net";
+import { promises as dns } from "node:dns";
+import { URL } from "node:url";
 
 import { buildShareApp, type ShareServerDeps } from "./share-server.js";
 import { startCloudflaredTunnel, type TunnelHandle } from "./tunnel.js";
@@ -34,6 +36,13 @@ export interface RunShareOptions {
   webDistDir?: string;
   /** Override the cloudflared starter — tests inject a fake. */
   startTunnel?: typeof startCloudflaredTunnel;
+  /** Override the DNS warm-up — tests skip it (fake hostnames won't resolve).
+   *  Default: real warmDns with a 15-second deadline. */
+  warmDnsImpl?: (host: string) => Promise<void>;
+  /** Override the tunnel readiness probe — tests skip it.
+   *  Default: polls the tunnel's /api/channels endpoint until our Express
+   *  server responds (confirms edge→connector routing is live). */
+  warmTunnelImpl?: (baseUrl: string) => Promise<void>;
   /** Called for each output line — defaults to process.stdout.write. */
   writeLine?: (line: string) => void;
   /** Called for diagnostics — defaults to process.stderr.write. */
@@ -64,6 +73,8 @@ export async function runShare(opts: RunShareOptions): Promise<ShareRunHandle> {
     baseDir,
     webDistDir,
     startTunnel = startCloudflaredTunnel,
+    warmDnsImpl = (h) => warmDns(h),
+    warmTunnelImpl = (u) => warmTunnel(u),
     writeLine = (l) => process.stdout.write(l + "\n"),
     writeError = (l) => process.stderr.write(l + "\n"),
   } = opts;
@@ -99,8 +110,28 @@ export async function runShare(opts: RunShareOptions): Promise<ShareRunHandle> {
     throw err;
   }
 
-  // Publish the URL, token, and metadata for the parent to parse.
+  // Warm the OS's DNS cache for this hostname BEFORE announcing the URL.
+  // macOS's mDNSResponder caches NXDOMAIN for ~60 s — if the user's browser
+  // loads the URL before Cloudflare has propagated the record, every
+  // subsequent lookup (including after the record exists) returns NXDOMAIN
+  // for the lifetime of the negative cache. Polling `dns.lookup` (which
+  // goes through getaddrinfo, the same path curl/browsers use) until it
+  // succeeds primes the cache with a positive entry.
   const publicUrl = `${tunnel.url}/?token=${encodeURIComponent(token)}`;
+  try {
+    const host = new URL(tunnel.url).hostname;
+    await warmDnsImpl(host);
+  } catch (err) {
+    writeError(`dns warmup: ${err instanceof Error ? err.message : err}`);
+  }
+  // Then: wait for the edge → connector path to actually route to our
+  // Express server. DNS resolving alone leaves a 5-30s window where
+  // Cloudflare returns Error 1033.
+  try {
+    await warmTunnelImpl(tunnel.url);
+  } catch (err) {
+    writeError(`tunnel warmup: ${err instanceof Error ? err.message : err}`);
+  }
   writeLine(`url: ${publicUrl}`);
   writeLine(`token: ${token}`);
   writeLine(`port: ${port}`);
@@ -132,6 +163,96 @@ export async function runShare(opts: RunShareOptions): Promise<ShareRunHandle> {
   };
 
   return { url: publicUrl, token, port, expiresAt, done, stop: wrappedStop };
+}
+
+/**
+ * Poll the tunnel's public URL until our Express server responds. DNS
+ * resolving is necessary but not sufficient — Cloudflare's edge has a
+ * separate control-plane step mapping hostname → registered connector, and
+ * during that ~5-30s window `GET /` returns `Error 1033` from the edge
+ * (HTTP 530). ANY response from our Express server — 200, 401, 410 — means
+ * the tunnel is fully routable end-to-end.
+ *
+ * `Error 1033` comes back as either a 5xx or an HTML body with no `x-powered-by`
+ * header, so we explicitly accept known Express responses and reject everything
+ * else as "not ready yet".
+ */
+export async function warmTunnel(
+  baseUrl: string,
+  opts: {
+    intervalMs?: number;
+    timeoutMs?: number;
+    fetchImpl?: (url: string) => Promise<{ status: number; headers: { get(name: string): string | null } }>;
+  } = {},
+): Promise<void> {
+  const intervalMs = opts.intervalMs ?? 500;
+  const timeoutMs = opts.timeoutMs ?? 45_000;
+  const fetchImpl = opts.fetchImpl ?? ((u) => fetch(u));
+  const deadline = Date.now() + timeoutMs;
+  // Unauthenticated probe against a known API route. Express returns 401
+  // (from our token middleware) the instant the tunnel is reachable; the
+  // Cloudflare edge returns 530 / Error 1033 while it's still wiring up.
+  const probeUrl = new URL(baseUrl);
+  probeUrl.pathname = "/api/channels";
+  probeUrl.search = "";
+
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetchImpl(probeUrl.toString());
+      const poweredBy = res.headers.get("x-powered-by");
+      // "x-powered-by: Express" is the unambiguous signal that OUR server
+      // answered. Checking on that (rather than status codes alone) avoids
+      // confusing Cloudflare's 404-from-edge for a real server 404.
+      if (poweredBy && poweredBy.toLowerCase().includes("express")) return;
+    } catch { /* tunnel not reachable yet */ }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error("tunnel-warmup-timeout");
+}
+
+/**
+ * Wait until `dns.lookup(host)` succeeds (i.e. getaddrinfo has a positive
+ * entry in the OS cache for `host`). Also verifies via `dns.resolve4` that
+ * the record exists upstream before each getaddrinfo attempt — this avoids
+ * poisoning the OS cache with a failed lookup when the DNS record simply
+ * hasn't propagated yet.
+ *
+ * Polls every `intervalMs` for up to `timeoutMs`. Returns silently on
+ * success, throws `Error("dns-warmup-timeout")` otherwise. DNS calls are
+ * injectable for tests.
+ */
+export async function warmDns(
+  host: string,
+  opts: {
+    intervalMs?: number;
+    timeoutMs?: number;
+    resolveImpl?: (h: string) => Promise<string[]>;
+    lookupImpl?: (h: string) => Promise<unknown>;
+  } = {},
+): Promise<void> {
+  const intervalMs = opts.intervalMs ?? 300;
+  const timeoutMs = opts.timeoutMs ?? 15_000;
+  const resolveImpl = opts.resolveImpl ?? ((h) => dns.resolve4(h));
+  const lookupImpl = opts.lookupImpl ?? ((h) => dns.lookup(h));
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    // Step 1: upstream DNS has the record?
+    let hasRecord = false;
+    try {
+      const addrs = await resolveImpl(host);
+      hasRecord = addrs.length > 0;
+    } catch { /* fall through */ }
+    // Step 2: if upstream is ready, populate the OS cache via getaddrinfo.
+    if (hasRecord) {
+      try {
+        await lookupImpl(host);
+        return;
+      } catch { /* getaddrinfo may still be holding NX — keep polling */ }
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error("dns-warmup-timeout");
 }
 
 /** Parse "5m", "45m", "1h", "6h", "30s" into ms. Rejects invalid input. */

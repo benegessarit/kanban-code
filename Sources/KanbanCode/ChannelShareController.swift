@@ -56,7 +56,6 @@ final class ChannelShareController {
             throw ShareError.notBundled(msg)
         }
         let cliJS = resourceURL.appendingPathComponent("cli/dist/kanban.js").path
-        let cloudflared = resourceURL.appendingPathComponent("cli/bin/cloudflared").path
         let webDist = resourceURL.appendingPathComponent("share-web").path
 
         let proc = Process()
@@ -69,12 +68,13 @@ final class ChannelShareController {
             proc.arguments = [cliJS, "channel", "share", channel, "--duration", duration.cliArg, "--web-dist", webDist]
         }
         var env = ProcessInfo.processInfo.environment
-        if FileManager.default.fileExists(atPath: cloudflared) {
-            env["KANBAN_CLOUDFLARED"] = cloudflared
-        }
-        // Keep the node process aware of stdin closing so it tears down cleanly
-        // when the Swift app quits.
-        env["PATH"] = (env["PATH"] ?? "") + ":/usr/local/bin:/opt/homebrew/bin"
+        // Swift apps launched from Finder have a minimal PATH; make sure npx /
+        // node / npm are reachable so `npx -y cloudflared` works the first
+        // time a share is started. We deliberately do NOT ship cloudflared:
+        // a bundled copy gets quarantined by macOS Gatekeeper (unsigned origin
+        // binary) which blocks its outbound network. npx-downloaded copies
+        // under ~/.npm/_npx/ don't carry the quarantine xattr.
+        env["PATH"] = (env["PATH"] ?? "") + ":/usr/local/bin:/opt/homebrew/bin:/usr/bin"
         proc.environment = env
 
         let stdout = Pipe()
@@ -173,12 +173,13 @@ final class ChannelShareController {
     // ── helpers ──────────────────────────────────────────────────────
 
     /// Read up to 4 metadata lines (url/token/port/expiresAt) from the child's
-    /// stdout with a hard deadline of 35s (cloudflared's own handshake can
-    /// take ~20s on a cold start).
+    /// stdout. Hard deadline of 90s — allows `npx -y cloudflared` to fetch the
+    /// cloudflared npm package + binary on first run (~30s on typical
+    /// connections) *plus* cloudflared's own ~20s handshake.
     private static func readMetadata(
         from handle: FileHandle,
         channelName: String,
-        timeout: TimeInterval = 35
+        timeout: TimeInterval = 90
     ) async throws -> ActiveShare {
         let task = Task.detached { () -> ActiveShare in
             var buffer = ""

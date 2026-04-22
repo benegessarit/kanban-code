@@ -8,17 +8,15 @@ export function getToken(): string {
   return params.get("token") ?? "";
 }
 
-/** Channel name is the first path segment after `/c/`, falling back to the
- *  route element stored in sessionStorage by the router. Default "general"
- *  only applies when literally nothing else is known — that's a router bug
- *  rather than a runtime fallback. */
-export function getChannelName(): string {
-  const params = new URLSearchParams(window.location.search);
-  const q = params.get("channel");
-  if (q) return q;
-  const m = window.location.pathname.match(/\/c\/([^/]+)/);
-  if (m) return m[1];
-  return "general";
+/** Discovery: list of channels the current token has access to. Today the
+ *  server returns a single-element array (one share link == one channel),
+ *  but the API is shaped as an array so future multi-channel shares can
+ *  land without reworking the client. */
+export async function fetchAccessibleChannels(): Promise<ChannelInfo[]> {
+  const res = await fetch(authedUrl("/api/channels"));
+  if (!res.ok) throw new Error(`channels: ${res.status}`);
+  const body = (await res.json()) as { channels: ChannelInfo[] };
+  return body.channels;
 }
 
 export interface SendBody {
@@ -73,4 +71,16 @@ export async function uploadImage(channel: string, file: Blob): Promise<string> 
 /** Open the SSE stream. Returns the EventSource so callers can close it. */
 export function openStream(channel: string, handle: string): EventSource {
   return new EventSource(authedUrl(`/api/channels/${channel}/stream`, { handle }));
+}
+
+/** Turn an absolute image filesystem path (the form stored in the jsonl and
+ *  pasted into tmux) into a tokenized HTTP URL the browser can load via
+ *  `<img src>`. Returns null when the path doesn't match the expected shape,
+ *  which keeps one stray entry from sneaking a broken image into the chat. */
+export function imageFilesystemPathToHttpUrl(absPath: string): string | null {
+  // Shape: <anything>/channels/images/<msgId>/<filename>
+  const m = /[/\\]channels[/\\]images[/\\]([^/\\]+)[/\\]([^/\\]+)$/.exec(absPath);
+  if (!m) return null;
+  const [, msgId, filename] = m;
+  return authedUrl(`/api/images/${msgId}/${filename}`);
 }

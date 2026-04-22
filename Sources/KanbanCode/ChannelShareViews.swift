@@ -133,10 +133,23 @@ struct ChannelShareBanner: View {
 // MARK: - Starting (spinner) banner
 
 struct ChannelShareStartingBanner: View {
+    @State private var tookLong: Bool = false
+    @State private var tookVeryLong: Bool = false
+
     var body: some View {
         HStack(spacing: 10) {
             ProgressView().controlSize(.small)
-            Text("Opening a public tunnel…")
+            // Message ramps up as wait time grows, so a slow cloudflared
+            // install or a cold Cloudflare edge doesn't feel like a silent
+            // hang. We deliberately don't name a single culprit because the
+            // stalls we've seen happen anywhere from DNS propagation, npx
+            // fetching cloudflared on first run, or the edge waiting on
+            // the connector to register.
+            Text(tookVeryLong
+                 ? "Still working — waiting for Cloudflare to route the tunnel. First run also downloads cloudflared."
+                 : tookLong
+                   ? "Opening a public tunnel…"
+                   : "Starting share…")
                 .font(.app(.caption))
                 .foregroundStyle(.secondary)
             Spacer()
@@ -144,6 +157,12 @@ struct ChannelShareStartingBanner: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .background(Color.blue.opacity(0.06))
+        .task {
+            try? await Task.sleep(for: .seconds(3))
+            tookLong = true
+            try? await Task.sleep(for: .seconds(7))
+            tookVeryLong = true
+        }
     }
 }
 

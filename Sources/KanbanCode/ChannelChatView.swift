@@ -281,24 +281,40 @@ struct ChannelChatView: View {
         .padding(.vertical, 10)
     }
 
-    /// Header action: start / manage a public share. Icon reflects state.
+    /// Header action: start / manage a public share. Label + icon reflects state.
     @ViewBuilder
     private var shareButton: some View {
         let phase = shareController?.phase(for: channel.name) ?? .idle
         let isActive = { if case .active = phase { return true } else { return false } }()
+        let isStarting = { if case .starting = phase { return true } else { return false } }()
 
         Button {
             if isActive {
                 Task { await shareController?.stop(channel: channel.name) }
-            } else {
+            } else if !isStarting {
                 showingShareDialog = true
             }
         } label: {
-            Image(systemName: isActive ? "globe.americas.fill" : "globe")
-                .font(.app(.body))
-                .foregroundStyle(isActive ? Color.green : .secondary)
+            HStack(spacing: 4) {
+                if isStarting {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                        .font(.app(.caption))
+                }
+                Text(isActive ? "Sharing" : "Live Share")
+                    .font(.app(.caption, weight: .medium))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .foregroundStyle(isActive ? Color.white : .primary)
+            .background(
+                Capsule()
+                    .fill(isActive ? Color.green : Color.secondary.opacity(0.12))
+            )
         }
         .buttonStyle(.plain)
+        .disabled(isStarting)
         .help(isActive
               ? "Channel is publicly shared — click to stop"
               : "Share this channel via a public URL")

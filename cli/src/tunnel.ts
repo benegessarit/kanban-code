@@ -36,17 +36,23 @@ const URL_REGEX = /https:\/\/[a-z0-9][a-z0-9-]*\.(?:trycloudflare\.com|cfargotun
  *
  *  Resolution order for the cloudflared binary:
  *    1. Caller-provided `command` / `args` (used by tests).
- *    2. `KANBAN_CLOUDFLARED` env var — absolute path to a bundled binary.
- *       The Swift app sets this when it spawns the CLI, pointing at the
- *       cloudflared shipped inside the .app bundle.
+ *    2. `KANBAN_CLOUDFLARED` env var — absolute path to a specific binary.
  *    3. Fallback to `npx -y cloudflared` so standalone CLI use still works.
+ *
+ *  We pass `--config /dev/null` to disable auto-loading of `~/.cloudflared/
+ *  config.yml`. Users who previously set up a named tunnel have an ingress
+ *  stanza there, and cloudflared's default behavior is to apply those
+ *  ingress rules to ANY tunnel it runs — silently ignoring `--url` and
+ *  returning 404 for every request to our quick tunnel. Nailed to /dev/null
+ *  so our share tunnels always route to the intended origin.
  */
 export function startCloudflaredTunnel(opts: StartTunnelOptions): Promise<TunnelHandle> {
   const bundled = process.env.KANBAN_CLOUDFLARED;
   const defaultCommand = bundled || "npx";
+  const urlArgs = ["--config", "/dev/null", "tunnel", "--url", `http://localhost:${opts.port}`];
   const defaultArgs = bundled
-    ? ["tunnel", "--url", `http://localhost:${opts.port}`]
-    : ["-y", "cloudflared", "tunnel", "--url", `http://localhost:${opts.port}`];
+    ? urlArgs
+    : ["-y", "cloudflared", ...urlArgs];
   const {
     port,
     command = defaultCommand,
