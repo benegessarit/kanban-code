@@ -50,25 +50,39 @@ public struct Settings: Codable, Sendable {
         case skill // backward-compat: old name for promptTemplate
     }
 
-    // Backward-compatible decoding — new fields default gracefully
+    // Backward-compatible decoding — new fields default gracefully.
+    // IMPORTANT: every field is decoded independently via `try?`-style fallbacks
+    // so a single bad value can never wipe out the whole settings object. A
+    // real-world incident: a future version of the app wrote `codex` into
+    // `enabledAssistants`, but the Swift enum only had claude/gemini — the
+    // strict `[CodingAssistant]` decode threw, `BoardStore` caught it with
+    // `try?`, and every project vanished from the UI on restart.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        projects = try container.decodeIfPresent([Project].self, forKey: .projects) ?? []
-        globalView = try container.decodeIfPresent(GlobalViewSettings.self, forKey: .globalView) ?? GlobalViewSettings()
-        github = try container.decodeIfPresent(GitHubSettings.self, forKey: .github) ?? GitHubSettings()
-        notifications = try container.decodeIfPresent(NotificationSettings.self, forKey: .notifications) ?? NotificationSettings()
-        remote = try container.decodeIfPresent(RemoteSettings.self, forKey: .remote)
-        sessionTimeout = try container.decodeIfPresent(SessionTimeoutSettings.self, forKey: .sessionTimeout) ?? SessionTimeoutSettings()
+        projects = (try? container.decodeIfPresent([Project].self, forKey: .projects)) ?? []
+        globalView = (try? container.decodeIfPresent(GlobalViewSettings.self, forKey: .globalView)) ?? GlobalViewSettings()
+        github = (try? container.decodeIfPresent(GitHubSettings.self, forKey: .github)) ?? GitHubSettings()
+        notifications = (try? container.decodeIfPresent(NotificationSettings.self, forKey: .notifications)) ?? NotificationSettings()
+        remote = try? container.decodeIfPresent(RemoteSettings.self, forKey: .remote)
+        sessionTimeout = (try? container.decodeIfPresent(SessionTimeoutSettings.self, forKey: .sessionTimeout)) ?? SessionTimeoutSettings()
         // Backward-compat: try "promptTemplate" first, fall back to "skill"
-        promptTemplate = try container.decodeIfPresent(String.self, forKey: .promptTemplate)
-            ?? container.decodeIfPresent(String.self, forKey: .skill) ?? ""
-        githubIssuePromptTemplate = try container.decodeIfPresent(String.self, forKey: .githubIssuePromptTemplate)
+        promptTemplate = (try? container.decodeIfPresent(String.self, forKey: .promptTemplate))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .skill)) ?? ""
+        githubIssuePromptTemplate = (try? container.decodeIfPresent(String.self, forKey: .githubIssuePromptTemplate))
             ?? "#${number}: ${title}\n\n${body}"
-        columnOrder = try container.decodeIfPresent([KanbanCodeColumn].self, forKey: .columnOrder) ?? KanbanCodeColumn.allCases
-        hasCompletedOnboarding = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? false
-        defaultAssistant = try container.decodeIfPresent(CodingAssistant.self, forKey: .defaultAssistant)
-        enabledAssistants = try container.decodeIfPresent([CodingAssistant].self, forKey: .enabledAssistants)
-            ?? CodingAssistant.allCases
+        columnOrder = (try? container.decodeIfPresent([KanbanCodeColumn].self, forKey: .columnOrder)) ?? KanbanCodeColumn.allCases
+        hasCompletedOnboarding = (try? container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding)) ?? false
+        defaultAssistant = try? container.decodeIfPresent(CodingAssistant.self, forKey: .defaultAssistant)
+        // Assistants written by a newer version of the app (or a future CLI)
+        // may include values this Swift enum doesn't know about. Decode loose
+        // strings, then keep only the ones we recognize — future unknowns
+        // round-trip as a no-op rather than nuking the whole config.
+        if let rawAssistants = try? container.decodeIfPresent([String].self, forKey: .enabledAssistants) {
+            let known = rawAssistants.compactMap(CodingAssistant.init(rawValue:))
+            enabledAssistants = known.isEmpty ? CodingAssistant.allCases : known
+        } else {
+            enabledAssistants = CodingAssistant.allCases
+        }
     }
 
     public func encode(to encoder: Encoder) throws {

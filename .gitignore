@@ -7,6 +7,9 @@ DerivedData/
 .DS_Store
 cli/node_modules/
 cli/dist/
+cli/bin/
+web/node_modules/
+web/dist/
 
 # Ralph-loop local iteration log (not part of the feature)
 .claude/ralph-loop.local.md

@@ -173,4 +173,82 @@ struct SettingsStoreTests {
         let settings = try await store.read()
         #expect(settings.projects[0].githubFilter == "assignee:@me repo:org/repo is:open")
     }
+
+    // MARK: - Forward-compat: unknown values in JSON must not wipe the whole config
+
+    @Test("Unknown values in enabledAssistants don't break decoding — regression for 'projects gone on restart'")
+    func unknownEnabledAssistantDoesNotNukeProjects() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        // A settings.json produced by a newer app version that added "codex"
+        // as a coding-assistant value the current Swift enum doesn't know about.
+        let hostile = """
+        {
+          "projects": [
+            { "path": "/Users/me/Projects/alpha", "name": "alpha", "visible": true },
+            { "path": "/Users/me/Projects/beta",  "name": "beta",  "visible": true }
+          ],
+          "enabledAssistants": ["claude", "gemini", "codex"],
+          "columnOrder": ["backlog", "in_progress", "done"]
+        }
+        """
+        let path = (dir as NSString).appendingPathComponent("settings.json")
+        try hostile.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let store = SettingsStore(basePath: dir)
+        let settings = try await store.read()
+
+        // Projects must survive even though enabledAssistants has an unknown case.
+        #expect(settings.projects.count == 2)
+        #expect(settings.projects.map(\.name) == ["alpha", "beta"])
+        // Unknown assistants are silently dropped, known ones kept.
+        #expect(settings.enabledAssistants == [.claude, .gemini])
+    }
+
+    @Test("Entirely unknown enabledAssistants falls back to all known cases")
+    func allUnknownEnabledAssistantsFallsBackToDefaults() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let json = """
+        {
+          "projects": [{ "path": "/x", "name": "x", "visible": true }],
+          "enabledAssistants": ["onlycodex", "somethingelse"]
+        }
+        """
+        let path = (dir as NSString).appendingPathComponent("settings.json")
+        try json.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let settings = try await SettingsStore(basePath: dir).read()
+        #expect(settings.projects.count == 1)
+        #expect(Set(settings.enabledAssistants) == Set(CodingAssistant.allCases))
+    }
+
+    @Test("Malformed nested object in a sibling field keeps the rest intact")
+    func malformedSiblingDoesNotNukeProjects() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        // If some field contains garbage — e.g. a numeric instead of an object —
+        // every other field should still decode fine. Each top-level field is
+        // independently wrapped in `try?` in SettingsStore.
+        let json = """
+        {
+          "projects": [
+            { "path": "/a", "name": "a", "visible": true }
+          ],
+          "github": 12345,
+          "sessionTimeout": "not an object"
+        }
+        """
+        let path = (dir as NSString).appendingPathComponent("settings.json")
+        try json.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let settings = try await SettingsStore(basePath: dir).read()
+        #expect(settings.projects.count == 1)
+        // Broken sections fall back to defaults.
+        #expect(settings.github.defaultFilter == "assignee:@me is:open")
+        #expect(settings.sessionTimeout.activeThresholdMinutes == 1440)
+    }
 }
