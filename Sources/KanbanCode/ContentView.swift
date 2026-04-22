@@ -60,6 +60,7 @@ struct ContentView: View {
     @State var store: BoardStore
     @State var orchestrator: BackgroundOrchestrator
     @State var channelsWatcher: ChannelsWatcher = ChannelsWatcher()
+    @State var shareController: ChannelShareController = ChannelShareController()
     @State var searchInitialQuery = ""
     @State var terminalHadFocusBeforeSearch = false
     @State var deepSearchTrigger = false
@@ -1196,6 +1197,9 @@ struct ContentView: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeQuitRequested)) { _ in
+                // Tear down any active channel shares first — they're the only
+                // child processes we own that survive an unclean exit.
+                Task { await shareController.stopAll() }
                 let sessions = store.state.cards.compactMap { card -> TmuxSession? in
                     guard let tmux = card.link.tmuxLink else { return nil }
                     return TmuxSession(name: tmux.sessionName, path: card.link.projectPath ?? "")
@@ -2484,7 +2488,8 @@ struct ContentView: View {
             draft: Binding(
                 get: { store.state.channelDrafts[channel.name] ?? "" },
                 set: { store.dispatch(.setChannelDraft(channelName: channel.name, body: $0)) }
-            )
+            ),
+            shareController: shareController
         )
     }
 

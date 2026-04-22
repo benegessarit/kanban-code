@@ -167,6 +167,10 @@ struct ChannelChatView: View {
     /// survives drawer switches — avoids losing in-progress typing when the
     /// user jumps to another channel/card and comes back.
     @Binding var draft: String
+    /// Optional share controller. When present, a globe button in the header
+    /// opens the share dialog and an active share is shown as a banner
+    /// below the header. When nil, all share UI is hidden.
+    var shareController: ChannelShareController? = nil
 
     @State private var pastedImages: [Data] = []
     @State private var rosterExpanded = false
@@ -175,11 +179,13 @@ struct ChannelChatView: View {
     @State private var isCmdHeld: Bool = false
     @State private var cmdMonitor: Any?
     @State private var lastMessageHeight: CGFloat = 80
+    @State private var showingShareDialog: Bool = false
     @FocusState private var inputFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            shareBanner
             if rosterExpanded { rosterRow }
             Divider()
             messageList
@@ -200,6 +206,38 @@ struct ChannelChatView: View {
                 cmdMonitor = nil
             }
             isCmdHeld = false
+        }
+        .sheet(isPresented: $showingShareDialog) {
+            ChannelShareDialog(
+                isPresented: $showingShareDialog,
+                channelName: channel.name
+            ) { duration in
+                guard let ctrl = shareController else { return }
+                Task { _ = try? await ctrl.start(channel: channel.name, duration: duration) }
+            }
+        }
+    }
+
+    /// Banner directly beneath the header reflecting share state.
+    @ViewBuilder
+    private var shareBanner: some View {
+        if let ctrl = shareController {
+            switch ctrl.phase(for: channel.name) {
+            case .idle:
+                EmptyView()
+            case .starting:
+                ChannelShareStartingBanner()
+            case .active(let share):
+                ChannelShareBanner(share: share) {
+                    // onCopy: optional toast hook could go here later.
+                } onStop: {
+                    Task { await ctrl.stop(channel: channel.name) }
+                }
+            case .failed(let message):
+                ChannelShareFailedBanner(message: message) {
+                    Task { await ctrl.stop(channel: channel.name) }
+                }
+            }
         }
     }
 
@@ -228,6 +266,9 @@ struct ChannelChatView: View {
             .buttonStyle(.plain)
             .help("Show members")
             Spacer()
+            if shareController != nil {
+                shareButton
+            }
             Button(action: onClose) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.app(.body))
@@ -238,6 +279,29 @@ struct ChannelChatView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+
+    /// Header action: start / manage a public share. Icon reflects state.
+    @ViewBuilder
+    private var shareButton: some View {
+        let phase = shareController?.phase(for: channel.name) ?? .idle
+        let isActive = { if case .active = phase { return true } else { return false } }()
+
+        Button {
+            if isActive {
+                Task { await shareController?.stop(channel: channel.name) }
+            } else {
+                showingShareDialog = true
+            }
+        } label: {
+            Image(systemName: isActive ? "globe.americas.fill" : "globe")
+                .font(.app(.body))
+                .foregroundStyle(isActive ? Color.green : .secondary)
+        }
+        .buttonStyle(.plain)
+        .help(isActive
+              ? "Channel is publicly shared — click to stop"
+              : "Share this channel via a public URL")
     }
 
     private var onlineCountValue: Int {
