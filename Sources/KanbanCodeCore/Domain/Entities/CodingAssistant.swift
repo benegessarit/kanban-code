@@ -113,6 +113,34 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         }
     }
 
+    /// True if the given session file path lives under this assistant's config directory.
+    /// Used by per-assistant activity detectors so they ignore paths that belong to
+    /// another assistant — otherwise, Codex's mtime-only polling (which has no way
+    /// of knowing a file is actually a Claude transcript) will fabricate
+    /// `.activelyWorking` for any recently-modified Claude session, and the composite
+    /// detector's highest-priority merge will let that win over the Claude detector's
+    /// correct state. Symptom: archived Claude cards un-archive themselves.
+    public func owns(sessionPath: String) -> Bool {
+        sessionPath.contains("/\(configDirName)/")
+    }
+
+    /// The assistant whose config directory contains this session path, or nil
+    /// if the path is not under any known assistant directory (e.g. test fixtures).
+    public static func owner(ofSessionPath path: String) -> CodingAssistant? {
+        for assistant in CodingAssistant.allCases where assistant.owns(sessionPath: path) {
+            return assistant
+        }
+        return nil
+    }
+
+    /// True if another assistant's config dir appears in this path. Detectors use
+    /// this to drop clearly cross-assistant paths from polling while still
+    /// accepting unowned test fixture paths.
+    public func ownedByOther(sessionPath: String) -> Bool {
+        guard let owner = CodingAssistant.owner(ofSessionPath: sessionPath) else { return false }
+        return owner != self
+    }
+
     /// Symbol used to mark user turns in conversation history UI.
     public var historyPromptSymbol: String {
         switch self {

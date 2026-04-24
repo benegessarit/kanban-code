@@ -92,6 +92,39 @@ struct GeminiActivityDetectorTests {
         #expect(result["s1"] == .ended)
     }
 
+    // MARK: - Cross-Assistant Filtering
+
+    @Test("Ignores non-Gemini session paths during poll")
+    func filtersOutNonGeminiPaths() async throws {
+        // Regression: without this filter, Gemini would mtime-poll a Claude
+        // transcript and tag it `.activelyWorking`, and the composite detector's
+        // highest-priority merge would unarchive the card. See
+        // CompositeActivityDetector / CodingAssistant.owns(sessionPath:).
+        let claudeDir = "/tmp/kanban-test-cross-\(UUID().uuidString)/.claude/projects"
+        try FileManager.default.createDirectory(atPath: claudeDir, withIntermediateDirectories: true)
+        let claudePath = "\(claudeDir)/s1.jsonl"
+        try "{}".write(toFile: claudePath, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: (claudeDir as NSString).deletingLastPathComponent) }
+
+        let detector = GeminiActivityDetector()
+        let result = await detector.pollActivity(sessionPaths: ["s1": claudePath])
+
+        #expect(result["s1"] == nil)
+    }
+
+    @Test("Ignores hook events for non-Gemini transcript paths")
+    func filtersOutNonGeminiHookEvents() async {
+        let detector = GeminiActivityDetector()
+        let event = HookEvent(
+            sessionId: "s1",
+            eventName: "UserPromptSubmit",
+            transcriptPath: "/Users/x/.claude/projects/foo/s1.jsonl"
+        )
+        await detector.handleHookEvent(event)
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .stale)
+    }
+
     // MARK: - Multiple Sessions
 
     @Test("Polls multiple sessions simultaneously")

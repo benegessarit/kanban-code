@@ -24,6 +24,18 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
     }
 
     public func handleHookEvent(_ event: HookEvent) async {
+        // Drop events whose transcriptPath is clearly owned by another assistant.
+        // The composite detector forwards every event to every detector, and
+        // without this check a Gemini UserPromptSubmit would stamp
+        // `.activelyWorking` into Claude's lastEvents for a non-Claude session.
+        // Paths that aren't under any known assistant dir (e.g. test fixtures)
+        // still pass through, so tests don't need to mirror the real layout.
+        if let path = event.transcriptPath,
+           !path.isEmpty,
+           CodingAssistant.claude.ownedByOther(sessionPath: path) {
+            return
+        }
+
         lastEvents[event.sessionId] = event
 
         if event.eventName == "Stop" {
@@ -43,15 +55,20 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
     private let activeTimeout: TimeInterval
 
     public func pollActivity(sessionPaths: [String: String]) async -> [String: ActivityState] {
+        // Drop session paths clearly owned by another assistant (Gemini, Codex).
+        // See handleHookEvent for rationale. Unowned paths (test fixtures) pass
+        // through so existing tests don't need to mirror the real directory layout.
+        let filtered = sessionPaths.filter { !CodingAssistant.claude.ownedByOther(sessionPath: $0.value) }
+
         // Cache paths for direct mtime checks in activityState()
-        for (id, path) in sessionPaths {
+        for (id, path) in filtered {
             self.sessionPaths[id] = path
         }
 
         let fileManager = FileManager.default
         var states: [String: ActivityState] = [:]
 
-        for (sessionId, path) in sessionPaths {
+        for (sessionId, path) in filtered {
             guard let attrs = try? fileManager.attributesOfItem(atPath: path),
                   let mtime = attrs[.modificationDate] as? Date else {
                 states[sessionId] = .ended

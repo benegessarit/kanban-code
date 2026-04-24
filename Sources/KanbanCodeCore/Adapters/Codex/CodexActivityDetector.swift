@@ -19,10 +19,18 @@ public actor CodexActivityDetector: ActivityDetector {
     }
 
     public func pollActivity(sessionPaths: [String: String]) async -> [String: ActivityState] {
+        // Drop session paths clearly owned by another assistant. Codex has no
+        // hooks, so every recently-modified file it sees looks `.activelyWorking`.
+        // Without this filter a just-archived Claude session's transcript
+        // (mtime a few seconds ago from the SessionEnd flush) tags
+        // `.activelyWorking` here, then the composite-detector priority merge
+        // picks it over Claude's correct `.ended` and auto-unarchives the card.
+        let filtered = sessionPaths.filter { !CodingAssistant.codex.ownedByOther(sessionPath: $0.value) }
+
         let fileManager = FileManager.default
         var states: [String: ActivityState] = [:]
 
-        for (sessionId, path) in sessionPaths {
+        for (sessionId, path) in filtered {
             guard let attrs = try? fileManager.attributesOfItem(atPath: path),
                   let mtime = attrs[.modificationDate] as? Date else {
                 states[sessionId] = .ended

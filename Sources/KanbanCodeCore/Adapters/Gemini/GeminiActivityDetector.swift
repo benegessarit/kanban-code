@@ -29,6 +29,17 @@ public actor GeminiActivityDetector: ActivityDetector {
     /// Handle hook events from Gemini CLI.
     /// Event names are already normalized (AfterAgent→Stop, BeforeAgent→UserPromptSubmit).
     public func handleHookEvent(_ event: HookEvent) async {
+        // Drop events whose transcriptPath is clearly owned by another assistant.
+        // The composite detector forwards every event to every detector, and
+        // without this check a Claude UserPromptSubmit would stamp
+        // `.activelyWorking` into Gemini's hookStates for a non-Gemini session.
+        // Unowned paths (test fixtures) still pass through.
+        if let path = event.transcriptPath,
+           !path.isEmpty,
+           CodingAssistant.gemini.ownedByOther(sessionPath: path) {
+            return
+        }
+
         lastEventTime[event.sessionId] = event.timestamp
 
         switch HookManager.normalizeEventName(event.eventName) {
@@ -49,10 +60,14 @@ public actor GeminiActivityDetector: ActivityDetector {
 
     /// Poll session file mtimes and return activity states.
     public func pollActivity(sessionPaths: [String: String]) async -> [String: ActivityState] {
+        // Drop session paths clearly owned by another assistant. See
+        // handleHookEvent for rationale.
+        let filtered = sessionPaths.filter { !CodingAssistant.gemini.ownedByOther(sessionPath: $0.value) }
+
         let fileManager = FileManager.default
         var states: [String: ActivityState] = [:]
 
-        for (sessionId, path) in sessionPaths {
+        for (sessionId, path) in filtered {
             // Prefer hook-based state if available and recent
             if let hookState = hookStates[sessionId] {
                 // Check for timeout: if actively working for >5 minutes without a new event, downgrade

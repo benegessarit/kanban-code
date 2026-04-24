@@ -37,4 +37,22 @@ struct CodexActivityDetectorTests {
         let state = await detector.activityState(for: "s1")
         #expect(state == .stale)
     }
+
+    @Test("Ignores non-Codex session paths during poll")
+    func filtersOutNonCodexPaths() async throws {
+        // Regression: the composite detector used to pick Codex's mtime-based
+        // `.activelyWorking` for a just-archived Claude session (transcript was
+        // modified seconds earlier), overriding Claude's correct `.ended` and
+        // auto-unarchiving the card.
+        let claudeDir = "/tmp/kanban-test-cross-\(UUID().uuidString)/.claude/projects"
+        try FileManager.default.createDirectory(atPath: claudeDir, withIntermediateDirectories: true)
+        let claudePath = "\(claudeDir)/s1.jsonl"
+        try "{}\n".write(toFile: claudePath, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: (claudeDir as NSString).deletingLastPathComponent) }
+
+        let detector = CodexActivityDetector()
+        let result = await detector.pollActivity(sessionPaths: ["s1": claudePath])
+
+        #expect(result["s1"] == nil)
+    }
 }
