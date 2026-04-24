@@ -100,5 +100,19 @@ struct CodexSessionStoreTests {
         let turns = try await store.readTranscript(sessionPath: path)
         #expect(turns.count == 2)
         #expect(FileManager.default.fileExists(atPath: "\(dir)/session_index.jsonl"))
+
+        // Regression: Codex's TUI renders the chat from `event_msg` lines
+        // (type=user_message / type=agent_message), not from `response_item`
+        // lines — response_items feed model context on resume but are
+        // invisible to the user. Without the paired events, a migrated
+        // session opens as an empty chat in `codex resume`.
+        let raw = try String(contentsOfFile: path, encoding: .utf8)
+        let lines = raw.split(separator: "\n", omittingEmptySubsequences: true)
+        let userEvents = lines.filter { $0.contains("\"type\":\"user_message\"") }
+        let agentEvents = lines.filter { $0.contains("\"type\":\"agent_message\"") }
+        #expect(userEvents.count == 1, "expected one user_message event_msg")
+        #expect(agentEvents.count == 1, "expected one agent_message event_msg")
+        #expect(userEvents[0].contains("Hello"))
+        #expect(agentEvents[0].contains("Hi"))
     }
 }

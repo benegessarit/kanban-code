@@ -60,12 +60,27 @@ public enum KanbanCodeLog {
         let line = "[\(timestamp)] [\(level)] [\(subsystem)] \(message)\n"
 
         queue.async {
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write(line.data(using: .utf8) ?? Data())
-                handle.closeFile()
-            } else {
-                FileManager.default.createFile(atPath: logPath, contents: line.data(using: .utf8))
+            // Use the Swift-throwing FileHandle API (seekToEnd / write(contentsOf:)
+            // / close), NOT the legacy Obj-C methods (seekToEndOfFile, write(_:),
+            // closeFile). The legacy ones raise NSException on any I/O hiccup
+            // (stale fd after inode replacement, truncated file, disk full) and
+            // Swift can't catch NSException — the process aborts. Seen in the
+            // wild on channel actions that happened to log while the file was
+            // being touched externally:
+            //   ~/Library/Logs/DiagnosticReports/KanbanCode-*.ips
+            do {
+                let data = Data(line.utf8)
+                let url = URL(fileURLWithPath: logPath)
+                if !FileManager.default.fileExists(atPath: logPath) {
+                    FileManager.default.createFile(atPath: logPath, contents: nil)
+                }
+                let handle = try FileHandle(forWritingTo: url)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+            } catch {
+                // Logging is fire-and-forget — dropping a line on a transient
+                // I/O failure is vastly preferable to crashing the UI.
             }
         }
     }

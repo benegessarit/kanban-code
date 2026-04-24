@@ -2484,6 +2484,10 @@ struct ContentView: View {
                 let other = ChannelParticipant(cardId: m.cardId, handle: m.handle)
                 store.dispatch(.selectDM(other: other))
             },
+            onKickMember: { m in
+                let who = ChannelParticipant(cardId: m.cardId, handle: m.handle)
+                store.dispatch(.kickChannelMember(channelName: channel.name, member: who))
+            },
             activityByHandle: activityMap,
             draft: Binding(
                 get: { store.state.channelDrafts[channel.name] ?? "" },

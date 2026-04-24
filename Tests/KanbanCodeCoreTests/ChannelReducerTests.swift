@@ -68,6 +68,59 @@ struct ChannelReducerTests {
         #expect(effects.isEmpty)
     }
 
+    @Test func kickChannelMemberRemovesOptimisticallyAndEmitsEffect() {
+        var state = AppState()
+        let now = Date()
+        state.channels = [Channel(
+            id: "ch_1", name: "general", createdAt: now,
+            createdBy: ChannelParticipant(cardId: nil, handle: "me"),
+            members: [
+                ChannelMember(cardId: "card_A", handle: "alice", joinedAt: now),
+                ChannelMember(cardId: "card_B", handle: "bob",   joinedAt: now),
+            ]
+        )]
+        let effects = Reducer.reduce(state: &state, action: .kickChannelMember(
+            channelName: "#General",
+            member: ChannelParticipant(cardId: "card_A", handle: "alice")
+        ))
+        // Optimistic: chip disappears immediately.
+        #expect(state.channels[0].members.map(\.handle) == ["bob"])
+        // Effect: writes to disk + reloads so the watcher refreshes.
+        var sawLeave = false
+        for e in effects {
+            if case .leaveChannelOnDisk(let n, let m) = e, n == "general", m.handle == "alice" {
+                sawLeave = true
+            }
+        }
+        #expect(sawLeave, "expected leaveChannelOnDisk(name: general, alice)")
+    }
+
+    @Test func kickChannelMemberMatchesByHandleWhenCardIdMissing() {
+        // Covers kicking a ghost agent whose card was already deleted — the
+        // roster entry still has the cardId but the dispatched action only
+        // has the handle, so the reducer must fall back to handle matching.
+        var state = AppState()
+        state.channels = [Channel(
+            id: "ch_1", name: "general", createdAt: Date(),
+            createdBy: ChannelParticipant(cardId: nil, handle: "me"),
+            members: [ChannelMember(cardId: "card_dead", handle: "ghost", joinedAt: Date())]
+        )]
+        _ = Reducer.reduce(state: &state, action: .kickChannelMember(
+            channelName: "general",
+            member: ChannelParticipant(cardId: nil, handle: "ghost")
+        ))
+        #expect(state.channels[0].members.isEmpty)
+    }
+
+    @Test func kickChannelMemberIsNoOpForUnknownChannel() {
+        var state = AppState()
+        let effects = Reducer.reduce(state: &state, action: .kickChannelMember(
+            channelName: "does-not-exist",
+            member: ChannelParticipant(cardId: nil, handle: "alice")
+        ))
+        #expect(effects.isEmpty)
+    }
+
     @Test func channelMessageAppendedIsSortedAndDeduped() {
         var state = AppState()
         let p = ChannelParticipant(cardId: "card_A", handle: "alice")

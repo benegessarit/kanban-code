@@ -80,6 +80,12 @@ public final class CodexSessionStore: SessionStore, @unchecked Sendable {
                     "content": [["type": "input_text", "text": text]]
                 ]
                 lines.append(try encodeLine(type: "response_item", timestamp: timestamp, payload: payload))
+                // Also emit the UI-facing event_msg. Codex's TUI renders chat
+                // from event_msg lines (user_message / agent_message), NOT from
+                // response_items — response_items feed model context on resume
+                // but are invisible to the user. Without this, the migrated
+                // session shows up as an empty chat in `codex resume`.
+                try appendUserMessageEvent(text, timestamp: timestamp, to: &lines)
             }
         }
 
@@ -265,6 +271,28 @@ public final class CodexSessionStore: SessionStore, @unchecked Sendable {
             "content": [["type": "output_text", "text": text]]
         ]
         lines.append(try encodeLine(type: "response_item", timestamp: timestamp, payload: payload))
+        // Paired event_msg so Codex's TUI actually shows the assistant text.
+        // Skip empties — an assistant turn with only tool calls has no visible
+        // bubble and shouldn't produce one.
+        guard !text.isEmpty else { return }
+        let eventPayload: [String: Any] = [
+            "type": "agent_message",
+            "message": text
+        ]
+        lines.append(try encodeLine(type: "event_msg", timestamp: timestamp, payload: eventPayload))
+    }
+
+    private func appendUserMessageEvent(
+        _ text: String,
+        timestamp: String,
+        to lines: inout [String]
+    ) throws {
+        guard !text.isEmpty else { return }
+        let eventPayload: [String: Any] = [
+            "type": "user_message",
+            "message": text
+        ]
+        lines.append(try encodeLine(type: "event_msg", timestamp: timestamp, payload: eventPayload))
     }
 
     private func textContent(from turn: ConversationTurn) -> String {

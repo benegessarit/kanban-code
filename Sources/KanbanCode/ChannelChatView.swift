@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import KanbanCodeCore
+import MarkdownUI
 
 /// Last message's rendered height — used as the "near bottom" threshold so
 /// images / tall messages don't prematurely turn off auto-scroll. Reported
@@ -41,24 +42,76 @@ private func applyChatURLLinks(to attr: inout AttributedString, linkColor: Color
     }
 }
 
-/// Render `text` as a Text view whose URLs are clickable when the user
-/// is holding cmd AND hovering over the line.
+/// Render a chat message body with:
+///   • Markdown — block-level constructs (headings, code fences, tables,
+///     blockquotes) go through MarkdownUI so they actually render as such;
+///     everything else uses the lighter AttributedString(markdown:) path so
+///     text selection works smoothly across bubbles.
+///   • URL linkification — cmd+hover over the line activates the links,
+///     same UX as the rest of the app.
+///   • Truncation — messages longer than `truncationLimit` get clipped to a
+///     "Show more" button so one novel-length post can't dominate the
+///     scrollback (same pattern as the card-detail chat view).
 private struct ChatMessageBody: View {
     let text: String
     let isCmdHeld: Bool
     @State private var hovered = false
+    @State private var expanded = false
+
+    /// Chosen to match ChatMessageView.textTruncationLimit (4 KB). At the
+    /// default font, that's roughly 50 lines — long enough that a normal
+    /// reply is never clipped, short enough that a pasted design doc or
+    /// LLM "thinking out loud" dump doesn't eat the whole scroll.
+    private static let truncationLimit = 4_000
 
     private var linksActive: Bool { isCmdHeld && hovered }
+    private var isTruncated: Bool { text.count > Self.truncationLimit && !expanded }
+    private var displayText: String {
+        isTruncated ? String(text.prefix(Self.truncationLimit)) : text
+    }
 
     var body: some View {
-        var attr = AttributedString(text)
-        if linksActive {
-            applyChatURLLinks(to: &attr)
+        VStack(alignment: .leading, spacing: 4) {
+            messageContent
+            if isTruncated {
+                Button { expanded = true } label: {
+                    Text("Show more (\(text.count / 1024) KB)")
+                        .font(.app(.caption))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help("Expand the full message")
+            }
         }
-        return Text(attr)
-            .font(.app(.body))
-            .textSelection(.enabled)
-            .onHover { hovered = $0 }
+        .onHover { hovered = $0 }
+    }
+
+    @ViewBuilder
+    private var messageContent: some View {
+        if displayText.containsBlockMarkdown {
+            Markdown(displayText)
+                .markdownTheme(chatMarkdownTheme)
+                .textSelection(.enabled)
+        } else {
+            Text(inlineAttributed)
+                .font(.app(.body))
+                .textSelection(.enabled)
+        }
+    }
+
+    /// Parse `displayText` as inline markdown (bold, italic, links, inline code)
+    /// and layer our own cmd+hover URL linkification on top. Falls back to plain
+    /// text if the parser chokes.
+    private var inlineAttributed: AttributedString {
+        let parsed = try? AttributedString(
+            markdown: displayText,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )
+        var attr = parsed ?? AttributedString(displayText)
+        if linksActive { applyChatURLLinks(to: &attr) }
+        return attr
     }
 }
 
@@ -160,6 +213,10 @@ struct ChannelChatView: View {
     var onClose: () -> Void = {}
     var onCopyDMCommand: (ChannelMember) -> Void = { _ in }
     var onOpenDM: (ChannelMember) -> Void = { _ in }
+    /// Right-click → "Remove @<handle> from #<channel>". Used to evict dead
+    /// agents whose tmux session is gone so their slot frees up for a new
+    /// link (no more `_2` handles on rejoin).
+    var onKickMember: (ChannelMember) -> Void = { _ in }
     /// Optional map from handle → activity state (working/idle/needsAttention). Used to
     /// decorate each member chip with a status glyph.
     var activityByHandle: [String: ActivityState] = [:]
@@ -375,6 +432,14 @@ struct ChannelChatView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(Capsule().fill(Color.secondary.opacity(0.08)))
+        .contextMenu {
+            Button(role: .destructive) {
+                onKickMember(m)
+            } label: {
+                Label("Remove @\(m.handle) from #\(channel.name)", systemImage: "person.badge.minus")
+            }
+            .help("Evicts the member from the channel. Use this for dead agents so a new link doesn't have to join as @\(m.handle)_2.")
+        }
     }
 
     private var hasRealMessages: Bool {

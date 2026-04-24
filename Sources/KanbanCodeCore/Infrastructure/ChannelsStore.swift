@@ -356,6 +356,33 @@ public actor ChannelsStore {
         return (all[idx], false)
     }
 
+    /// Remove a member from a channel. Matches on `cardId` when present,
+    /// otherwise on `handle`. Writes the updated roster to channels.json and
+    /// appends a `.leave` event to the jsonl. Mirrors the CLI's leaveChannel
+    /// so the two entry points stay in lockstep. No-op when the channel
+    /// doesn't exist or the member isn't in it.
+    @discardableResult
+    public func leave(channel name: String, member: ChannelParticipant) throws -> Channel? {
+        var all = loadChannels()
+        guard let idx = all.firstIndex(where: { $0.name == name }) else { return nil }
+        let match: (ChannelMember) -> Bool = { m in
+            if let cA = m.cardId, let cB = member.cardId { return cA == cB }
+            return m.handle == member.handle
+        }
+        guard let leaving = all[idx].members.first(where: match) else { return all[idx] }
+        all[idx].members.removeAll(where: match)
+        try saveChannels(all)
+        let event = ChannelMessage(
+            id: "msg_\(UUID().uuidString.prefix(12))",
+            ts: .now,
+            from: ChannelParticipant(cardId: leaving.cardId, handle: leaving.handle),
+            body: "@\(leaving.handle) left #\(name)",
+            type: .leave
+        )
+        try appendMessage(event, to: name)
+        return all[idx]
+    }
+
     public func send(
         channel name: String,
         from: ChannelParticipant,

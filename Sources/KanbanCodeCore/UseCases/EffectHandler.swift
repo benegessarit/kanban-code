@@ -197,6 +197,14 @@ public actor EffectHandler {
                 await dispatch(.setError("Rename failed: \(error.localizedDescription)"))
             }
 
+        case .leaveChannelOnDisk(let name, let member):
+            do {
+                _ = try await channelsStore.leave(channel: name, member: member)
+            } catch {
+                KanbanCodeLog.warn("effect", "leaveChannelOnDisk failed: \(error)")
+                await dispatch(.setError("Couldn't remove @\(member.handle) from #\(name): \(error.localizedDescription)"))
+            }
+
         case .sendChannelMessageToDisk(let channelName, let from, let body, let imagePaths, let memberTargets):
             do {
                 let msg = try await channelsStore.send(

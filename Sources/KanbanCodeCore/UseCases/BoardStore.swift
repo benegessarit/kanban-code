@@ -420,6 +420,9 @@ public enum Action: Sendable {
     case setAppFrontmost(Bool)
     case deleteChannel(name: String)
     case renameChannel(old: String, new: String)
+    /// Kick a member out of a channel (e.g. a dead agent whose card no longer
+    /// exists). Persists to channels.json and appends a leave event.
+    case kickChannelMember(channelName: String, member: ChannelParticipant)
     case draftsLoaded(channels: [String: String], dms: [String: String])
     case setChannelDraft(channelName: String, body: String)
     case setDMDraft(other: ChannelParticipant, body: String)
@@ -504,6 +507,7 @@ public enum Effect: Sendable {
     case notifyChannelMessage(channel: String, fromHandle: String, body: String)
     case deleteChannelOnDisk(name: String)
     case renameChannelOnDisk(old: String, new: String)
+    case leaveChannelOnDisk(name: String, member: ChannelParticipant)
 }
 
 // MARK: - Reducer
@@ -1021,6 +1025,22 @@ public enum Reducer {
             guard !name.isEmpty else { return [] }
             let by = state.humanParticipant
             return [.createChannelOnDisk(name: name, by: by), .loadChannels]
+
+        case .kickChannelMember(let channelName, let member):
+            let clean = channelName
+                .replacingOccurrences(of: "#", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard !clean.isEmpty,
+                  let idx = state.channels.firstIndex(where: { $0.name == clean })
+            else { return [] }
+            // Optimistic removal so the UI chip disappears immediately; the
+            // disk effect + watcher refresh will re-confirm.
+            state.channels[idx].members.removeAll { m in
+                if let cA = m.cardId, let cB = member.cardId { return cA == cB }
+                return m.handle == member.handle
+            }
+            return [.leaveChannelOnDisk(name: clean, member: member), .loadChannels]
 
         case .sendChannelMessage(let channelName, let body, let imagePaths):
             let from = state.humanParticipant

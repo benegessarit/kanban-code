@@ -104,4 +104,66 @@ struct ChannelsStoreTests {
         // Second message has no type field — should default to .message
         #expect(msgs[1].type == .message)
     }
+
+    @Test func leaveRemovesMemberAndAppendsLeaveEvent() async throws {
+        let base = tmpBase()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let store = ChannelsStore(baseDir: base)
+        _ = try await store.createChannel(
+            name: "general",
+            by: ChannelParticipant(cardId: nil, handle: "user")
+        )
+        _ = try await store.join(
+            channel: "general",
+            member: ChannelParticipant(cardId: "card_A", handle: "alice")
+        )
+
+        let ch = try await store.leave(
+            channel: "general",
+            member: ChannelParticipant(cardId: "card_A", handle: "alice")
+        )
+        #expect(ch?.members.isEmpty == true)
+
+        let reloaded = await store.loadChannels()
+        #expect(reloaded[0].members.isEmpty, "channels.json must reflect the removal on disk")
+
+        let msgs = await store.loadMessages(channel: "general")
+        // join + leave events
+        #expect(msgs.count == 2)
+        #expect(msgs.last?.type == .leave)
+        #expect(msgs.last?.body == "@alice left #general")
+    }
+
+    @Test func leaveMatchesByHandleWhenCardIdIsMissing() async throws {
+        // Covers kicking a member whose card has already been deleted — the
+        // entry on disk still has a cardId, but we pass only the handle.
+        // Matching by handle lets the kick action work for ghost agents.
+        let base = tmpBase()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let store = ChannelsStore(baseDir: base)
+        _ = try await store.createChannel(
+            name: "general", by: ChannelParticipant(cardId: nil, handle: "user")
+        )
+        _ = try await store.join(
+            channel: "general",
+            member: ChannelParticipant(cardId: "card_dead", handle: "ghost")
+        )
+
+        let ch = try await store.leave(
+            channel: "general",
+            member: ChannelParticipant(cardId: nil, handle: "ghost")
+        )
+        #expect(ch?.members.isEmpty == true)
+    }
+
+    @Test func leaveIsNoOpForUnknownChannel() async throws {
+        let base = tmpBase()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let store = ChannelsStore(baseDir: base)
+        let ch = try await store.leave(
+            channel: "does-not-exist",
+            member: ChannelParticipant(cardId: nil, handle: "alice")
+        )
+        #expect(ch == nil)
+    }
 }
