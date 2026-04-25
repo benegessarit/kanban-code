@@ -55,11 +55,11 @@ struct CardActionsMenu: View {
         // Links section (Open PR / Issue)
         linksSection
 
-        // Discover Branch
+        // Discover Branches & PRs (also re-fetches PRs for the discovered branches)
         if let onDiscover, card.link.sessionLink != nil || card.link.worktreeLink != nil {
             Divider()
             Button(action: onDiscover) {
-                Label("Discover Branch", systemImage: "arrow.triangle.pull")
+                Label("Discover Branches & PRs", systemImage: "arrow.triangle.pull")
             }
         }
 

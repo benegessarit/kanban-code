@@ -1804,6 +1804,29 @@ public enum Reducer {
 
 // MARK: - BoardStore
 
+/// Cheap stat()-based fingerprint that detects both worktree add/remove
+/// (parent dir mtime) and branch checkout inside an existing worktree
+/// (per-worktree HEAD mtime).
+struct WorktreeCacheFingerprint: Equatable, Sendable {
+    let parentMtime: Date?
+    let maxHeadMtime: Date?
+
+    static func capture(repoRoot: String) -> WorktreeCacheFingerprint {
+        let fm = FileManager.default
+        let parent = (repoRoot as NSString).appendingPathComponent(".git/worktrees")
+        let parentMtime = (try? fm.attributesOfItem(atPath: parent))?[.modificationDate] as? Date
+        var maxHead: Date?
+        if let entries = try? fm.contentsOfDirectory(atPath: parent) {
+            for name in entries {
+                let head = (parent as NSString).appendingPathComponent("\(name)/HEAD")
+                guard let m = (try? fm.attributesOfItem(atPath: head))?[.modificationDate] as? Date else { continue }
+                if maxHead == nil || m > maxHead! { maxHead = m }
+            }
+        }
+        return WorktreeCacheFingerprint(parentMtime: parentMtime, maxHeadMtime: maxHead)
+    }
+}
+
 /// The main store. Replaces BoardState as the single source of truth.
 /// All mutations go through dispatch() → Reducer → Effects.
 @Observable
@@ -1818,8 +1841,14 @@ public final class BoardStore: @unchecked Sendable {
     private var lastGHLookup: ContinuousClock.Instant = .now - .seconds(600)
     private var ghRateLimitedUntil: ContinuousClock.Instant = .now
     public var appIsActive: Bool = true
-    /// Cached worktree results by repo root, with directory mtime for invalidation
-    private var worktreeCache: [String: (mtime: Date?, worktrees: [Worktree])] = [:]
+    /// Cached worktree results by repo root. The fingerprint pairs the
+    /// `.git/worktrees/` dir mtime (changes on add/remove) with the max
+    /// `.git/worktrees/<name>/HEAD` mtime (changes when Claude does
+    /// `git checkout -b` inside an existing worktree). Without the HEAD piece
+    /// the cache stays stale across branch switches and reconciler section
+    /// B1.5 never picks up Claude's renamed branch — leaving cards unlinked
+    /// from PRs whose branch differs from the worktree dir name.
+    private var worktreeCache: [String: (fingerprint: WorktreeCacheFingerprint, worktrees: [Worktree])] = [:]
     private let discovery: SessionDiscovery
     private let coordinationStore: CoordinationStore
     private let activityDetector: (any ActivityDetector)?
@@ -2022,18 +2051,20 @@ public final class BoardStore: @unchecked Sendable {
             // Deduplicate repo roots — multiple projects can share the same repo
             let uniqueRepoRoots = Set(configuredProjects.map(\.effectiveRepoRoot))
 
-            // Scan worktrees once per unique repo (parallel, with mtime caching)
+            // Scan worktrees once per unique repo (parallel, with fingerprint caching)
             var worktreesByRepo: [String: [Worktree]] = [:]
             if let worktreeAdapter {
                 let t = ContinuousClock.now
-                let fm = FileManager.default
 
-                // Check which repos need re-scanning by checking .git/worktrees dir mtime
+                // Re-scan when EITHER the parent dir mtime OR any worktree's HEAD
+                // mtime changed since last cache. The parent catches add/remove,
+                // the HEAD piece catches `git checkout -b` inside a worktree.
                 var reposToScan: [String] = []
+                var fingerprints: [String: WorktreeCacheFingerprint] = [:]
                 for repoRoot in uniqueRepoRoots {
-                    let worktreesDir = (repoRoot as NSString).appendingPathComponent(".git/worktrees")
-                    let mtime = (try? fm.attributesOfItem(atPath: worktreesDir))?[.modificationDate] as? Date
-                    if let cached = worktreeCache[repoRoot], cached.mtime == mtime {
+                    let fp = WorktreeCacheFingerprint.capture(repoRoot: repoRoot)
+                    fingerprints[repoRoot] = fp
+                    if let cached = worktreeCache[repoRoot], cached.fingerprint == fp {
                         worktreesByRepo[repoRoot] = cached.worktrees
                     } else {
                         reposToScan.append(repoRoot)
@@ -2057,9 +2088,11 @@ public final class BoardStore: @unchecked Sendable {
                         return collected
                     }
                     for (repo, worktrees) in results {
-                        let worktreesDir = (repo as NSString).appendingPathComponent(".git/worktrees")
-                        let mtime = (try? fm.attributesOfItem(atPath: worktreesDir))?[.modificationDate] as? Date
-                        worktreeCache[repo] = (mtime: mtime, worktrees: worktrees)
+                        // Re-capture in case HEAD mtime changed during the scan;
+                        // otherwise we'd cache a fingerprint older than the
+                        // worktree data we just read and miss the next change.
+                        let fp = WorktreeCacheFingerprint.capture(repoRoot: repo)
+                        worktreeCache[repo] = (fingerprint: fp, worktrees: worktrees)
                         worktreesByRepo[repo] = worktrees
                     }
                 }
