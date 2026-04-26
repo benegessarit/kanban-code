@@ -60,7 +60,7 @@ app: build cli install-cli web
 	@# ~/.npm/_npx/ where it runs without the quarantine xattr.
 	@# Ship only runtime artifacts:
 	@#  • dist/*.js (compiled TypeScript) minus *.test.js
-	@#  • package.json + lockfile so npm can reinstall deterministically
+	@#  • package.json + lockfile so pnpm can reinstall deterministically
 	@#  • a PROD-only node_modules (no typescript/tsx/esbuild/@types/supertest —
 	@#    those are ~50 MB of dev-time tooling that has no business shipping)
 	@rm -rf $(BUNDLE_DIR)/Contents/Resources/cli
@@ -69,8 +69,8 @@ app: build cli install-cli web
 		\( -name '*.js' -o -name '*.d.ts' \) \
 		! -name '*.test.js' ! -name '*.test.d.ts' \
 		-exec cp {} $(BUNDLE_DIR)/Contents/Resources/cli/dist/ \;
-	@cp cli/package.json cli/package-lock.json $(BUNDLE_DIR)/Contents/Resources/cli/
-	@cd $(BUNDLE_DIR)/Contents/Resources/cli && npm ci --omit=dev --ignore-scripts --silent --no-audit --no-fund
+	@cp cli/package.json cli/pnpm-lock.yaml $(BUNDLE_DIR)/Contents/Resources/cli/
+	@cd $(BUNDLE_DIR)/Contents/Resources/cli && $(PNPM) install --prod --frozen-lockfile --ignore-scripts --reporter=silent
 	@# Bundle the built web client — served by the share-server at `/`.
 	@rm -rf $(BUNDLE_DIR)/Contents/Resources/share-web
 	@cp -R web/dist $(BUNDLE_DIR)/Contents/Resources/share-web
@@ -90,7 +90,7 @@ run-release:
 	KANBAN_WATCHDOG=1 build/$(BUNDLE_NAME)/Contents/MacOS/KanbanCode
 
 cli:
-	@cd cli && npm install --silent && npm run build
+	@cd cli && $(PNPM) install --frozen-lockfile --reporter=silent && $(PNPM) run build
 
 web:
 	@cd web && $(PNPM) install --frozen-lockfile --reporter=silent && $(PNPM) run build
