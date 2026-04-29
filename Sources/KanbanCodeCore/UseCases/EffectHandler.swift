@@ -142,14 +142,14 @@ public actor EffectHandler {
                     guard let setClipboard = setClipboardImage else { return }
                     let sender = ImageSender(tmux: tmux)
                     try await sender.waitForReady(sessionName: sessionName, assistant: assistant)
-                    try await sender.sendImages(
+                    try await sender.sendPromptWithImages(
                         sessionName: sessionName,
+                        prompt: promptBody,
                         images: images,
                         assistant: assistant,
                         setClipboard: setClipboard
                     )
-                }
-                if assistant.submitsPromptWithPaste {
+                } else if assistant.submitsPromptWithPaste {
                     try await tmux.pastePrompt(to: sessionName, text: promptBody)
                 } else {
                     try await tmux.sendPrompt(to: sessionName, text: promptBody)
@@ -296,9 +296,8 @@ public actor EffectHandler {
     }
 
     /// Fan out a single chat message to one target tmux session. When images
-    /// are attached AND the assistant supports image upload, paste each image
-    /// (via `ImageSender`) first, then paste the body text — mirrors the
-    /// chat-mode behaviour used inside a card. Assistants that don't support
+    /// are attached AND the assistant supports image upload, stage the body
+    /// text first, paste images, then submit once. Assistants that don't support
     /// image upload get the body text plus a "[N image(s) attached]" hint so
     /// they know something was sent, even if they can't see it.
     private func fanOutOneMessage(target: ChannelMemberTarget, body: String, imagePaths: [String]) async {
@@ -315,14 +314,16 @@ public actor EffectHandler {
                 if !images.isEmpty {
                     let sender = ImageSender(tmux: tmux)
                     try await sender.waitForReady(sessionName: target.sessionName, assistant: target.assistant)
-                    try await sender.sendImages(
+                    try await sender.sendPromptWithImages(
                         sessionName: target.sessionName,
+                        prompt: body + imageRefs,
                         images: images,
                         assistant: target.assistant,
                         setClipboard: setClipboard
                     )
+                } else {
+                    try await tmux.pastePrompt(to: target.sessionName, text: body + imageRefs)
                 }
-                try await tmux.pastePrompt(to: target.sessionName, text: body + imageRefs)
             } else {
                 try await tmuxAdapter?.pastePrompt(to: target.sessionName, text: body + imageRefs)
             }

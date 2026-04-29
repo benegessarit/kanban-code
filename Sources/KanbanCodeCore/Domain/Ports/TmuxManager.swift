@@ -26,6 +26,12 @@ public protocol TmuxManagerPort: Sendable {
     /// (e.g. Gemini CLI treats `?` as a special command in send-keys mode).
     func pastePrompt(to sessionName: String, text: String) async throws
 
+    /// Paste text into the prompt without submitting it.
+    func pasteText(to sessionName: String, text: String) async throws
+
+    /// Submit the current prompt line.
+    func submitPrompt(to sessionName: String) async throws
+
     /// Capture the visible contents of a tmux pane.
     func capturePane(sessionName: String) async throws -> String
 

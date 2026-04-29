@@ -163,6 +163,8 @@ struct ImageSenderTests {
         var captureCallCount = 0
         var sentBracketedPastes: [String] = [] // session names
         var sentPrompts: [(session: String, text: String)] = []
+        var pastedTexts: [(session: String, text: String)] = []
+        var submittedPrompts: [String] = []
         var createdSessions: [(name: String, path: String, command: String?)] = []
         var killedSessions: [String] = []
 
@@ -182,6 +184,14 @@ struct ImageSenderTests {
 
         func pastePrompt(to sessionName: String, text: String) async throws {
             sentPrompts.append((session: sessionName, text: text))
+        }
+
+        func pasteText(to sessionName: String, text: String) async throws {
+            pastedTexts.append((session: sessionName, text: text))
+        }
+
+        func submitPrompt(to sessionName: String) async throws {
+            submittedPrompts.append(sessionName)
         }
 
         func listSessions() async throws -> [TmuxSession] { [] }
@@ -244,6 +254,32 @@ struct ImageSenderTests {
         )
 
         #expect(mock.sentBracketedPastes.count == 2)
+    }
+
+    @Test("prompt with images stages text before image paste and submits once")
+    func sendPromptWithImagesStagesTextFirst() async throws {
+        let mock = MockTmux()
+        mock.capturedPaneOutputs = [
+            "❯ prompt text",
+            "❯ prompt text\n [Image #1] (↑ to select)",
+        ]
+
+        let sender = ImageSender(tmux: mock)
+        let image = ImageAttachment(data: Data([0x89, 0x50]))
+
+        try await sender.sendPromptWithImages(
+            sessionName: "test-session",
+            prompt: "prompt text",
+            images: [image],
+            setClipboard: { _ in },
+            pollInterval: .milliseconds(10),
+            timeout: .seconds(5)
+        )
+
+        #expect(mock.pastedTexts.map(\.text) == ["prompt text"])
+        #expect(mock.sentBracketedPastes == ["test-session"])
+        #expect(mock.submittedPrompts == ["test-session"])
+        #expect(mock.sentPrompts.isEmpty)
     }
 
     @Test("times out when image not confirmed")
@@ -319,6 +355,8 @@ struct LaunchSessionSendKeysTests {
         func listSessions() async throws -> [TmuxSession] { [] }
         func sendPrompt(to sessionName: String, text: String) async throws {}
         func pastePrompt(to sessionName: String, text: String) async throws {}
+        func pasteText(to sessionName: String, text: String) async throws {}
+        func submitPrompt(to sessionName: String) async throws {}
         func capturePane(sessionName: String) async throws -> String { "" }
         func sendBracketedPaste(to sessionName: String) async throws {}
         func findSessionForWorktree(sessions: [TmuxSession], worktreePath: String, branch: String?) -> TmuxSession? { nil }

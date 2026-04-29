@@ -17,6 +17,8 @@ struct ImageSenderMultiAssistantTests {
         func listSessions() async throws -> [TmuxSession] { [] }
         func sendPrompt(to sessionName: String, text: String) async throws {}
         func pastePrompt(to sessionName: String, text: String) async throws {}
+        func pasteText(to sessionName: String, text: String) async throws {}
+        func submitPrompt(to sessionName: String) async throws {}
         func sendBracketedPaste(to sessionName: String) async throws {}
         func findSessionForWorktree(sessions: [TmuxSession], worktreePath: String, branch: String?) -> TmuxSession? { nil }
         func isAvailable() async -> Bool { true }

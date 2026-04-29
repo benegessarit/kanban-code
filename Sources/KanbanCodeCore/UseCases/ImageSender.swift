@@ -84,4 +84,37 @@ public actor ImageSender {
             }
         }
     }
+
+    /// Send a text prompt with image attachments as one user turn.
+    ///
+    /// Claude's image paste path can create an image-only submitted turn if
+    /// the image is inserted before the text reaches the composer. Stage text
+    /// first, then add images, then submit once so the transcript keeps the
+    /// prompt and screenshots together.
+    public func sendPromptWithImages(
+        sessionName: String,
+        prompt: String,
+        images: [ImageAttachment],
+        assistant: CodingAssistant = .claude,
+        setClipboard: @Sendable (Data) -> Void,
+        pollInterval: Duration = .milliseconds(500),
+        timeout: Duration = .seconds(30)
+    ) async throws {
+        if !prompt.isEmpty {
+            try await tmux.pasteText(to: sessionName, text: prompt)
+        }
+        if !images.isEmpty {
+            try await sendImages(
+                sessionName: sessionName,
+                images: images,
+                assistant: assistant,
+                setClipboard: setClipboard,
+                pollInterval: pollInterval,
+                timeout: timeout
+            )
+        }
+        if !prompt.isEmpty || !images.isEmpty {
+            try await tmux.submitPrompt(to: sessionName)
+        }
+    }
 }

@@ -178,17 +178,17 @@ extension ContentView {
                     try await imageSender.waitForReady(sessionName: tmuxName, assistant: assistant)
 
                     if !images.isEmpty && assistant.supportsImageUpload {
-                        try await imageSender.sendImages(
+                        try await imageSender.sendPromptWithImages(
                             sessionName: tmuxName,
+                            prompt: prompt,
                             images: images,
+                            assistant: assistant,
                             setClipboard: { data in
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setData(data, forType: .png)
                             }
                         )
-                    }
-
-                    if !prompt.isEmpty {
+                    } else if !prompt.isEmpty {
                         if assistant.submitsPromptWithPaste {
                             try await self.tmuxAdapter.pastePrompt(to: tmuxName, text: prompt)
                         } else {

@@ -172,6 +172,11 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
     }
 
     public func pastePrompt(to sessionName: String, text: String) async throws {
+        try await pasteText(to: sessionName, text: text)
+        try await submitPrompt(to: sessionName)
+    }
+
+    public func pasteText(to sessionName: String, text: String) async throws {
         try await exitScrollMode(sessionName: sessionName)
         // Use load-buffer + paste-buffer -p to bypass readline special char handling.
         // The -p flag wraps the paste in bracketed paste codes (\e[200~ … \e[201~),
@@ -189,6 +194,9 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         )
         // Give the terminal app time to process the bracketed paste
         try await Task.sleep(for: .milliseconds(100))
+    }
+
+    public func submitPrompt(to sessionName: String) async throws {
         // Press Enter to submit
         let _ = try await ShellCommand.run(
             tmuxPath, arguments: ["send-keys", "-t", sessionName, "Enter"]

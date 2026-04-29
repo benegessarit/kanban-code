@@ -23,6 +23,8 @@ struct LaunchSessionMultiAssistantTests {
         func listSessions() async throws -> [TmuxSession] { sessions }
         func sendPrompt(to sessionName: String, text: String) async throws {}
         func pastePrompt(to sessionName: String, text: String) async throws {}
+        func pasteText(to sessionName: String, text: String) async throws {}
+        func submitPrompt(to sessionName: String) async throws {}
         func capturePane(sessionName: String) async throws -> String { "" }
         func sendBracketedPaste(to sessionName: String) async throws {}
         func findSessionForWorktree(sessions: [TmuxSession], worktreePath: String, branch: String?) -> TmuxSession? { nil }
