@@ -26,9 +26,10 @@ struct SearchOverlay: View {
 
     /// Snapshot of cards at open time — avoids re-rendering when store reconciles.
     @State private var snapshotCards: [KanbanCodeCard] = []
+    @State private var cardSearchIndex: [CardSearchIndexItem] = []
     @State private var query = ""
     @State private var searchResults: [SearchResultItem] = []
-    @State private var filteredCards: [KanbanCodeCard] = []
+    @State private var filteredItems: [RecentItem] = []
     @State private var isDeepSearching = false
     @State private var selectedId: String?
     @State private var searchTask: Task<Void, Never>?
@@ -56,7 +57,7 @@ struct SearchOverlay: View {
     private var resultsSection: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 4) {
                     Color.clear.frame(height: 0).id(Self.scrollTopId)
                     if isCommandMode {
                         commandsView
@@ -100,6 +101,7 @@ struct SearchOverlay: View {
 
     private func handleAppear() {
         snapshotCards = cards  // Freeze cards at open time
+        cardSearchIndex = cards.map(CardSearchIndexItem.init(card:))
         isSearchFocused = true
         if !initialQuery.isEmpty {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -131,13 +133,15 @@ struct SearchOverlay: View {
     private func handleQueryChange(_ newValue: String) {
         updateFilter(newValue)
         if newValue.hasPrefix(">") {
-            filteredCards = []
+            filteredItems = []
             selectedId = filteredCommands.first?.id
         } else if !newValue.isEmpty {
-            filteredCards = computeFilteredCards(query: newValue)
-            selectedId = filteredRecentItems.first?.id
+            let cards = computeFilteredCards(query: newValue)
+            let items = computeFilteredItems(query: newValue, cards: cards)
+            filteredItems = items
+            selectedId = items.first?.id
         } else {
-            filteredCards = []
+            filteredItems = []
             let merged = mergedRecent
             selectedId = merged.count >= 2 ? merged[1].id : merged.first?.id
         }
@@ -251,20 +255,21 @@ struct SearchOverlay: View {
         } else if !searchResults.isEmpty {
             return searchResults.map(\.id)
         } else {
-            // Merge matching channels into the filtered-card order by recency
-            // so arrow-key nav feels identical whether a channel or card is below.
-            return filteredRecentItems.map(\.id)
+            return filteredItems.map(\.id)
         }
     }
 
+    private static let maxQuickResults = 80
+
     /// When the user types a query, match against channel names + card fields and
-    /// interleave both in a single recency-ordered list.
-    private var filteredRecentItems: [RecentItem] {
-        let channelMatches = matchedChannelsForQuery.map {
+    /// interleave both in a single recency-ordered list. This is materialized
+    /// during query changes so selection and rendering use the same snapshot.
+    private func computeFilteredItems(query: String, cards: [KanbanCodeCard]) -> [RecentItem] {
+        let channelMatches = matchedChannelsForQuery(query).map {
             RecentItem.channel($0, opened: channelLastOpened[$0.name], lastActivity: channelLastActivity[$0.name])
         }
-        let cardMatches = filteredCards.map(RecentItem.card)
-        return (channelMatches + cardMatches).sorted { $0.sortKey > $1.sortKey }
+        let cardMatches = cards.map(RecentItem.card)
+        return Array((channelMatches + cardMatches).sorted { $0.sortKey > $1.sortKey }.prefix(Self.maxQuickResults))
     }
 
     private func moveSelection(by offset: Int) {
@@ -381,8 +386,7 @@ struct SearchOverlay: View {
 
     private var filteredCardsView: some View {
         Group {
-            let merged = filteredRecentItems
-            if merged.isEmpty {
+            if filteredItems.isEmpty {
                 VStack(spacing: 8) {
                     Text("No matches")
                         .foregroundStyle(.secondary)
@@ -393,58 +397,56 @@ struct SearchOverlay: View {
                 .frame(maxWidth: .infinity)
                 .padding(.top, 20)
             } else {
-                ForEach(merged) { item in
+                ForEach(filteredItems) { item in
                     mergedItemRow(item, queryTerms: queryTerms)
                 }
             }
         }
     }
 
-    private var matchedChannelsForQuery: [Channel] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+    private func matchedChannelsForQuery(_ rawQuery: String) -> [Channel] {
+        let q = rawQuery.trimmingCharacters(in: .whitespaces).lowercased()
             .replacingOccurrences(of: "#", with: "")
         guard !q.isEmpty else { return [] }
         return channels.filter { $0.name.contains(q) }
     }
 
     private func computeFilteredCards(query: String) -> [KanbanCodeCard] {
-        let terms = queryTerms
+        let terms = query.lowercased().components(separatedBy: .whitespaces).filter { !$0.isEmpty }
         guard !terms.isEmpty else { return [] }
-        let activeColumns: Set<KanbanCodeColumn> = [.inProgress, .waiting, .inReview, .done]
 
-        return snapshotCards
-            .compactMap { card -> (KanbanCodeCard, Double)? in
-                let title = card.displayTitle.lowercased()
-                let project = (card.projectName ?? "").lowercased()
-                let branch = (card.link.worktreeLink?.branch ?? "").lowercased()
-                let other = "\(card.link.projectPath ?? "") \(card.session?.firstPrompt ?? "") \(card.link.promptBody ?? "") \(card.link.sessionLink?.sessionId ?? "") \(card.link.id)".lowercased()
-
-                let titleWords = title.split { !$0.isLetter && !$0.isNumber }.map(String.init)
-                let projectWords = project.split { !$0.isLetter && !$0.isNumber }.map(String.init)
-
+        return cardSearchIndex
+            .compactMap { item -> (KanbanCodeCard, Double)? in
                 var score = 0.0
                 for term in terms {
-                    let s = Self.termScore(term, titleWords: titleWords, title: title, projectWords: projectWords, project: project, branch: branch, other: other)
+                    let s = Self.termScore(
+                        term,
+                        titleWords: item.titleWords,
+                        title: item.title,
+                        projectWords: item.projectWords,
+                        project: item.project,
+                        branch: item.branch,
+                        other: item.other
+                    )
                     if s > 0 {
                         score += s
-                    } else if term.count >= 2, Self.fuzzyInitials(term, words: titleWords) {
+                    } else if term.count >= 2, Self.fuzzyInitials(term, words: item.titleWords) {
                         score += 10 // "kp" → Kanban Projects
                     } else {
                         return nil
                     }
                 }
 
-                if activeColumns.contains(card.column) { score += 20 }
+                if item.isActiveColumn { score += 20 }
 
                 // Recency bonus: up to +5 for very recent, decaying over 7 days
-                let lastActive = card.link.lastActivity ?? card.link.updatedAt
-                let age = Date.now.timeIntervalSince(lastActive)
+                let age = Date.now.timeIntervalSince(item.lastActive)
                 let maxAge: TimeInterval = 7 * 24 * 3600
                 if age < maxAge {
                     score += 5.0 * (1.0 - age / maxAge)
                 }
 
-                return (card, score)
+                return (item.card, score)
             }
             .sorted { $0.1 > $1.1 }
             .map(\.0)
@@ -586,6 +588,30 @@ struct SearchOverlay: View {
     }
 }
 
+private struct CardSearchIndexItem {
+    let card: KanbanCodeCard
+    let title: String
+    let project: String
+    let branch: String
+    let other: String
+    let titleWords: [String]
+    let projectWords: [String]
+    let isActiveColumn: Bool
+    let lastActive: Date
+
+    init(card: KanbanCodeCard) {
+        self.card = card
+        title = card.displayTitle.lowercased()
+        project = (card.projectName ?? "").lowercased()
+        branch = (card.link.worktreeLink?.branch ?? "").lowercased()
+        other = "\(card.link.projectPath ?? "") \(card.session?.firstPrompt ?? "") \(card.link.promptBody ?? "") \(card.link.sessionLink?.sessionId ?? "") \(card.link.id)".lowercased()
+        titleWords = title.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        projectWords = project.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        isActiveColumn = [.inProgress, .waiting, .inReview, .done].contains(card.column)
+        lastActive = card.link.lastActivity ?? card.link.updatedAt
+    }
+}
+
 struct SearchResultItem: Identifiable {
     let id: String
     let card: KanbanCodeCard?
@@ -640,10 +666,13 @@ struct SearchCardRow: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
-        .background(
-            isHighlighted ? Color.accentColor.opacity(0.1) : Color.clear,
-            in: RoundedRectangle(cornerRadius: 6)
-        )
+        .background(isHighlighted ? Color.accentColor.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            if isHighlighted {
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.accentColor.opacity(0.45), lineWidth: 1)
+            }
+        }
     }
 }
 
@@ -692,10 +721,13 @@ struct SearchResultRow: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
-        .background(
-            isHighlighted ? Color.accentColor.opacity(0.15) : Color.clear,
-            in: RoundedRectangle(cornerRadius: 6)
-        )
+        .background(isHighlighted ? Color.accentColor.opacity(0.2) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            if isHighlighted {
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.accentColor.opacity(0.45), lineWidth: 1)
+            }
+        }
     }
 }
 
@@ -723,10 +755,13 @@ struct CommandRow: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
-        .background(
-            isHighlighted ? Color.accentColor.opacity(0.1) : Color.clear,
-            in: RoundedRectangle(cornerRadius: 6)
-        )
+        .background(isHighlighted ? Color.accentColor.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            if isHighlighted {
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.accentColor.opacity(0.45), lineWidth: 1)
+            }
+        }
     }
 }
 
@@ -831,9 +866,12 @@ struct ChannelSearchRow: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
-        .background(
-            isHighlighted ? Color.accentColor.opacity(0.1) : Color.clear,
-            in: RoundedRectangle(cornerRadius: 6)
-        )
+        .background(isHighlighted ? Color.accentColor.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            if isHighlighted {
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.accentColor.opacity(0.45), lineWidth: 1)
+            }
+        }
     }
 }

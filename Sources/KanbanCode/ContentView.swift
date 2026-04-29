@@ -95,6 +95,7 @@ struct ContentView: View {
     @State var showSyncPopover = false
     @State var rawSyncOutput = ""
     @State var editingQueuedPromptId: String?
+    @State var channelGithubBaseURLByCardId: [String: String] = [:]
     @State var isToolbarMerging = false
     @State var toolbarMergeError: String?
     // showSearch and isExpandedDetail live in AppState (store.state.paletteOpen / detailExpanded)
@@ -2473,6 +2474,10 @@ struct ContentView: View {
         let onlineMap = channelOnlineByHandle(channel)
         let activityMap = channelActivityByHandle(channel)
         let pullRequests = channelPullRequestReferences(channel: channel, messages: msgs)
+        let channelCardIds = channelParticipantCardIds(channel: channel, messages: msgs)
+        let baseURLs = Dictionary(uniqueKeysWithValues: channelCardIds.compactMap { cardId in
+            channelGithubBaseURLByCardId[cardId].map { (cardId, $0) }
+        })
         ChannelChatView(
             channel: channel,
             messages: msgs,
@@ -2500,12 +2505,73 @@ struct ContentView: View {
             activityByHandle: activityMap,
             myHandle: store.state.humanHandle,
             pullRequests: pullRequests,
+            pullRequestBaseURLsByCardId: baseURLs,
             draft: Binding(
                 get: { store.state.channelDrafts[channel.name] ?? "" },
                 set: { store.dispatch(.setChannelDraft(channelName: channel.name, body: $0)) }
             ),
             shareController: shareController
         )
+        .task(id: channelGithubBaseURLResolutionKey(channel: channel, messages: msgs)) {
+            await resolveChannelGithubBaseURLs(channel: channel, messages: msgs)
+        }
+    }
+
+    private func channelParticipantCardIds(
+        channel: Channel,
+        messages: [ChannelMessage]
+    ) -> [String] {
+        var cardIds = Set<String>()
+        for member in channel.members {
+            if let cardId = member.cardId { cardIds.insert(cardId) }
+        }
+        for message in messages {
+            if let cardId = message.from.cardId { cardIds.insert(cardId) }
+        }
+        return cardIds.sorted()
+    }
+
+    private func channelGithubBaseURLResolutionKey(
+        channel: Channel,
+        messages: [ChannelMessage]
+    ) -> String {
+        let cardIds = channelParticipantCardIds(channel: channel, messages: messages)
+        let paths = cardIds.compactMap { store.state.links[$0]?.projectPath }
+        return ([channel.name] + cardIds + paths).joined(separator: "|")
+    }
+
+    @MainActor
+    private func resolveChannelGithubBaseURLs(
+        channel: Channel,
+        messages: [ChannelMessage]
+    ) async {
+        let missing = channelParticipantCardIds(channel: channel, messages: messages).compactMap { cardId -> (String, String)? in
+            guard channelGithubBaseURLByCardId[cardId] == nil,
+                  let projectPath = store.state.links[cardId]?.projectPath
+            else { return nil }
+            return (cardId, projectPath)
+        }
+        guard !missing.isEmpty else { return }
+
+        let resolved = await withTaskGroup(of: (String, String?).self) { group in
+            for (cardId, projectPath) in missing {
+                group.addTask {
+                    let base = await GitRemoteResolver.shared.githubBaseURL(for: projectPath)
+                    return (cardId, base)
+                }
+            }
+            var values: [(String, String?)] = []
+            for await value in group {
+                values.append(value)
+            }
+            return values
+        }
+
+        for (cardId, base) in resolved {
+            if let base {
+                channelGithubBaseURLByCardId[cardId] = base
+            }
+        }
     }
 
     private func channelPullRequestReferences(

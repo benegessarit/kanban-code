@@ -282,6 +282,7 @@ struct ChannelChatView: View {
     /// spot their own messages at a glance.
     var myHandle: String = ""
     var pullRequests: [ChannelPullRequestReference] = []
+    var pullRequestBaseURLsByCardId: [String: String] = [:]
     /// Two-way binding for the draft message. Held by the parent (store) so it
     /// survives drawer switches — avoids losing in-progress typing when the
     /// user jumps to another channel/card and comes back.
@@ -906,7 +907,18 @@ struct ChannelChatView: View {
         if let url = senderRefs.first(where: { $0.number == number })?.url {
             return url
         }
-        return pullRequests.first(where: { $0.number == number })?.url
+        if let url = pullRequests.first(where: { $0.number == number })?.url {
+            return url
+        }
+        if let cardId = message.from.cardId,
+           let base = pullRequestBaseURLsByCardId[cardId] {
+            return URL(string: GitRemoteResolver.prURL(base: base, number: number))
+        }
+        let uniqueBases = Set(pullRequestBaseURLsByCardId.values)
+        if uniqueBases.count == 1, let base = uniqueBases.first {
+            return URL(string: GitRemoteResolver.prURL(base: base, number: number))
+        }
+        return nil
     }
 
     private struct ActivityGlyph { let name: String; let color: Color; let label: String }
