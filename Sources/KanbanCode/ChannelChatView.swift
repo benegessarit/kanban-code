@@ -345,6 +345,8 @@ struct ChannelChatView: View {
     var myHandle: String = ""
     var pullRequests: [ChannelPullRequestReference] = []
     var pullRequestBaseURLsByCardId: [String: String] = [:]
+    var focusRequestToken: Int = 0
+    var onLoadSearchMessages: ((Int) async -> [ChannelMessage])? = nil
     /// Two-way binding for the draft message. Held by the parent (store) so it
     /// survives drawer switches — avoids losing in-progress typing when the
     /// user jumps to another channel/card and comes back.
@@ -370,11 +372,16 @@ struct ChannelChatView: View {
     @State private var currentMatchPosition = 0
     @State private var searchFromSelectedIndex = 0
     @State private var searchDebounceTask: Task<Void, Never>?
+    @State private var isSearchLoadingOlder = false
+    @State private var searchLoadLimit = 0
+    @State private var searchLoadedAll = false
+    @State private var searchLoadedMessages: [ChannelMessage] = []
     @State private var retainedMessages: [ChannelMessage] = []
     @FocusState private var inputFocused: Bool
     @FocusState private var isSearchFieldFocused: Bool
 
     private static let retainedScrollbackLimit = 2_000
+    private static let searchPageSize = 500
 
     private var displayedMessages: [ChannelMessage] {
         retainedMessages.isEmpty ? messages : retainedMessages
@@ -805,6 +812,7 @@ struct ChannelChatView: View {
                         unseenNewCount += max(1, new.count - old.count)
                     }
                     if showSearch, !activeQuery.isEmpty {
+                        searchLoadedMessages = Self.mergeMessages(searchLoadedMessages, new)
                         runSearch(scrollToMostRecent: false)
                     }
                 }
@@ -905,14 +913,19 @@ struct ChannelChatView: View {
 
                 if !activeQuery.isEmpty {
                     if searchMatchMessageIds.isEmpty {
-                        Text("0 results")
+                        Text(isSearchLoadingOlder ? "searching…" : "0 results")
                             .font(.app(.caption2))
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("\(searchMatchMessageIds.count - currentMatchPosition)/\(searchMatchMessageIds.count)")
+                        Text("\(searchMatchMessageIds.count - currentMatchPosition)/\(searchMatchMessageIds.count)\(searchLoadedAll ? "" : "+")")
                             .font(.app(.caption2))
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
+
+                        if isSearchLoadingOlder {
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
 
                         Button { navigateSearch(forward: false) } label: {
                             Image(systemName: "chevron.up").font(.app(.caption2))
@@ -964,6 +977,7 @@ struct ChannelChatView: View {
             activeQuery = ""
             searchMatchMessageIds = []
             currentMatchPosition = 0
+            resetSearchCorpus()
             return
         }
         guard trimmed.count >= 2 else { return }
@@ -971,11 +985,15 @@ struct ChannelChatView: View {
             try? await Task.sleep(for: .milliseconds(180))
             guard !Task.isCancelled else { return }
             activeQuery = trimmed
+            resetSearchCorpus()
             runSearch(scrollToMostRecent: true)
+            if searchMatchMessageIds.isEmpty {
+                loadOlderSearchResults()
+            }
         }
     }
 
-    private func runSearch(scrollToMostRecent: Bool) {
+    private func runSearch(scrollToMostRecent: Bool, preferredMessageId: String? = nil) {
         let query = activeQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let parsed = ChannelSearchQuery.parse(query)
         guard !parsed.isEmpty else {
@@ -984,7 +1002,8 @@ struct ChannelChatView: View {
             return
         }
 
-        let matches = displayedMessages.filter { message in
+        let previousMessageId = preferredMessageId ?? currentMatchMessageId
+        let matches = searchCorpus().filter { message in
             messageMatchesSearch(message, parsed: parsed)
         }.map(\.id)
 
@@ -993,14 +1012,27 @@ struct ChannelChatView: View {
             currentMatchPosition = 0
         } else if scrollToMostRecent {
             currentMatchPosition = matches.count - 1
+        } else if let previousMessageId,
+                  let previousIndex = matches.firstIndex(of: previousMessageId) {
+            currentMatchPosition = previousIndex
         } else {
             currentMatchPosition = min(currentMatchPosition, matches.count - 1)
         }
     }
 
+    private func resetSearchCorpus() {
+        searchLoadLimit = max(Self.searchPageSize, messages.count)
+        searchLoadedAll = messages.count < Self.searchPageSize
+        searchLoadedMessages = Self.mergeMessages(displayedMessages, messages)
+    }
+
+    private func searchCorpus() -> [ChannelMessage] {
+        Self.mergeMessages(searchLoadedMessages, displayedMessages, messages)
+    }
+
     private func syncDisplayedMessages(preserveExisting: Bool) {
         guard preserveExisting else {
-            retainedMessages = messages
+            retainedMessages = Self.cappedMessages(messages)
             return
         }
         var merged = retainedMessages.isEmpty ? messages : retainedMessages
@@ -1017,10 +1049,31 @@ struct ChannelChatView: View {
                 merged.append(message)
             }
         }
-        if merged.count > Self.retainedScrollbackLimit {
-            merged = Array(merged.suffix(Self.retainedScrollbackLimit))
+        retainedMessages = Self.cappedMessages(merged)
+    }
+
+    private static func cappedMessages(_ messages: [ChannelMessage], preserving preservedId: String? = nil) -> [ChannelMessage] {
+        guard messages.count > retainedScrollbackLimit else { return messages }
+        let suffix = Array(messages.suffix(retainedScrollbackLimit))
+        guard let preservedId,
+              !suffix.contains(where: { $0.id == preservedId }),
+              let preserved = messages.first(where: { $0.id == preservedId })
+        else { return suffix }
+
+        return mergeMessages([preserved], Array(suffix.dropFirst()))
+    }
+
+    private static func mergeMessages(_ groups: [ChannelMessage]...) -> [ChannelMessage] {
+        var byId: [String: ChannelMessage] = [:]
+        for group in groups {
+            for message in group {
+                byId[message.id] = message
+            }
         }
-        retainedMessages = merged
+        return byId.values.sorted {
+            if $0.ts == $1.ts { return $0.id < $1.id }
+            return $0.ts < $1.ts
+        }
     }
 
     private func messageSearchText(_ message: ChannelMessage) -> String {
@@ -1101,6 +1154,7 @@ struct ChannelChatView: View {
         searchText.replaceSubrange(range, with: "from:@\(handle) ")
         searchFromSelectedIndex = 0
         activeQuery = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        resetSearchCorpus()
         runSearch(scrollToMostRecent: true)
     }
 
@@ -1118,7 +1172,43 @@ struct ChannelChatView: View {
         if forward {
             currentMatchPosition = (currentMatchPosition + 1) % searchMatchMessageIds.count
         } else {
-            currentMatchPosition = (currentMatchPosition - 1 + searchMatchMessageIds.count) % searchMatchMessageIds.count
+            if currentMatchPosition == 0, !searchLoadedAll {
+                loadOlderSearchResults(selectOlderThan: currentMatchMessageId)
+                return
+            }
+            currentMatchPosition = currentMatchPosition == 0
+                ? searchMatchMessageIds.count - 1
+                : currentMatchPosition - 1
+            if currentMatchPosition <= 3 {
+                loadOlderSearchResults()
+            }
+        }
+    }
+
+    private func loadOlderSearchResults(selectOlderThan messageId: String? = nil) {
+        guard showSearch,
+              !activeQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !isSearchLoadingOlder,
+              !searchLoadedAll,
+              let onLoadSearchMessages
+        else { return }
+
+        let previousMessageId = messageId ?? currentMatchMessageId
+        let nextLimit = max(searchLoadLimit + Self.searchPageSize, Self.searchPageSize)
+        isSearchLoadingOlder = true
+        Task { @MainActor in
+            let loaded = await onLoadSearchMessages(nextLimit)
+            searchLoadLimit = max(nextLimit, loaded.count)
+            searchLoadedAll = loaded.count < nextLimit
+            searchLoadedMessages = Self.mergeMessages(searchLoadedMessages, loaded)
+            runSearch(scrollToMostRecent: false, preferredMessageId: previousMessageId)
+
+            if let messageId,
+               let index = searchMatchMessageIds.firstIndex(of: messageId),
+               index > 0 {
+                currentMatchPosition = index - 1
+            }
+            isSearchLoadingOlder = false
         }
     }
 
@@ -1131,11 +1221,23 @@ struct ChannelChatView: View {
         searchMatchMessageIds = []
         currentMatchPosition = 0
         searchFromSelectedIndex = 0
+        resetSearchCorpus()
     }
 
     private func scrollToCurrentSearchMatch(_ proxy: ScrollViewProxy) {
         guard let id = currentMatchMessageId else { return }
+        if !displayedMessages.contains(where: { $0.id == id }),
+           let message = searchCorpus().first(where: { $0.id == id }) {
+            retainedMessages = Self.cappedMessages(
+                Self.mergeMessages(retainedMessages, [message]),
+                preserving: id
+            )
+        }
         withAnimation(.easeInOut(duration: 0.2)) {
+            proxy.scrollTo(id, anchor: .center)
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(16))
             proxy.scrollTo(id, anchor: .center)
         }
     }
@@ -1285,6 +1387,7 @@ struct ChannelChatView: View {
             cardId: "channel:\(channel.name)",
             placeholderOverride: "Message #\(channel.name)",
             mentionCandidates: channel.members.map { $0.handle },
+            focusRequestToken: focusRequestToken,
             onSend: { body, imagePaths in onSend(body, imagePaths) },
             text: $draft,
             pastedImages: $pastedImages

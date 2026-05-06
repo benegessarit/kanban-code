@@ -584,6 +584,9 @@ struct ChatInputBar: View {
     /// Optional list of handles (without leading `@`) available for @-mention completion.
     /// Used only in `.irc` style; channels pass members, DMs pass the other party.
     var mentionCandidates: [String] = []
+    /// Incremented by parents that need to explicitly return keyboard focus
+    /// to the composer even when SwiftUI reuses the existing view instance.
+    var focusRequestToken: Int = 0
     var onSend: (String, [String]) -> Void = { _, _ in }
     var onQueuePrompt: ((String, Bool, [String]) -> Void)?
     var onEscape: (() -> Void)?
@@ -713,6 +716,9 @@ struct ChatInputBar: View {
         // doesn't re-fire; watching cardId (which encodes "channel:<name>"
         // or "dm:<handle>") catches every switch.
         .onChange(of: cardId) { _, _ in
+            focusInput()
+        }
+        .onChange(of: focusRequestToken) { _, _ in
             focusInput()
         }
     }
@@ -848,6 +854,9 @@ struct ChatInputBar: View {
 
     private func focusInput() {
         isFocused = true
+        DispatchQueue.main.async {
+            isFocused = true
+        }
     }
 
     // MARK: - @-mention autocompletion

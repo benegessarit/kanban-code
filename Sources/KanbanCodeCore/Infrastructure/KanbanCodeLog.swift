@@ -22,6 +22,10 @@ public enum KanbanCodeLog {
     }()
 
     private static let queue = DispatchQueue(label: "kanban-code.log", qos: .utility)
+    private static let debugEnabled: Bool = {
+        let env = ProcessInfo.processInfo.environment
+        return env["KANBAN_CODE_DEBUG_LOGS"] == "1" || env["KANBAN_DEBUG"] == "1"
+    }()
 
     /// On startup, if the log file exceeds maxLogSize, keep only the tail.
     private static func rotateIfNeeded(path: String) {
@@ -55,11 +59,18 @@ public enum KanbanCodeLog {
         write("ERROR", subsystem, message)
     }
 
+    /// Log verbose diagnostics. Disabled by default; set KANBAN_CODE_DEBUG_LOGS=1.
+    public nonisolated static func debug(_ subsystem: String, _ message: String) {
+        guard debugEnabled else { return }
+        write("DEBUG", subsystem, message)
+    }
+
     private nonisolated static func write(_ level: String, _ subsystem: String, _ message: String) {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let line = "[\(timestamp)] [\(level)] [\(subsystem)] \(message)\n"
+        let date = Date()
 
         queue.async {
+            let timestamp = ISO8601DateFormatter().string(from: date)
+            let line = "[\(timestamp)] [\(level)] [\(subsystem)] \(message)\n"
             // Use the Swift-throwing FileHandle API (seekToEnd / write(contentsOf:)
             // / close), NOT the legacy Obj-C methods (seekToEndOfFile, write(_:),
             // closeFile). The legacy ones raise NSException on any I/O hiccup

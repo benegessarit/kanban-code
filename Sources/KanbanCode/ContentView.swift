@@ -120,6 +120,7 @@ struct ContentView: View {
     @State private var navigationBackStack: [DrawerNavigationTarget] = []
     @State private var navigationForwardStack: [DrawerNavigationTarget] = []
     @State private var suppressNextNavigationRecord = false
+    @State private var channelFocusRequestToken = 0
     // showSearch and isExpandedDetail live in AppState (store.state.paletteOpen / detailExpanded)
     var showSearch: Bool {
         get { store.state.paletteOpen }
@@ -1664,6 +1665,7 @@ struct ContentView: View {
             store.dispatch(.selectCard(cardId: id))
         case .channel(let name):
             store.dispatch(.selectChannel(name: name))
+            channelFocusRequestToken += 1
         case .dm(let participant):
             store.dispatch(.selectDM(other: participant))
         }
@@ -2652,6 +2654,11 @@ struct ContentView: View {
             myHandle: store.state.humanHandle,
             pullRequests: pullRequests,
             pullRequestBaseURLsByCardId: baseURLs,
+            focusRequestToken: channelFocusRequestToken,
+            onLoadSearchMessages: { limit in
+                let channelsStore = ChannelsStore()
+                return await channelsStore.loadMessages(channel: channel.name, limit: limit)
+            },
             draft: Binding(
                 get: { store.state.channelDrafts[channel.name] ?? "" },
                 set: { store.dispatch(.setChannelDraft(channelName: channel.name, body: $0)) }

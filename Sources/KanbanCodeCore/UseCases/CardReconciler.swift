@@ -490,7 +490,7 @@ public enum CardReconciler {
     ) -> String? {
         // 1. Exact match by sessionId
         if let cardId = cardIdBySessionId[session.id] {
-            KanbanCodeLog.info("reconciler", "findCard: session=\(session.id.prefix(8)) matched by sessionId → card=\(cardId.prefix(12))")
+            KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) matched by sessionId → card=\(cardId.prefix(12))")
             return cardId
         }
 
@@ -508,11 +508,11 @@ public enum CardReconciler {
                 // Prefer cards that don't already have a session (pending cards)
                 let pendingCards = sameProject.filter { linksById[$0]?.sessionLink == nil }
                 if let cardId = pendingCards.first {
-                    KanbanCodeLog.info("reconciler", "findCard: session=\(session.id.prefix(8)) matched by branch=\(baseName) → card=\(cardId.prefix(12))")
+                    KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) matched by branch=\(baseName) → card=\(cardId.prefix(12))")
                     return cardId
                 }
                 if let cardId = sameProject.first {
-                    KanbanCodeLog.info("reconciler", "findCard: session=\(session.id.prefix(8)) matched by branch=\(baseName) (existing) → card=\(cardId.prefix(12))")
+                    KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) matched by branch=\(baseName) (existing) → card=\(cardId.prefix(12))")
                     return cardId
                 }
             }
@@ -526,7 +526,7 @@ public enum CardReconciler {
                 if link.tmuxLink != nil,
                    link.sessionLink == nil,
                    (link.projectPath == projectPath || isWorktreeUnder(sessionPath: projectPath, projectRoot: link.projectPath)) {
-                    KanbanCodeLog.info("reconciler", "findCard: session=\(session.id.prefix(8)) matched by projectPath+tmux → card=\(link.id.prefix(12)) (tmux=\(link.tmuxLink?.sessionName ?? "?"))")
+                    KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) matched by projectPath+tmux → card=\(link.id.prefix(12)) (tmux=\(link.tmuxLink?.sessionName ?? "?"))")
                     return link.id
                 }
             }
@@ -534,7 +534,7 @@ public enum CardReconciler {
             let tmuxCards = linksById.values.filter { $0.tmuxLink != nil && $0.sessionLink == nil }
             if !tmuxCards.isEmpty {
                 for card in tmuxCards {
-                    KanbanCodeLog.info("reconciler", "findCard: session=\(session.id.prefix(8)) projectPath=\(projectPath) — tmux card=\(card.id.prefix(12)) has projectPath=\(card.projectPath ?? "nil") (no match)")
+                    KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) projectPath=\(projectPath) — tmux card=\(card.id.prefix(12)) has projectPath=\(card.projectPath ?? "nil") (no match)")
                 }
             }
         }
@@ -554,7 +554,7 @@ public enum CardReconciler {
                           link.sessionLink == nil,
                           link.projectPath == projectRoot
                     else { continue }
-                    KanbanCodeLog.info("reconciler", "findCard: session=\(session.id.prefix(8)) matched by worktree dir name → card=\(link.id.prefix(12))")
+                    KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) matched by worktree dir name → card=\(link.id.prefix(12))")
                     return link.id
                 }
             }
@@ -570,12 +570,12 @@ public enum CardReconciler {
                       link.sessionLink != nil,
                       (link.projectPath == projectPath || isWorktreeUnder(sessionPath: projectPath, projectRoot: link.projectPath))
                 else { continue }
-                KanbanCodeLog.info("reconciler", "findCard: session=\(session.id.prefix(8)) matched by projectPath+tmux (existing session) → card=\(link.id.prefix(12))")
+                KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) matched by projectPath+tmux (existing session) → card=\(link.id.prefix(12))")
                 return link.id
             }
         }
 
-        KanbanCodeLog.info("reconciler", "findCard: session=\(session.id.prefix(8)) projectPath=\(session.projectPath ?? "nil") → NO MATCH")
+        KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) projectPath=\(session.projectPath ?? "nil") → NO MATCH")
         return nil
     }
 

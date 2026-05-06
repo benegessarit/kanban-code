@@ -4,8 +4,7 @@ import os
 
 /// Detects main thread hangs by pinging from a background thread.
 /// Logs any hang > threshold to ~/.kanban-code/logs/main-thread-hangs.log
-/// Dormant by default. start() only enables sampling when
-/// KANBAN_WATCHDOG=1 is set.
+/// Enabled by default; set KANBAN_WATCHDOG=0 to disable.
 final class MainThreadWatchdog: @unchecked Sendable {
     static let shared = MainThreadWatchdog()
 
@@ -24,14 +23,10 @@ final class MainThreadWatchdog: @unchecked Sendable {
         let logsDir = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code/logs")
         try? FileManager.default.createDirectory(atPath: logsDir, withIntermediateDirectories: true)
         logPath = (logsDir as NSString).appendingPathComponent("main-thread-hangs.log")
-        // Clear previous log on init
-        try? "".write(toFile: logPath, atomically: true, encoding: .utf8)
     }
 
     func start() {
-        // This watchdog is diagnostic-only. Running it during normal use can
-        // amplify a UI hang by writing a log line every sampling interval.
-        guard ProcessInfo.processInfo.environment["KANBAN_WATCHDOG"] == "1" else { return }
+        guard ProcessInfo.processInfo.environment["KANBAN_WATCHDOG"] != "0" else { return }
 
         let alreadyRunning = _isRunning.withLock { val -> Bool in
             if val { return true }
@@ -39,8 +34,9 @@ final class MainThreadWatchdog: @unchecked Sendable {
             return false
         }
         guard !alreadyRunning else { return }
+        log("WATCHDOG START pid=\(ProcessInfo.processInfo.processIdentifier)")
 
-        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
 
             while self._isRunning.withLock({ $0 }) {
