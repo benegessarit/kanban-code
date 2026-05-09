@@ -106,6 +106,111 @@ struct ReducerTests {
         #expect(state.selectedCardId == "card_l1")
     }
 
+    // FT-986: local-task cards must route through the runner-tmux bridge
+    // instead of the generic createTmuxSession path.
+    @Test("launchCard on local-task card emits launchLocalTaskBridge effect")
+    func launchCardRoutesLocalTaskThroughBridge() {
+        var localTaskLink = makeLink(
+            id: "card_local1",
+            column: .backlog,
+            source: .localTask,
+            name: "Wire local-task launch"
+        )
+        localTaskLink.localTaskLink = LocalTaskLink(
+            id: "986",
+            title: "Wire local-task launch",
+            status: "open",
+            projectPath: "/Users/davidbeyer/claude-code"
+        )
+        var state = stateWith([localTaskLink])
+
+        let effects = Reducer.reduce(state: &state, action: .launchCard(
+            cardId: "card_local1",
+            prompt: "ship it",
+            projectPath: "/test",
+            worktreeName: nil,
+            runRemotely: false,
+            commandOverride: nil
+        ))
+
+        // tmuxLink stays nil until bridge returns — generic path would have set it.
+        #expect(state.links["card_local1"]?.tmuxLink == nil)
+        #expect(state.links["card_local1"]?.isLaunching == true)
+        #expect(state.links["card_local1"]?.column == .inProgress)
+
+        // Effect chain must include the bridge call with the formaltask id.
+        var sawBridgeEffect = false
+        for effect in effects {
+            if case .launchLocalTaskBridge(let cardId, let taskId, let repoPath, let prompt, _) = effect {
+                #expect(cardId == "card_local1")
+                #expect(taskId == 986)
+                #expect(repoPath == "/Users/davidbeyer/claude-code")
+                #expect(prompt == "ship it")
+                sawBridgeEffect = true
+            }
+        }
+        #expect(sawBridgeEffect)
+
+        // Generic createTmuxSession effect must NOT be emitted for local-task launches.
+        for effect in effects {
+            if case .createTmuxSession = effect {
+                Issue.record("local-task card emitted createTmuxSession; should be bridge only")
+            }
+        }
+    }
+
+    @Test("launchCard without localTaskLink keeps generic launch path")
+    func launchCardWithoutLocalTaskTakesGenericPath() {
+        let link = makeLink(id: "card_generic1", column: .backlog)
+        var state = stateWith([link])
+
+        let effects = Reducer.reduce(state: &state, action: .launchCard(
+            cardId: "card_generic1", prompt: "test", projectPath: "/test",
+            worktreeName: nil, runRemotely: false, commandOverride: nil
+        ))
+
+        // Generic path sets tmuxLink synchronously.
+        #expect(state.links["card_generic1"]?.tmuxLink != nil)
+        // Bridge effect must NOT be emitted.
+        for effect in effects {
+            if case .launchLocalTaskBridge = effect {
+                Issue.record("non-local card emitted launchLocalTaskBridge; should stay on generic path")
+            }
+        }
+    }
+
+    @Test("localTaskLaunched persists tmuxSession and worktreePath")
+    func localTaskLaunchedPersistsLinks() {
+        var localTaskLink = makeLink(id: "card_local2", column: .inProgress, isLaunching: true)
+        localTaskLink.localTaskLink = LocalTaskLink(id: "1", title: "t", status: "open", projectPath: "/r")
+        var state = stateWith([localTaskLink])
+
+        let _ = Reducer.reduce(state: &state, action: .localTaskLaunched(
+            cardId: "card_local2",
+            tmuxName: "claude-code-1",
+            worktreePath: "/some/worktree"
+        ))
+
+        #expect(state.links["card_local2"]?.tmuxLink?.sessionName == "claude-code-1")
+        #expect(state.links["card_local2"]?.worktreeLink?.path == "/some/worktree")
+        #expect(state.links["card_local2"]?.isLaunching == nil)
+    }
+
+    @Test("localTaskLaunchFailed clears isLaunching and surfaces error")
+    func localTaskLaunchFailedClearsLaunching() {
+        var localTaskLink = makeLink(id: "card_local3", column: .inProgress, isLaunching: true)
+        localTaskLink.localTaskLink = LocalTaskLink(id: "1", title: "t", status: "open", projectPath: "/r")
+        var state = stateWith([localTaskLink])
+
+        let _ = Reducer.reduce(state: &state, action: .localTaskLaunchFailed(
+            cardId: "card_local3",
+            error: "bridge missing"
+        ))
+
+        #expect(state.links["card_local3"]?.isLaunching == nil)
+        #expect(state.error?.contains("bridge missing") == true)
+    }
+
     // MARK: - Resume Card
 
     @Test("resumeCard sets column to inProgress and isLaunching")

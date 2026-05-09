@@ -222,6 +222,14 @@ struct ContentView: View {
         let settings = SettingsStore()
         let tmux = TmuxAdapter()
 
+        // FT-986: bridge path matches the runner repo where formaltask + runner.py live.
+        // Bridge is optional — passing nil disables local-task launches but leaves the
+        // generic launch path untouched.
+        let bridgePath = "/Users/davidbeyer/claude-code/scripts/bin/runner-tmux-bridge.py"
+        let localTaskBridge: LaunchLocalTaskBridge? = FileManager.default.fileExists(atPath: bridgePath)
+            ? LaunchLocalTaskBridge(bridgeExecutable: bridgePath)
+            : nil
+
         let effectHandler = EffectHandler(
             coordinationStore: coordination,
             tmuxAdapter: tmux,
@@ -229,7 +237,8 @@ struct ContentView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setData(data, forType: .png)
             },
-            notifier: MacOSNotificationClient()
+            notifier: MacOSNotificationClient(),
+            launchLocalTaskBridge: localTaskBridge
         )
 
         let boardStore = BoardStore(
