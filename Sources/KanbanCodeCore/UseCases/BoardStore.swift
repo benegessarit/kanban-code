@@ -80,6 +80,8 @@ public final class AppState: @unchecked Sendable {
 
     /// Last time GitHub issues were fetched.
     public var lastGitHubRefresh: Date?
+    /// Last time formaltask local tasks were fetched.
+    public var lastLocalTaskRefresh: Date?
     /// Whether a GitHub issue refresh is currently running.
     public var isRefreshingBacklog = false
 
@@ -385,6 +387,7 @@ public enum Action: Sendable {
     // Background reconciliation
     case reconciled(ReconciliationResult)
     case gitHubIssuesUpdated(links: [Link])
+    case localTasksUpdated(links: [Link])
     case activityChanged([String: ActivityState]) // sessionId → state
 
     // Busy state (transient spinners)
@@ -1774,6 +1777,20 @@ public enum Reducer {
             state.lastGitHubRefresh = Date()
             return [.persistLinks(Array(state.links.values))]
 
+        case .localTasksUpdated(let updatedLinks):
+            // Upsert with the same "don't clobber newer manual edits" guard as GitHub.
+            // Unlike GitHub, NEVER delete cards whose underlying task disappeared —
+            // formaltask is workflow truth, but a removed task should leave its
+            // card visible until the user explicitly archives it.
+            for link in updatedLinks {
+                if let existing = state.links[link.id], existing.updatedAt > link.updatedAt {
+                    continue
+                }
+                state.links[link.id] = link
+            }
+            state.lastLocalTaskRefresh = Date()
+            return [.persistLinks(Array(state.links.values))]
+
         case .activityChanged(let activityMap):
             // Lightweight column update — no full reconciliation, just activity → column
             var changed = false
@@ -1886,6 +1903,7 @@ public final class BoardStore: @unchecked Sendable {
     private let ghAdapter: GhCliAdapter?
     private let worktreeAdapter: GitWorktreeAdapter?
     private let tmuxAdapter: TmuxManagerPort?
+    private let formaltaskReader: FormaltaskReader?
 
     public let sessionStore: SessionStore
 
@@ -1898,6 +1916,7 @@ public final class BoardStore: @unchecked Sendable {
         ghAdapter: GhCliAdapter? = nil,
         worktreeAdapter: GitWorktreeAdapter? = nil,
         tmuxAdapter: TmuxManagerPort? = nil,
+        formaltaskReader: FormaltaskReader? = FormaltaskReader(),
         sessionStore: SessionStore = ClaudeCodeSessionStore()
     ) {
         self.state = AppState()
@@ -1909,6 +1928,7 @@ public final class BoardStore: @unchecked Sendable {
         self.ghAdapter = ghAdapter
         self.worktreeAdapter = worktreeAdapter
         self.tmuxAdapter = tmuxAdapter
+        self.formaltaskReader = formaltaskReader
         self.sessionStore = sessionStore
     }
 
@@ -2319,6 +2339,11 @@ public final class BoardStore: @unchecked Sendable {
             await refreshGitHubIssuesIfNeeded()
             KanbanCodeLog.info("reconcile", "gitHubIssues: \(t6.duration(to: .now))")
 
+            // Fetch formaltask local tasks alongside GitHub issues
+            let t7 = ContinuousClock.now
+            await refreshLocalTasksIfNeeded()
+            KanbanCodeLog.info("reconcile", "localTasks: \(t7.duration(to: .now))")
+
             KanbanCodeLog.info("reconcile", "TOTAL: \(reconcileStart.duration(to: .now))")
         } catch {
             KanbanCodeLog.info("reconcile", "FAILED after \(reconcileStart.duration(to: .now)): \(error)")
@@ -2405,4 +2430,85 @@ public final class BoardStore: @unchecked Sendable {
             state.lastGitHubRefresh = Date()
         }
     }
+
+    // MARK: - Formaltask Local Tasks
+
+    private func refreshLocalTasksIfNeeded() async {
+        guard formaltaskReader != nil else { return }
+        let interval: TimeInterval = 300
+        if let last = state.lastLocalTaskRefresh, Date.now.timeIntervalSince(last) < interval {
+            return
+        }
+        await refreshLocalTasks()
+    }
+
+    private func refreshLocalTasks() async {
+        guard let formaltaskReader else { return }
+        let records = await formaltaskReader.read()
+        var links: [String: Link] = [:]
+        for link in state.links.values {
+            links[link.id] = link
+        }
+        let changed = mergeLocalTasksIntoLinks(records, into: &links)
+        if changed {
+            dispatch(.localTasksUpdated(links: Array(links.values)))
+        } else {
+            state.lastLocalTaskRefresh = Date()
+        }
+    }
+}
+
+// MARK: - Local task merge (pure helper)
+
+/// Merge formaltask records into an existing link map. Returns true if anything
+/// changed. The caller passes its full link map; the helper finds local-task
+/// cards by `localTaskLink.id` AND `projectPath` (composite identity), updates
+/// derived fields on existing matches, and creates new cards for unmatched
+/// records. Manual cards on the same project path are never touched. Stale
+/// local-task cards (whose underlying record has disappeared) are NEVER
+/// deleted — only the user can archive them.
+public func mergeLocalTasksIntoLinks(_ records: [FormaltaskRecord], into links: inout [String: Link]) -> Bool {
+    var changed = false
+    for record in records {
+        let existingId = links.first { _, link in
+            link.localTaskLink?.id == record.id && link.projectPath == record.projectPath
+        }?.key
+
+        if let id = existingId, var existing = links[id] {
+            let beforeName = existing.name
+            let beforeLink = existing.localTaskLink
+            existing.name = "#\(record.id): \(record.title)"
+            existing.localTaskLink = LocalTaskLink(
+                id: record.id,
+                title: record.title,
+                description: record.description,
+                status: record.status,
+                projectPath: record.projectPath,
+                updatedAt: record.updatedAt
+            )
+            if existing.name != beforeName || existing.localTaskLink != beforeLink {
+                existing.updatedAt = .now
+                links[id] = existing
+                changed = true
+            }
+        } else {
+            let newLink = Link(
+                name: "#\(record.id): \(record.title)",
+                projectPath: record.projectPath,
+                column: .backlog,
+                source: .localTask,
+                localTaskLink: LocalTaskLink(
+                    id: record.id,
+                    title: record.title,
+                    description: record.description,
+                    status: record.status,
+                    projectPath: record.projectPath,
+                    updatedAt: record.updatedAt
+                )
+            )
+            links[newLink.id] = newLink
+            changed = true
+        }
+    }
+    return changed
 }
