@@ -303,6 +303,7 @@ struct CardLabelBadge: View {
         case .issue: .blue
         case .pr: .purple
         case .task: .gray
+        case .localTask: .teal
         }
     }
 }
