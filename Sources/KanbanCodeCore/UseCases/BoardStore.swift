@@ -376,6 +376,8 @@ public enum Action: Sendable {
     case launchCompleted(cardId: String, tmuxName: String, sessionLink: SessionLink?, worktreeLink: WorktreeLink?, isRemote: Bool)
     case launchTmuxReady(cardId: String)
     case launchFailed(cardId: String, error: String)
+    case localTaskLaunched(cardId: String, tmuxName: String, worktreePath: String)
+    case localTaskLaunchFailed(cardId: String, error: String)
     case resumeCompleted(cardId: String, tmuxName: String, isRemote: Bool)
     case resumeFailed(cardId: String, error: String)
     case terminalCreated(cardId: String, tmuxName: String)
@@ -483,6 +485,7 @@ public enum Effect: Sendable {
     case upsertLink(Link)
     case removeLink(String) // id
     case createTmuxSession(cardId: String, name: String, path: String)
+    case launchLocalTaskBridge(cardId: String, taskId: Int, repoPath: String, prompt: String, tmuxSessionName: String)
     case killTmuxSession(String) // name
     case killTmuxSessions([String])
     case deleteSessionFile(String) // path
@@ -577,13 +580,37 @@ public enum Reducer {
             state.busyCards.insert(cardId)
             return [.createTmuxSession(cardId: cardId, name: sessionName, path: workDir), .upsertLink(link)]
 
-        case .launchCard(let cardId, _, let projectPath, let worktreeName, _, _):
+        case .launchCard(let cardId, let prompt, let projectPath, let worktreeName, _, _):
             guard var link = state.links[cardId] else { return [] }
             let projectName = (projectPath as NSString).lastPathComponent
             let effectiveName = (worktreeName?.isEmpty == false) ? worktreeName! : nil
             let tmuxName = effectiveName != nil
                 ? "\(projectName)-\(effectiveName!)"
                 : "\(projectName)-\(cardId)"
+
+            // FT-986: local-task cards route through the runner-tmux bridge so the
+            // runner owns worktree creation, env contract, and sidecar status.
+            // Generic launch path is bypassed for these cards.
+            if let local = link.localTaskLink, let taskId = Int(local.id) {
+                link.column = .inProgress
+                link.manualOverrides.column = false
+                link.isLaunching = true
+                link.updatedAt = .now
+                state.links[cardId] = link
+                state.selectedCardId = cardId
+                KanbanCodeLog.info("store", "Launch local-task: card=\(cardId.prefix(12)) ftId=\(taskId) tmux=\(tmuxName)")
+                return [
+                    .upsertLink(link),
+                    .launchLocalTaskBridge(
+                        cardId: cardId,
+                        taskId: taskId,
+                        repoPath: local.projectPath,
+                        prompt: prompt,
+                        tmuxSessionName: tmuxName
+                    ),
+                ]
+            }
+
             // Preserve existing shell sessions as extras
             var extras = link.tmuxLink?.extraSessions ?? []
             if link.tmuxLink?.isShellOnly == true, let oldPrimary = link.tmuxLink?.sessionName {
@@ -1503,6 +1530,25 @@ public enum Reducer {
             state.error = "Launch failed: \(error)"
             return [.upsertLink(link)]
 
+        case .localTaskLaunched(let cardId, let tmuxName, let worktreePath):
+            guard var link = state.links[cardId] else { return [] }
+            let existingExtras = link.tmuxLink?.extraSessions
+            link.tmuxLink = TmuxLink(sessionName: tmuxName, extraSessions: existingExtras)
+            link.worktreeLink = WorktreeLink(path: worktreePath)
+            link.isLaunching = nil
+            link.lastActivity = .now
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
+
+        case .localTaskLaunchFailed(let cardId, let error):
+            guard var link = state.links[cardId] else { return [] }
+            link.isLaunching = nil
+            link.updatedAt = .now
+            state.links[cardId] = link
+            state.error = "Local task launch failed: \(error)"
+            return [.upsertLink(link)]
+
         case .resumeCompleted(let cardId, let tmuxName, let isRemote):
             guard var link = state.links[cardId] else { return [] }
             let existingExtras = link.tmuxLink?.extraSessions
@@ -1976,7 +2022,7 @@ public final class BoardStore: @unchecked Sendable {
                     self?.state.error = nil
                 }
             }
-        case .launchFailed, .resumeFailed, .terminalFailed:
+        case .launchFailed, .resumeFailed, .terminalFailed, .localTaskLaunchFailed:
             let dismissId = UUID()
             _lastErrorId = dismissId
             Task { @MainActor [weak self] in

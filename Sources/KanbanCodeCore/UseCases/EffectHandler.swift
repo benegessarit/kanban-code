@@ -11,6 +11,7 @@ public actor EffectHandler {
     private let setClipboardImage: (@Sendable (Data) -> Void)?
     private let channelsStore: ChannelsStore
     private let notifier: NotifierPort?
+    private let launchLocalTaskBridge: LaunchLocalTaskBridge?
 
     // MARK: - Chat notification burst throttler
     //
@@ -35,13 +36,15 @@ public actor EffectHandler {
         tmuxAdapter: TmuxManagerPort? = nil,
         setClipboardImage: (@Sendable (Data) -> Void)? = nil,
         channelsStore: ChannelsStore? = nil,
-        notifier: NotifierPort? = nil
+        notifier: NotifierPort? = nil,
+        launchLocalTaskBridge: LaunchLocalTaskBridge? = nil
     ) {
         self.coordinationStore = coordinationStore
         self.tmuxAdapter = tmuxAdapter
         self.setClipboardImage = setClipboardImage
         self.channelsStore = channelsStore ?? ChannelsStore()
         self.notifier = notifier
+        self.launchLocalTaskBridge = launchLocalTaskBridge
     }
 
     public func execute(_ effect: Effect, dispatch: @MainActor @Sendable (Action) -> Void) async {
@@ -73,6 +76,31 @@ public actor EffectHandler {
                 await dispatch(.terminalCreated(cardId: cardId, tmuxName: name))
             } catch {
                 await dispatch(.terminalFailed(cardId: cardId, error: error.localizedDescription))
+            }
+
+        case .launchLocalTaskBridge(let cardId, let taskId, let repoPath, let prompt, let tmuxSessionName):
+            guard let bridge = launchLocalTaskBridge else {
+                await dispatch(.localTaskLaunchFailed(cardId: cardId, error: "no LaunchLocalTaskBridge configured"))
+                return
+            }
+            // Bridge invoke is synchronous + blocks on git worktree add; hop off the
+            // actor so the UI thread isn't pinned for several seconds.
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try bridge.launchLeaf(
+                        taskId: taskId,
+                        repoPath: repoPath,
+                        prompt: prompt,
+                        tmuxSessionName: tmuxSessionName
+                    )
+                }.value
+                await dispatch(.localTaskLaunched(
+                    cardId: cardId,
+                    tmuxName: result.tmuxSession,
+                    worktreePath: result.worktreePath
+                ))
+            } catch {
+                await dispatch(.localTaskLaunchFailed(cardId: cardId, error: error.localizedDescription))
             }
 
         case .killTmuxSession(let name):
