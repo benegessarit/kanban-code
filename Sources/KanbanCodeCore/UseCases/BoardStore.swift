@@ -2477,6 +2477,7 @@ public func mergeLocalTasksIntoLinks(_ records: [FormaltaskRecord], into links: 
         if let id = existingId, var existing = links[id] {
             let beforeName = existing.name
             let beforeLink = existing.localTaskLink
+            let beforeColumn = existing.column
             existing.name = "#\(record.id): \(record.title)"
             existing.localTaskLink = LocalTaskLink(
                 id: record.id,
@@ -2486,13 +2487,16 @@ public func mergeLocalTasksIntoLinks(_ records: [FormaltaskRecord], into links: 
                 projectPath: record.projectPath,
                 updatedAt: record.updatedAt
             )
-            if existing.name != beforeName || existing.localTaskLink != beforeLink {
+            // Apply formaltask-status → column mapping. UpdateCardColumn
+            // honors manualOverrides.column so a user-drag still wins.
+            UpdateCardColumn.update(link: &existing, activityState: nil, hasWorktree: existing.worktreeLink != nil)
+            if existing.name != beforeName || existing.localTaskLink != beforeLink || existing.column != beforeColumn {
                 existing.updatedAt = .now
                 links[id] = existing
                 changed = true
             }
         } else {
-            let newLink = Link(
+            var newLink = Link(
                 name: "#\(record.id): \(record.title)",
                 projectPath: record.projectPath,
                 column: .backlog,
@@ -2506,6 +2510,8 @@ public func mergeLocalTasksIntoLinks(_ records: [FormaltaskRecord], into links: 
                     updatedAt: record.updatedAt
                 )
             )
+            // Land the card in its formaltask-derived column on first refresh.
+            UpdateCardColumn.update(link: &newLink, activityState: nil, hasWorktree: false)
             links[newLink.id] = newLink
             changed = true
         }
