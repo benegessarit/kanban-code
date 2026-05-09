@@ -5,7 +5,10 @@ import Foundation
 // works. Grep for these constants during the post-proof generalization pass.
 public let prototypeEpic = "kanban-code-ui-fork"
 public let prototypeProjectPath = "/Users/davidbeyer/claude-code"
-public let prototypeFtBinary = "/usr/local/bin/ft"
+// Use /usr/bin/env so PATH-based ft resolution works (pyenv shims, brew,
+// /usr/local). Hardcoding /usr/local/bin/ft fails on systems with pyenv.
+public let prototypeFtBinary = "/usr/bin/env"
+public let prototypeFtArgPrefix = ["ft"]
 
 /// One formaltask record exposed to BoardStore. Mirrors the subset of fields
 /// available from `ft --json task list` plus a project path supplied by the
@@ -26,15 +29,18 @@ public actor FormaltaskReader {
     private let epic: String
     private let projectPath: String
     private let ftBinary: String
+    private let ftArgPrefix: [String]
 
     public init(
         epic: String = prototypeEpic,
         projectPath: String = prototypeProjectPath,
-        ftBinary: String = prototypeFtBinary
+        ftBinary: String = prototypeFtBinary,
+        ftArgPrefix: [String] = prototypeFtArgPrefix
     ) {
         self.epic = epic
         self.projectPath = projectPath
         self.ftBinary = ftBinary
+        self.ftArgPrefix = ftArgPrefix
     }
 
     /// Read the prototype epic's tasks. Returns `[]` and logs on any failure.
@@ -51,7 +57,7 @@ public actor FormaltaskReader {
     private func shellOut() throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ftBinary)
-        process.arguments = ["--json", "task", "list", epic]
+        process.arguments = ftArgPrefix + ["--json", "task", "list", epic]
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout
