@@ -102,4 +102,44 @@ struct LocalTaskRefreshMergeTests {
         _ = mergeLocalTasksIntoLinks([recA, recB], into: &links)
         #expect(links.count == 2)
     }
+
+    // MARK: - Column derived from formaltask status (FT-977)
+
+    @Test("New in_progress card lands in inProgress column, not backlog")
+    func newCardColumnFromStatus() {
+        var links: [String: Link] = [:]
+        let rec = FormaltaskRecord(id: "1", title: "t", description: nil, status: "in_progress", projectPath: "/p", updatedAt: nil)
+        _ = mergeLocalTasksIntoLinks([rec], into: &links)
+        #expect(links.values.first?.column == .inProgress)
+    }
+
+    @Test("Status change from open to completed moves card from backlog to done")
+    func statusChangeMovesColumn() {
+        var links: [String: Link] = [:]
+        let opened = FormaltaskRecord(id: "1", title: "t", description: nil, status: "open", projectPath: "/p", updatedAt: nil)
+        _ = mergeLocalTasksIntoLinks([opened], into: &links)
+        #expect(links.values.first?.column == .backlog)
+
+        let completed = FormaltaskRecord(id: "1", title: "t", description: nil, status: "completed", projectPath: "/p", updatedAt: nil)
+        _ = mergeLocalTasksIntoLinks([completed], into: &links)
+        #expect(links.values.first?.column == .done)
+    }
+
+    @Test("Manual column override on a local-task card is preserved through refresh")
+    func manualOverrideSurvivesRefresh() {
+        var links: [String: Link] = [:]
+        let initial = FormaltaskRecord(id: "1", title: "t", description: nil, status: "open", projectPath: "/p", updatedAt: nil)
+        _ = mergeLocalTasksIntoLinks([initial], into: &links)
+        guard let id = links.keys.first else { Issue.record("expected a card"); return }
+        // Simulate a user drag: column moved to inProgress with override flag set.
+        var dragged = links[id]!
+        dragged.column = .inProgress
+        dragged.manualOverrides.column = true
+        links[id] = dragged
+
+        // Now formaltask says completed — but the user's drag must win.
+        let completed = FormaltaskRecord(id: "1", title: "t", description: nil, status: "completed", projectPath: "/p", updatedAt: nil)
+        _ = mergeLocalTasksIntoLinks([completed], into: &links)
+        #expect(links[id]?.column == .inProgress, "manual override must survive formaltask refresh")
+    }
 }
