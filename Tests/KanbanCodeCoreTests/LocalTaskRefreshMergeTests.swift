@@ -125,6 +125,36 @@ struct LocalTaskRefreshMergeTests {
         #expect(links.values.first?.column == .done)
     }
 
+    @Test("Local task board view excludes unrelated discovered cards")
+    func boardViewShowsOnlyLocalTasks() {
+        let state = AppState()
+        state.links = [
+            "local-1": Link(
+                id: "local-1",
+                name: "#1: local",
+                projectPath: "/p",
+                column: .backlog,
+                source: .localTask,
+                localTaskLink: LocalTaskLink(id: "1", title: "local", status: "open", projectPath: "/p")
+            ),
+            "session-1": Link(
+                id: "session-1",
+                name: "discovered session",
+                projectPath: "/other",
+                column: .backlog,
+                source: .discovered
+            ),
+        ]
+        state.selectedCardId = "session-1"
+
+        state.rebuildCards()
+
+        #expect(state.cards.count == 2)
+        #expect(state.filteredCards.map { $0.id } == ["local-1"])
+        #expect(state.cards(in: .backlog).map { $0.id } == ["local-1"])
+        #expect(state.selectedCard == nil)
+    }
+
     @Test("Manual column override on a local-task card is preserved through refresh")
     func manualOverrideSurvivesRefresh() {
         var links: [String: Link] = [:]

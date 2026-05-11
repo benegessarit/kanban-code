@@ -235,11 +235,11 @@ public final class AppState: @unchecked Sendable {
         }
         if newCards != cards { cards = newCards }
 
-        let newSelected = selectedCardId.flatMap { id in cards.first { $0.id == id } }
-        if newSelected != selectedCard { selectedCard = newSelected }
-
-        let newFiltered = cards.filter { cardMatchesProjectFilter($0) }
+        let newFiltered = cards.filter { cardMatchesProjectFilter($0) && $0.link.localTaskLink != nil }
         if newFiltered != filteredCards { filteredCards = newFiltered }
+
+        let newSelected = selectedCardId.flatMap { id in newFiltered.first { $0.id == id } }
+        if newSelected != selectedCard { selectedCard = newSelected }
 
         // Per-column sorted arrays
         var newByColumn: [KanbanCodeColumn: [KanbanCodeCard]] = [:]
