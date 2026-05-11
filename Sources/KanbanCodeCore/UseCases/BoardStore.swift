@@ -233,7 +233,7 @@ public final class AppState: @unchecked Sendable {
         }
         if newCards != cards { cards = newCards }
 
-        let newFiltered = cards.filter { cardMatchesProjectFilter($0) && $0.link.localTaskLink != nil }
+        let newFiltered = cards.filter { cardMatchesProjectFilter($0) && isLocalTaskCard($0.link) }
         if newFiltered != filteredCards { filteredCards = newFiltered }
 
         let newSelected = selectedCardId.flatMap { id in newFiltered.first { $0.id == id } }
@@ -298,6 +298,10 @@ public final class AppState: @unchecked Sendable {
         }
 
         return false
+    }
+
+    private func isLocalTaskCard(_ link: Link) -> Bool {
+        link.sessionLink == nil && link.worktreeLink == nil && link.issueLink == nil && link.prLinks.isEmpty
     }
 
     private func isExcludedFromGlobalView(_ card: KanbanCodeCard) -> Bool {

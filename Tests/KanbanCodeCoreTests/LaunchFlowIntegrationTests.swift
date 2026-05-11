@@ -395,22 +395,18 @@ struct LaunchFlowIntegrationTests {
             id: "card_wt_filter",
             column: .backlog,
             projectPath: "/projects/monorepo/.claude/worktrees/feature",
-            worktreeLink: WorktreeLink(path: "/projects/monorepo/.claude/worktrees/feature", branch: "feature"),
-            source: .localTask
+            source: .manual
         )
-        var localWorktreeCard = worktreeCard
-        localWorktreeCard.localTaskLink = LocalTaskLink(id: "1", title: "worktree", status: "open", projectPath: "/projects/monorepo/.claude/worktrees/feature")
+        let localWorktreeCard = worktreeCard
 
         // Card directly in the monorepo subfolder
         let directCard = makeLink(
             id: "card_direct",
             column: .backlog,
             projectPath: "/projects/monorepo/packages/app",
-            sessionLink: SessionLink(sessionId: "s2"),
-            source: .localTask
+            source: .manual
         )
-        var localDirectCard = directCard
-        localDirectCard.localTaskLink = LocalTaskLink(id: "2", title: "direct", status: "open", projectPath: "/projects/monorepo/packages/app")
+        let localDirectCard = directCard
         // Card in a different repo
         let otherCard = makeLink(
             id: "card_other",

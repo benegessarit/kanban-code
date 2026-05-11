@@ -229,12 +229,9 @@ struct ReducerTests {
     @Test("reorderCard updates sort order within a column")
     func reorderCardWithinColumn() {
         let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
-        var first = makeLink(id: "card_1", column: .backlog, source: .localTask, updatedAt: timestamp)
-        first.localTaskLink = LocalTaskLink(id: "1", title: "first", status: "open", projectPath: "/test/project")
-        var second = makeLink(id: "card_2", column: .backlog, source: .localTask, updatedAt: timestamp)
-        second.localTaskLink = LocalTaskLink(id: "2", title: "second", status: "open", projectPath: "/test/project")
-        var third = makeLink(id: "card_3", column: .backlog, source: .localTask, updatedAt: timestamp)
-        third.localTaskLink = LocalTaskLink(id: "3", title: "third", status: "open", projectPath: "/test/project")
+        let first = makeLink(id: "card_1", column: .backlog, updatedAt: timestamp)
+        let second = makeLink(id: "card_2", column: .backlog, updatedAt: timestamp)
+        let third = makeLink(id: "card_3", column: .backlog, updatedAt: timestamp)
         var state = stateWith([first, second, third])
 
         let effects = Reducer.reduce(state: &state, action: .reorderCard(cardId: "card_3", targetCardId: "card_1", above: true))
@@ -511,10 +508,8 @@ struct ReducerTests {
     func filteredCardsProjectFilter() {
         var state = AppState()
         var link = makeLink(id: "c1")  // projectPath = /test/project
-        link.source = .localTask
-        link.localTaskLink = LocalTaskLink(id: "1", title: "Test card", status: "open", projectPath: "/test/project")
         state.links["c1"] = link
-        let otherLink = Link(id: "c2", name: "Other", projectPath: "/other/project", column: .backlog, source: .manual)
+        let otherLink = Link(id: "c2", name: "Other", projectPath: "/other/project", column: .backlog, source: .discovered, sessionLink: SessionLink(sessionId: "other"))
         state.links["c2"] = otherLink
         state.rebuildCards()
 
