@@ -229,9 +229,12 @@ struct ReducerTests {
     @Test("reorderCard updates sort order within a column")
     func reorderCardWithinColumn() {
         let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
-        let first = makeLink(id: "card_1", column: .backlog, updatedAt: timestamp)
-        let second = makeLink(id: "card_2", column: .backlog, updatedAt: timestamp)
-        let third = makeLink(id: "card_3", column: .backlog, updatedAt: timestamp)
+        var first = makeLink(id: "card_1", column: .backlog, source: .localTask, updatedAt: timestamp)
+        first.localTaskLink = LocalTaskLink(id: "1", title: "first", status: "open", projectPath: "/test/project")
+        var second = makeLink(id: "card_2", column: .backlog, source: .localTask, updatedAt: timestamp)
+        second.localTaskLink = LocalTaskLink(id: "2", title: "second", status: "open", projectPath: "/test/project")
+        var third = makeLink(id: "card_3", column: .backlog, source: .localTask, updatedAt: timestamp)
+        third.localTaskLink = LocalTaskLink(id: "3", title: "third", status: "open", projectPath: "/test/project")
         var state = stateWith([first, second, third])
 
         let effects = Reducer.reduce(state: &state, action: .reorderCard(cardId: "card_3", targetCardId: "card_1", above: true))
@@ -507,7 +510,10 @@ struct ReducerTests {
     @Test("filteredCards respects selectedProjectPath")
     func filteredCardsProjectFilter() {
         var state = AppState()
-        state.links["c1"] = makeLink(id: "c1")  // projectPath = /test/project
+        var link = makeLink(id: "c1")  // projectPath = /test/project
+        link.source = .localTask
+        link.localTaskLink = LocalTaskLink(id: "1", title: "Test card", status: "open", projectPath: "/test/project")
+        state.links["c1"] = link
         let otherLink = Link(id: "c2", name: "Other", projectPath: "/other/project", column: .backlog, source: .manual)
         state.links["c2"] = otherLink
         state.rebuildCards()
@@ -519,7 +525,8 @@ struct ReducerTests {
 
         state.selectedProjectPath = nil // global view
         state.rebuildCards()
-        #expect(state.filteredCards.count == 2)
+        #expect(state.cards.count == 2)
+        #expect(state.filteredCards.map { $0.id } == ["c1"])
     }
 
     // MARK: - isShellOnly preserved through terminal creation
