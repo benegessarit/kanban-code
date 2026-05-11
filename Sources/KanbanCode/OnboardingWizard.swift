@@ -696,6 +696,7 @@ struct OnboardingWizard: View {
                 .font(.app(.caption))
                 .foregroundStyle(done ? .green : .orange)
         }
+        .allowsHitTesting(false)
     }
 
     private func summaryRow(_ name: String, status: Bool) -> some View {
