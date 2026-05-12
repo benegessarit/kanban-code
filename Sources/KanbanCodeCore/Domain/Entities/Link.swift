@@ -90,6 +90,33 @@ public struct PRLink: Codable, Sendable, Equatable {
     }
 }
 
+/// Link to a formaltask (local) task. Identity is the formaltask numeric id rendered as a string.
+/// Status is stored as the raw formaltask status string; column mapping happens elsewhere.
+public struct LocalTaskLink: Codable, Sendable, Equatable {
+    public var id: String
+    public var title: String
+    public var description: String?
+    public var status: String
+    public var projectPath: String
+    public var updatedAt: Date?
+
+    public init(
+        id: String,
+        title: String,
+        description: String? = nil,
+        status: String,
+        projectPath: String,
+        updatedAt: Date? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.description = description
+        self.status = status
+        self.projectPath = projectPath
+        self.updatedAt = updatedAt
+    }
+}
+
 /// Link to a GitHub issue.
 public struct IssueLink: Codable, Sendable, Equatable {
     public var number: Int
@@ -143,6 +170,7 @@ public enum CardLabel: String, Sendable {
     case issue = "ISSUE"
     case pr = "PR"
     case task = "TASK"
+    case localTask = "LOCAL_TASK"
 }
 
 // MARK: - Link (Card Entity)
@@ -172,6 +200,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     public var worktreeLink: WorktreeLink?
     public var prLinks: [PRLink]
     public var issueLink: IssueLink?
+    public var localTaskLink: LocalTaskLink?
     public var queuedPrompts: [QueuedPrompt]?
     public var browserTabs: [BrowserTabInfo]?
 
@@ -257,6 +286,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         if worktreeLink != nil { return .worktree }
         if issueLink != nil { return .issue }
         if !prLinks.isEmpty { return .pr }
+        if localTaskLink != nil { return .localTask }
         return .task
     }
 
@@ -303,6 +333,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         worktreeLink: WorktreeLink? = nil,
         prLinks: [PRLink] = [],
         issueLink: IssueLink? = nil,
+        localTaskLink: LocalTaskLink? = nil,
         queuedPrompts: [QueuedPrompt]? = nil,
         browserTabs: [BrowserTabInfo]? = nil,
         assistant: CodingAssistant? = nil,
@@ -330,6 +361,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         self.worktreeLink = worktreeLink
         self.prLinks = prLinks
         self.issueLink = issueLink
+        self.localTaskLink = localTaskLink
         self.queuedPrompts = queuedPrompts
         self.browserTabs = browserTabs
         self.assistant = assistant
@@ -348,7 +380,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         case manualOverrides, manuallyArchived, source, promptBody, promptImagePaths, isRemote, isLaunching, sortOrder
         case discoveredBranches, discoveredRepos, assistant, apiServiceId
         // Typed links (new nested format)
-        case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink, queuedPrompts, browserTabs
+        case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink, localTaskLink, queuedPrompts, browserTabs
         // Old format keys (for reading legacy format)
         case prLink
         case sessionId, sessionPath, worktreePath, worktreeBranch
@@ -438,6 +470,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
             }
         }
 
+        localTaskLink = try c.decodeIfPresent(LocalTaskLink.self, forKey: .localTaskLink)
         queuedPrompts = try c.decodeIfPresent([QueuedPrompt].self, forKey: .queuedPrompts)
         browserTabs = try c.decodeIfPresent([BrowserTabInfo].self, forKey: .browserTabs)
     }
@@ -474,6 +507,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
             try c.encode(prLinks, forKey: .prLinks)
         }
         try c.encodeIfPresent(issueLink, forKey: .issueLink)
+        try c.encodeIfPresent(localTaskLink, forKey: .localTaskLink)
         try c.encodeIfPresent(queuedPrompts, forKey: .queuedPrompts)
         try c.encodeIfPresent(browserTabs, forKey: .browserTabs)
     }
@@ -549,6 +583,7 @@ public enum LinkSource: String, Codable, Sendable {
     case hook // Created via Claude hook event
     case githubIssue = "github_issue" // Created from a GitHub issue
     case manual // User-created task
+    case localTask = "local_task" // Created from a formaltask task
 }
 
 /// Option in an AskUserQuestion prompt.

@@ -4,9 +4,33 @@ import Foundation
 /// Does NOT manage Link records — the caller owns link lifecycle.
 public final class LaunchSession: SessionLauncher, @unchecked Sendable {
     private let tmux: TmuxManagerPort
+    private let localTaskBridge: LaunchLocalTaskBridge?
 
-    public init(tmux: TmuxManagerPort) {
+    public init(tmux: TmuxManagerPort, localTaskBridge: LaunchLocalTaskBridge? = nil) {
         self.tmux = tmux
+        self.localTaskBridge = localTaskBridge
+    }
+
+    /// Launch a local-task-backed card via the runner-tmux bridge (FT-978).
+    /// Goes through the bridge to preserve runner worktree creation, trap files,
+    /// sidecar status, and the leaf-vs-coordinator environment contract.
+    public func launchLocalTask(
+        taskId: Int,
+        repoPath: String,
+        prompt: String,
+        tmuxSessionName: String,
+        team: String = "default"
+    ) throws -> LocalTaskLaunchResult {
+        guard let bridge = localTaskBridge else {
+            throw LocalTaskBridgeError.bridgeExecutableMissing(path: "<no bridge configured>")
+        }
+        return try bridge.launchLeaf(
+            taskId: taskId,
+            repoPath: repoPath,
+            prompt: prompt,
+            tmuxSessionName: tmuxSessionName,
+            team: team
+        )
     }
 
     public func launch(

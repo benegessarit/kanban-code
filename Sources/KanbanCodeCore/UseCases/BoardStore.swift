@@ -80,6 +80,8 @@ public final class AppState: @unchecked Sendable {
 
     /// Last time GitHub issues were fetched.
     public var lastGitHubRefresh: Date?
+    /// Last time formaltask local tasks were fetched.
+    public var lastLocalTaskRefresh: Date?
     /// Whether a GitHub issue refresh is currently running.
     public var isRefreshingBacklog = false
 
@@ -233,11 +235,11 @@ public final class AppState: @unchecked Sendable {
         }
         if newCards != cards { cards = newCards }
 
-        let newSelected = selectedCardId.flatMap { id in cards.first { $0.id == id } }
-        if newSelected != selectedCard { selectedCard = newSelected }
-
-        let newFiltered = cards.filter { cardMatchesProjectFilter($0) }
+        let newFiltered = cards.filter { cardMatchesProjectFilter($0) && $0.link.localTaskLink != nil }
         if newFiltered != filteredCards { filteredCards = newFiltered }
+
+        let newSelected = selectedCardId.flatMap { id in newFiltered.first { $0.id == id } }
+        if newSelected != selectedCard { selectedCard = newSelected }
 
         // Per-column sorted arrays
         var newByColumn: [KanbanCodeColumn: [KanbanCodeCard]] = [:]
@@ -374,6 +376,8 @@ public enum Action: Sendable {
     case launchCompleted(cardId: String, tmuxName: String, sessionLink: SessionLink?, worktreeLink: WorktreeLink?, isRemote: Bool)
     case launchTmuxReady(cardId: String)
     case launchFailed(cardId: String, error: String)
+    case localTaskLaunched(cardId: String, tmuxName: String, worktreePath: String)
+    case localTaskLaunchFailed(cardId: String, error: String)
     case resumeCompleted(cardId: String, tmuxName: String, isRemote: Bool)
     case resumeFailed(cardId: String, error: String)
     case terminalCreated(cardId: String, tmuxName: String)
@@ -385,6 +389,7 @@ public enum Action: Sendable {
     // Background reconciliation
     case reconciled(ReconciliationResult)
     case gitHubIssuesUpdated(links: [Link])
+    case localTasksUpdated(links: [Link])
     case activityChanged([String: ActivityState]) // sessionId → state
 
     // Busy state (transient spinners)
@@ -480,6 +485,7 @@ public enum Effect: Sendable {
     case upsertLink(Link)
     case removeLink(String) // id
     case createTmuxSession(cardId: String, name: String, path: String)
+    case launchLocalTaskBridge(cardId: String, taskId: Int, repoPath: String, prompt: String, tmuxSessionName: String)
     case killTmuxSession(String) // name
     case killTmuxSessions([String])
     case deleteSessionFile(String) // path
@@ -574,13 +580,37 @@ public enum Reducer {
             state.busyCards.insert(cardId)
             return [.createTmuxSession(cardId: cardId, name: sessionName, path: workDir), .upsertLink(link)]
 
-        case .launchCard(let cardId, _, let projectPath, let worktreeName, _, _):
+        case .launchCard(let cardId, let prompt, let projectPath, let worktreeName, _, _):
             guard var link = state.links[cardId] else { return [] }
             let projectName = (projectPath as NSString).lastPathComponent
             let effectiveName = (worktreeName?.isEmpty == false) ? worktreeName! : nil
             let tmuxName = effectiveName != nil
                 ? "\(projectName)-\(effectiveName!)"
                 : "\(projectName)-\(cardId)"
+
+            // FT-986: local-task cards route through the runner-tmux bridge so the
+            // runner owns worktree creation, env contract, and sidecar status.
+            // Generic launch path is bypassed for these cards.
+            if let local = link.localTaskLink, let taskId = Int(local.id) {
+                link.column = .inProgress
+                link.manualOverrides.column = false
+                link.isLaunching = true
+                link.updatedAt = .now
+                state.links[cardId] = link
+                state.selectedCardId = cardId
+                KanbanCodeLog.info("store", "Launch local-task: card=\(cardId.prefix(12)) ftId=\(taskId) tmux=\(tmuxName)")
+                return [
+                    .upsertLink(link),
+                    .launchLocalTaskBridge(
+                        cardId: cardId,
+                        taskId: taskId,
+                        repoPath: local.projectPath,
+                        prompt: prompt,
+                        tmuxSessionName: tmuxName
+                    ),
+                ]
+            }
+
             // Preserve existing shell sessions as extras
             var extras = link.tmuxLink?.extraSessions ?? []
             if link.tmuxLink?.isShellOnly == true, let oldPrimary = link.tmuxLink?.sessionName {
@@ -1500,6 +1530,25 @@ public enum Reducer {
             state.error = "Launch failed: \(error)"
             return [.upsertLink(link)]
 
+        case .localTaskLaunched(let cardId, let tmuxName, let worktreePath):
+            guard var link = state.links[cardId] else { return [] }
+            let existingExtras = link.tmuxLink?.extraSessions
+            link.tmuxLink = TmuxLink(sessionName: tmuxName, extraSessions: existingExtras)
+            link.worktreeLink = WorktreeLink(path: worktreePath)
+            link.isLaunching = nil
+            link.lastActivity = .now
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
+
+        case .localTaskLaunchFailed(let cardId, let error):
+            guard var link = state.links[cardId] else { return [] }
+            link.isLaunching = nil
+            link.updatedAt = .now
+            state.links[cardId] = link
+            state.error = "Local task launch failed: \(error)"
+            return [.upsertLink(link)]
+
         case .resumeCompleted(let cardId, let tmuxName, let isRemote):
             guard var link = state.links[cardId] else { return [] }
             let existingExtras = link.tmuxLink?.extraSessions
@@ -1774,6 +1823,20 @@ public enum Reducer {
             state.lastGitHubRefresh = Date()
             return [.persistLinks(Array(state.links.values))]
 
+        case .localTasksUpdated(let updatedLinks):
+            // Upsert with the same "don't clobber newer manual edits" guard as GitHub.
+            // Unlike GitHub, NEVER delete cards whose underlying task disappeared —
+            // formaltask is workflow truth, but a removed task should leave its
+            // card visible until the user explicitly archives it.
+            for link in updatedLinks {
+                if let existing = state.links[link.id], existing.updatedAt > link.updatedAt {
+                    continue
+                }
+                state.links[link.id] = link
+            }
+            state.lastLocalTaskRefresh = Date()
+            return [.persistLinks(Array(state.links.values))]
+
         case .activityChanged(let activityMap):
             // Lightweight column update — no full reconciliation, just activity → column
             var changed = false
@@ -1886,6 +1949,7 @@ public final class BoardStore: @unchecked Sendable {
     private let ghAdapter: GhCliAdapter?
     private let worktreeAdapter: GitWorktreeAdapter?
     private let tmuxAdapter: TmuxManagerPort?
+    private let formaltaskReader: FormaltaskReader?
 
     public let sessionStore: SessionStore
 
@@ -1898,6 +1962,7 @@ public final class BoardStore: @unchecked Sendable {
         ghAdapter: GhCliAdapter? = nil,
         worktreeAdapter: GitWorktreeAdapter? = nil,
         tmuxAdapter: TmuxManagerPort? = nil,
+        formaltaskReader: FormaltaskReader? = FormaltaskReader(),
         sessionStore: SessionStore = ClaudeCodeSessionStore()
     ) {
         self.state = AppState()
@@ -1909,6 +1974,7 @@ public final class BoardStore: @unchecked Sendable {
         self.ghAdapter = ghAdapter
         self.worktreeAdapter = worktreeAdapter
         self.tmuxAdapter = tmuxAdapter
+        self.formaltaskReader = formaltaskReader
         self.sessionStore = sessionStore
     }
 
@@ -1956,7 +2022,7 @@ public final class BoardStore: @unchecked Sendable {
                     self?.state.error = nil
                 }
             }
-        case .launchFailed, .resumeFailed, .terminalFailed:
+        case .launchFailed, .resumeFailed, .terminalFailed, .localTaskLaunchFailed:
             let dismissId = UUID()
             _lastErrorId = dismissId
             Task { @MainActor [weak self] in
@@ -2319,6 +2385,11 @@ public final class BoardStore: @unchecked Sendable {
             await refreshGitHubIssuesIfNeeded()
             KanbanCodeLog.info("reconcile", "gitHubIssues: \(t6.duration(to: .now))")
 
+            // Fetch formaltask local tasks alongside GitHub issues
+            let t7 = ContinuousClock.now
+            await refreshLocalTasksIfNeeded()
+            KanbanCodeLog.info("reconcile", "localTasks: \(t7.duration(to: .now))")
+
             KanbanCodeLog.info("reconcile", "TOTAL: \(reconcileStart.duration(to: .now))")
         } catch {
             KanbanCodeLog.info("reconcile", "FAILED after \(reconcileStart.duration(to: .now)): \(error)")
@@ -2405,4 +2476,91 @@ public final class BoardStore: @unchecked Sendable {
             state.lastGitHubRefresh = Date()
         }
     }
+
+    // MARK: - Formaltask Local Tasks
+
+    private func refreshLocalTasksIfNeeded() async {
+        guard formaltaskReader != nil else { return }
+        let interval: TimeInterval = 300
+        if let last = state.lastLocalTaskRefresh, Date.now.timeIntervalSince(last) < interval {
+            return
+        }
+        await refreshLocalTasks()
+    }
+
+    private func refreshLocalTasks() async {
+        guard let formaltaskReader else { return }
+        let records = await formaltaskReader.read()
+        var links: [String: Link] = [:]
+        for link in state.links.values {
+            links[link.id] = link
+        }
+        let changed = mergeLocalTasksIntoLinks(records, into: &links)
+        if changed {
+            dispatch(.localTasksUpdated(links: Array(links.values)))
+        } else {
+            state.lastLocalTaskRefresh = Date()
+        }
+    }
+}
+
+// MARK: - Local task merge (pure helper)
+
+/// Merge formaltask records into an existing link map. Returns true if anything
+/// changed. The caller passes its full link map; the helper finds local-task
+/// cards by `localTaskLink.id` AND `projectPath` (composite identity), updates
+/// derived fields on existing matches, and creates new cards for unmatched
+/// records. Manual cards on the same project path are never touched. Stale
+/// local-task cards (whose underlying record has disappeared) are NEVER
+/// deleted — only the user can archive them.
+public func mergeLocalTasksIntoLinks(_ records: [FormaltaskRecord], into links: inout [String: Link]) -> Bool {
+    var changed = false
+    for record in records {
+        let existingId = links.first { _, link in
+            link.localTaskLink?.id == record.id && link.projectPath == record.projectPath
+        }?.key
+
+        if let id = existingId, var existing = links[id] {
+            let beforeName = existing.name
+            let beforeLink = existing.localTaskLink
+            let beforeColumn = existing.column
+            existing.name = "#\(record.id): \(record.title)"
+            existing.localTaskLink = LocalTaskLink(
+                id: record.id,
+                title: record.title,
+                description: record.description,
+                status: record.status,
+                projectPath: record.projectPath,
+                updatedAt: record.updatedAt
+            )
+            // Apply formaltask-status → column mapping. UpdateCardColumn
+            // honors manualOverrides.column so a user-drag still wins.
+            UpdateCardColumn.update(link: &existing, activityState: nil, hasWorktree: existing.worktreeLink != nil)
+            if existing.name != beforeName || existing.localTaskLink != beforeLink || existing.column != beforeColumn {
+                existing.updatedAt = .now
+                links[id] = existing
+                changed = true
+            }
+        } else {
+            var newLink = Link(
+                name: "#\(record.id): \(record.title)",
+                projectPath: record.projectPath,
+                column: .backlog,
+                source: .localTask,
+                localTaskLink: LocalTaskLink(
+                    id: record.id,
+                    title: record.title,
+                    description: record.description,
+                    status: record.status,
+                    projectPath: record.projectPath,
+                    updatedAt: record.updatedAt
+                )
+            )
+            // Land the card in its formaltask-derived column on first refresh.
+            UpdateCardColumn.update(link: &newLink, activityState: nil, hasWorktree: false)
+            links[newLink.id] = newLink
+            changed = true
+        }
+    }
+    return changed
 }
